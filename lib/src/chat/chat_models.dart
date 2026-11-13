@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../engine/run_metrics.dart';
+import 'markdown.dart';
 
 class ConversationInfo {
   const ConversationInfo({
@@ -14,6 +15,8 @@ class ConversationInfo {
     required this.draft,
     required this.scroll,
     required this.messageCount,
+    required this.preview,
+    required this.previewFromUser,
   });
 
   factory ConversationInfo.fromMap(Map<String, Object?> m) => ConversationInfo(
@@ -27,6 +30,11 @@ class ConversationInfo {
     draft: m['draft'] as String?,
     scroll: (m['scroll']! as num).toDouble(),
     messageCount: m['messageCount']! as int,
+    preview: switch (m['preview'] as String?) {
+      final p? => plainPreview(p),
+      null => null,
+    },
+    previewFromUser: m['previewRole'] == 'user',
   );
 
   final String id;
@@ -45,6 +53,10 @@ class ConversationInfo {
   final double scroll;
   final int messageCount;
 
+  /// The latest message as one line of plain text; null for an empty chat.
+  final String? preview;
+  final bool previewFromUser;
+
   ConversationInfo copyWith({String? title, bool? pinned, DateTime? updated}) =>
       ConversationInfo(
         id: id,
@@ -57,6 +69,8 @@ class ConversationInfo {
         draft: draft,
         scroll: scroll,
         messageCount: messageCount,
+        preview: preview,
+        previewFromUser: previewFromUser,
       );
 }
 
@@ -106,4 +120,26 @@ String titleFrom(String text) {
   final line = text.trim().split('\n').first.trim();
   if (line.isEmpty) return 'Image';
   return line.length <= 48 ? line : '${line.substring(0, 47).trimRight()}…';
+}
+
+const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const _months = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+/// A short date for the chat list: "14:05" today, "Yesterday", the weekday
+/// within the last week, "4 Nov" this year, "4 Nov 2025" before that.
+String friendlyDate(DateTime t, DateTime now) {
+  final today = DateTime(now.year, now.month, now.day);
+  final day = DateTime(t.year, t.month, t.day);
+  final days = today.difference(day).inDays;
+  if (days <= 0) {
+    return '${t.hour.toString().padLeft(2, '0')}:'
+        '${t.minute.toString().padLeft(2, '0')}';
+  }
+  if (days == 1) return 'Yesterday';
+  if (days < 7) return _weekdays[t.weekday - 1];
+  final date = '${t.day} ${_months[t.month - 1]}';
+  return t.year == now.year ? date : '$date ${t.year}';
 }

@@ -171,3 +171,20 @@ List<MdSpan> parseInline(String text) {
   }
   return spans;
 }
+
+/// [source] as one line of plain text for a list preview: Markdown syntax
+/// removed, code kept as its text, whitespace collapsed.
+String plainPreview(String source) {
+  final parts = <String>[
+    for (final b in parseMarkdown(source))
+      switch (b) {
+        MdHeading(:final text) ||
+        MdParagraph(:final text) ||
+        MdListItem(:final text) ||
+        MdQuote(:final text) => parseInline(text).map((s) => s.text).join(),
+        MdCode(:final code) => code,
+        MdRule() => '',
+      },
+  ];
+  return parts.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+}

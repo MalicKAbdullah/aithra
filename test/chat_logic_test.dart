@@ -216,4 +216,22 @@ void main() {
     expect(languageMissingErrors.contains(13), isTrue);
     expect(speechErrorMessage(9), 'Microphone permission is needed');
   });
+
+  group('chat list', () {
+    test('preview drops Markdown and collapses whitespace', () {
+      expect(
+        plainPreview('## Steps\n- Run `pip install x`\n\n```sh\nls -la\n```'),
+        'Steps Run pip install x ls -la',
+      );
+    });
+
+    test('dates read as time, Yesterday, weekday, day month, then year', () {
+      final now = DateTime(2026, 11, 13, 16); // a Friday
+      expect(friendlyDate(DateTime(2026, 11, 13, 9, 5), now), '09:05');
+      expect(friendlyDate(DateTime(2026, 11, 12, 23), now), 'Yesterday');
+      expect(friendlyDate(DateTime(2026, 11, 9, 8), now), 'Mon');
+      expect(friendlyDate(DateTime(2026, 11, 4), now), '4 Nov');
+      expect(friendlyDate(DateTime(2025, 12, 30), now), '30 Dec 2025');
+    });
+  });
 }

@@ -26,6 +26,11 @@ import kotlin.math.ln
  * word" without holding any plaintext.
  */
 class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 1) {
+    private companion object {
+        /** Enough for two lines of preview after Markdown is stripped. */
+        const val PREVIEW_CHARS = 240
+    }
+
     private var key: SecretKeySpec? = null
     private var termKey: SecretKeySpec? = null
     private val random = SecureRandom()
@@ -128,10 +133,16 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 1)
         "draft" to if (c.isNull(7)) null else openText(c.getBlob(7)),
         "scroll" to c.getDouble(8),
         "messageCount" to c.getInt(9),
+        "preview" to if (c.isNull(10)) null else openText(c.getBlob(10)).take(PREVIEW_CHARS),
+        "previewRole" to c.getString(11),
     )
 
+    // The latest message rides along for the list preview; the
+    // (conv_id, seq) index makes each lookup a single index seek.
     private val conversationColumns =
-        "id, title, created, updated, pinned, summary, summarized_upto, draft, scroll, message_count"
+        "id, title, created, updated, pinned, summary, summarized_upto, draft, scroll, message_count, " +
+            "(SELECT content FROM messages m WHERE m.conv_id = conversations.id ORDER BY m.seq DESC LIMIT 1), " +
+            "(SELECT role FROM messages m WHERE m.conv_id = conversations.id ORDER BY m.seq DESC LIMIT 1)"
 
     /** Pinned first, then most recently updated. */
     fun listConversations(offset: Int, limit: Int): List<Map<String, Any?>> =
