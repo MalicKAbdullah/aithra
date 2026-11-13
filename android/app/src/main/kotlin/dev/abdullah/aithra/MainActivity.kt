@@ -390,12 +390,7 @@ class MainActivity : FlutterFragmentActivity() {
                 )
                 result.success(null)
             }
-            "speech.status" -> {
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    speech.prewarm()
-                }
-                speech.status { result.success(it) }
-            }
+            "speech.status" -> speech.status { result.success(it) }
             "speech.start" -> {
                 speech.start(call.argument<Boolean>("continuous")!!)
                 result.success(null)
@@ -410,7 +405,7 @@ class MainActivity : FlutterFragmentActivity() {
             }
             "speech.downloadModel" -> result.success(speech.downloadModel())
             "speech.openSettings" -> {
-                startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS))
+                startActivity(speech.settingsIntent())
                 result.success(null)
             }
             "tts.speak" -> {

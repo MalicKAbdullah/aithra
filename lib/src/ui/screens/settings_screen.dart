@@ -2,8 +2,10 @@ import 'package:core_lock/core_lock.dart';
 import 'package:core_theme/core_theme.dart';
 import 'package:core_ui/core_ui.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../services.dart';
+import '../../voice/speech_service.dart';
 import '../aithra_type.dart';
 import '../widgets/section_label.dart';
 import 'custom_instructions_screen.dart';
@@ -94,6 +96,24 @@ class SettingsScreen extends StatelessWidget {
             separatorIndent: _indent,
             children: [
               const _VoiceStatus(),
+              ListenableBuilder(
+                listenable: s.settings,
+                builder: (context, _) => SettingsTile(
+                  icon: Icons.subtitles_outlined,
+                  title: 'Show transcript in voice mode',
+                  subtitle: s.settings.voiceTranscript
+                      ? 'Your words and the reply appear above the orb'
+                      : 'Only the orb; replies are spoken',
+                  onTap: () => s.settings.update(
+                    (x) => x.voiceTranscript = !x.voiceTranscript,
+                  ),
+                  trailing: Switch(
+                    value: s.settings.voiceTranscript,
+                    onChanged: (v) =>
+                        s.settings.update((x) => x.voiceTranscript = v),
+                  ),
+                ),
+              ),
               AppearanceSetting(controller: s.appearance),
             ],
           ),
@@ -138,21 +158,55 @@ class _VoiceStatusState extends State<_VoiceStatus> {
       listenable: speech,
       builder: (context, _) {
         final onDevice = speech.onDeviceAvailable;
-        final installed = speech.languageInstalled;
-        final subtitle = onDevice == null
+        final lang = speech.language ?? 'your language';
+        final notice = speech.modelNotice;
+        final subtitle = notice != null
+            ? notice.text
+            : onDevice == null
             ? 'Checking…'
             : !onDevice
             ? 'On-device recognition unavailable; using the system recognizer offline when possible'
-            : installed == false
-            ? 'Speech model for your language is not downloaded'
-            : 'On-device speech recognition ready';
-        return SettingsTile(
-          icon: Icons.mic_none_rounded,
-          title: 'Speech recognition',
-          subtitle: subtitle,
-          onTap: installed == false
-              ? speech.downloadLanguage
-              : speech.openSettings,
+            : switch (speech.model) {
+                SpeechModel.checking || SpeechModel.unknown => 'Checking…',
+                SpeechModel.installed =>
+                  'On-device speech recognition ready · $lang',
+                SpeechModel.pending =>
+                  'Android is downloading the speech model for $lang',
+                SpeechModel.missing =>
+                  'Speech model for $lang is not downloaded · tap to download',
+                SpeechModel.unsupported =>
+                  'Android\'s on-device recognizer has no model for $lang',
+              };
+        final report = speech.report;
+        return Column(
+          children: [
+            SettingsTile(
+              icon: Icons.mic_none_rounded,
+              title: 'Speech recognition',
+              subtitle: subtitle,
+              onTap:
+                  speech.model == SpeechModel.missing && !speech.download.active
+                  ? speech.downloadLanguage
+                  : speech.openSettings,
+            ),
+            if (report != null)
+              SettingsTile(
+                icon: Icons.content_copy_rounded,
+                title: 'Copy speech details',
+                subtitle: 'Language sent: ${report.sent}',
+                showChevron: false,
+                onTap: () async {
+                  await Clipboard.setData(
+                    ClipboardData(text: report.toString()),
+                  );
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Speech details copied')),
+                    );
+                  }
+                },
+              ),
+          ],
         );
       },
     );

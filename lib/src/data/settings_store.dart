@@ -22,6 +22,9 @@ class SettingsStore extends ChangeNotifier {
   /// Whether Aithra keeps and uses long-term memories about the user.
   bool memoryEnabled = true;
 
+  /// Voice mode shows what was heard and the reply; off, only the orb.
+  bool voiceTranscript = true;
+
   final Map<String, Calibration> calibrations = {};
 
   /// Highest prompt tokens per UTF-8 byte each model (by id) has shown in a
@@ -38,6 +41,7 @@ class SettingsStore extends ChangeNotifier {
     aboutUser = j['aboutUser'] as String? ?? '';
     replyStyle = j['replyStyle'] as String? ?? '';
     memoryEnabled = j['memoryEnabled'] as bool? ?? true;
+    voiceTranscript = j['voiceTranscript'] as bool? ?? true;
     for (final c in (j['calibrations'] as List? ?? const [])) {
       final cal = Calibration.fromJson(Map<String, Object?>.from(c as Map));
       calibrations[cal.modelId] = cal;
@@ -58,6 +62,7 @@ class SettingsStore extends ChangeNotifier {
       'aboutUser': aboutUser,
       'replyStyle': replyStyle,
       'memoryEnabled': memoryEnabled,
+      'voiceTranscript': voiceTranscript,
       'calibrations': [for (final c in calibrations.values) c.toJson()],
       'tokensPerByte': tokensPerByte,
     });

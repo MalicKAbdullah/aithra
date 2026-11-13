@@ -8,6 +8,7 @@ import '../../chat/chat_session.dart';
 import '../../services.dart';
 import '../../voice/speech_service.dart';
 import '../aithra_type.dart';
+import 'speech_notice.dart';
 
 class ComposerController {
   final TextEditingController text = TextEditingController();
@@ -111,14 +112,21 @@ class _ComposerState extends State<Composer> {
       _finals = null;
     }
     if (speech.languageMissing && mounted) {
+      // The notice follows the status check that error 12/13 starts, then
+      // the download.
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text(
-            'The on-device speech model for your language is missing.',
-          ),
-          action: SnackBarAction(
-            label: 'Download',
-            onPressed: speech.downloadLanguage,
+          duration: const Duration(minutes: 1),
+          showCloseIcon: true,
+          content: ListenableBuilder(
+            listenable: speech,
+            builder: (context, _) => SpeechNoticeView(
+              speech: speech,
+              notice:
+                  speech.modelNotice ??
+                  const SpeechNotice('Speech recognition is ready.'),
+              inverse: true,
+            ),
           ),
         ),
       );
