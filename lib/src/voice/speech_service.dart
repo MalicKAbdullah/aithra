@@ -95,6 +95,9 @@ class SpeechService extends ChangeNotifier {
   /// it, so it does not rebuild [SpeechService] listeners.
   final ValueNotifier<double> level = ValueNotifier(0);
   int? errorCode;
+
+  /// The microphone was denied for good; only Settings can grant it now.
+  bool micBlocked = false;
   bool? onDeviceAvailable;
   bool? languageInstalled;
   SpeechMetrics? lastMetrics;
@@ -114,7 +117,9 @@ class SpeechService extends ChangeNotifier {
   }
 
   Future<bool> start({required bool continuous}) async {
-    if (!await _native.requestMicrophone()) {
+    final mic = await _native.requestMicrophone();
+    micBlocked = mic == 'blocked';
+    if (mic != 'granted') {
       errorCode = 9;
       notifyListeners();
       return false;
@@ -149,6 +154,8 @@ class SpeechService extends ChangeNotifier {
   }
 
   Future<void> openSettings() => _native.openVoiceSettings();
+
+  Future<void> openAppSettings() => _native.openAppSettings();
 
   void _onEvent(Map<String, Object?> e) {
     final kind = e['kind']! as String;

@@ -124,7 +124,15 @@ class _ComposerState extends State<Composer> {
       );
     } else if (speech.errorCode != null && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(speechErrorMessage(speech.errorCode!))),
+        SnackBar(
+          content: Text(speechErrorMessage(speech.errorCode!)),
+          action: speech.micBlocked
+              ? SnackBarAction(
+                  label: 'Settings',
+                  onPressed: speech.openAppSettings,
+                )
+              : null,
+        ),
       );
       speech.errorCode = null;
     }
@@ -157,9 +165,19 @@ class _ComposerState extends State<Composer> {
       ),
     );
     if (source == null) return;
-    final jpeg = source == 'camera'
-        ? await native.capturePhoto()
-        : await native.pickImage();
+    final Uint8List? jpeg;
+    try {
+      jpeg = source == 'camera'
+          ? await native.capturePhoto()
+          : await native.pickImage();
+    } on PlatformException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Couldn't add the photo: ${e.message}")),
+        );
+      }
+      return;
+    }
     if (jpeg == null) return;
     _c.images.value = [..._c.images.value, PendingImage(jpeg)];
   }

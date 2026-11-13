@@ -7,15 +7,17 @@ import java.util.Locale
 
 /** Android's built-in TextToSpeech. Utterances queue in order; events report each one's end. */
 class TtsBridge(context: Context) {
-    private var ready = false
+    private enum class State { STARTING, READY, FAILED }
+
+    private var state = State.STARTING
     private val pending = mutableListOf<Pair<String, String>>()
     private val tts: TextToSpeech = TextToSpeech(context.applicationContext) { status ->
-        ready = status == TextToSpeech.SUCCESS
-        if (ready) {
+        state = if (status == TextToSpeech.SUCCESS) State.READY else State.FAILED
+        if (state == State.READY) {
             tts.language = Locale.getDefault()
             pending.forEach { (text, id) -> speakNow(text, id) }
         } else {
-            pending.forEach { (_, id) -> Events.send(mapOf("type" to "tts", "kind" to "error", "id" to id)) }
+            pending.forEach { (_, id) -> fail(id) }
         }
         pending.clear()
     }
@@ -41,8 +43,14 @@ class TtsBridge(context: Context) {
     }
 
     fun speak(text: String, id: String) {
-        if (ready) speakNow(text, id) else pending += text to id
+        when (state) {
+            State.READY -> speakNow(text, id)
+            State.STARTING -> pending += text to id
+            State.FAILED -> fail(id)
+        }
     }
+
+    private fun fail(id: String) = Events.send(mapOf("type" to "tts", "kind" to "error", "id" to id))
 
     private fun speakNow(text: String, id: String) {
         tts.speak(text, TextToSpeech.QUEUE_ADD, null, id)

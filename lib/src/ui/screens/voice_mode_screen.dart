@@ -257,6 +257,11 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
                             TextButton(
                               onPressed: speech.downloadLanguage,
                               child: const Text('Download it'),
+                            )
+                          else if (speech.micBlocked)
+                            TextButton(
+                              onPressed: speech.openAppSettings,
+                              child: const Text('Open Settings'),
                             ),
                         ],
                         const Spacer(),
