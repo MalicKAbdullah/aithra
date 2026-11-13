@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../../chat/chat_session.dart';
 import '../../services.dart';
 import '../../voice/speech_service.dart';
+import '../aithra_type.dart';
 
 class ComposerController {
   final TextEditingController text = TextEditingController();
@@ -265,6 +266,7 @@ class _ComposerState extends State<Composer> {
                     if (widget.canAttachImages)
                       IconButton(
                         tooltip: 'Add image',
+                        iconSize: 22,
                         icon: const Icon(Icons.add_photo_alternate_outlined),
                         onPressed: widget.busy ? null : _attach,
                       ),
@@ -275,23 +277,29 @@ class _ComposerState extends State<Composer> {
                         minLines: 1,
                         maxLines: 6,
                         textCapitalization: TextCapitalization.sentences,
+                        style: AithraType.body.copyWith(color: c.textPrimary),
                         decoration: InputDecoration(
                           hintText: listening ? 'Listening…' : 'Message Aithra',
+                          hintStyle: AithraType.body.copyWith(
+                            color: c.textTertiary,
+                          ),
+                          isDense: true,
                           filled: false,
                           border: InputBorder.none,
                           enabledBorder: InputBorder.none,
                           focusedBorder: InputBorder.none,
                           contentPadding: EdgeInsets.fromLTRB(
-                            widget.canAttachImages ? 0 : AppSpacing.md,
-                            14,
-                            AppSpacing.sm,
-                            14,
+                            widget.canAttachImages ? 0 : AppSpacing.md + 2,
+                            15,
+                            AppSpacing.xs,
+                            15,
                           ),
                         ),
                       ),
                     ),
                     IconButton(
                       tooltip: listening ? 'Stop dictation' : 'Dictate',
+                      iconSize: 22,
                       icon: Icon(
                         listening ? Icons.mic_rounded : Icons.mic_none_rounded,
                         color: listening ? c.accent : null,
@@ -299,7 +307,7 @@ class _ComposerState extends State<Composer> {
                       onPressed: _toggleDictation,
                     ),
                     Padding(
-                      padding: const EdgeInsets.all(4),
+                      padding: const EdgeInsets.all(6),
                       child: ListenableBuilder(
                         listenable: Listenable.merge([_c.text, _c.images]),
                         builder: (context, _) {
@@ -308,6 +316,12 @@ class _ComposerState extends State<Composer> {
                               _c.images.value.isNotEmpty;
                           return IconButton.filled(
                             tooltip: widget.busy ? 'Stop' : 'Send',
+                            iconSize: 20,
+                            constraints: const BoxConstraints.tightFor(
+                              width: 40,
+                              height: 40,
+                            ),
+                            padding: EdgeInsets.zero,
                             onPressed: widget.busy
                                 ? widget.onStop
                                 : canSend

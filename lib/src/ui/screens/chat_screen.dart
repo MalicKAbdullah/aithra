@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
 import '../../services.dart';
+import '../aithra_type.dart';
+import '../widgets/aithra_mark.dart';
 import '../widgets/composer.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/perf_hud.dart';
@@ -132,7 +134,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Text(
                   '${m.stats!.decodeTps!.toStringAsFixed(1)} tokens/s · '
                   'first word after ${((m.stats!.ttftMs ?? 0) / 1000).toStringAsFixed(1)} s',
-                  style: AppTextStyles.caption.copyWith(
+                  style: AithraType.caption.copyWith(
                     color: SuiteColors.of(context).textTertiary,
                   ),
                 ),
@@ -202,9 +204,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final c = SuiteColors.of(context);
     return Scaffold(
       appBar: AppBar(
+        titleSpacing: 0,
         title: ListenableBuilder(
           listenable: Listenable.merge([_session, s.chats, s.engine]),
           builder: (context, _) => Column(
+            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
@@ -216,10 +220,14 @@ class _ChatScreenState extends State<ChatScreen> {
                     'New chat',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
+                style: AithraType.chatTitle.copyWith(color: c.textPrimary),
               ),
+              const SizedBox(height: 1),
               Text(
                 _modelLine(context),
-                style: AppTextStyles.caption.copyWith(color: c.textTertiary),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AithraType.caption.copyWith(color: c.textTertiary),
               ),
             ],
           ),
@@ -296,16 +304,16 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.auto_awesome, size: 40, color: c.accent),
+              const AithraMark(size: 48),
               const SizedBox(height: AppSpacing.md),
               Text(
                 'How can I help?',
-                style: AppTextStyles.h3.copyWith(color: c.textPrimary),
+                style: AithraType.h1.copyWith(color: c.textPrimary),
               ),
               const SizedBox(height: AppSpacing.xs),
               Text(
                 'Everything stays on this phone.',
-                style: AppTextStyles.bodySmall.copyWith(color: c.textSecondary),
+                style: AithraType.bodySmall.copyWith(color: c.textSecondary),
               ),
             ],
           ),
@@ -350,7 +358,7 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: Text(
               _session.error!,
-              style: AppTextStyles.bodySmall.copyWith(color: c.negative),
+              style: AithraType.bodySmall.copyWith(color: c.negative),
             ),
           ),
           TextButton(onPressed: _session.retry, child: const Text('Retry')),
