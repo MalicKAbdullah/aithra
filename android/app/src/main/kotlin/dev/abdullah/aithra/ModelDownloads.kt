@@ -241,10 +241,14 @@ object ModelDownloads {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
+    /**
+     * A network that claims internet access. Not VALIDATED: networks where
+     * Android's connectivity check is blocked never validate, yet download.
+     */
     private fun online(context: Context): Boolean {
         val cm = context.getSystemService(ConnectivityManager::class.java)
         val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
     private fun load(context: Context) {
@@ -306,7 +310,13 @@ class DownloadService : Service() {
             .setOngoing(true)
             .build()
         startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        onForeground(this)
         return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        onStopped()
+        super.onDestroy()
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
@@ -320,14 +330,32 @@ class DownloadService : Service() {
         private const val ID = 2
         private var holders = 0
 
+        // Stopping a service that has not yet called startForeground kills
+        // the app on some Android versions, so a release that comes first
+        // leaves the stop to [onForeground].
+        private var foreground = false
+
         @Synchronized
         fun hold(context: Context) {
-            if (holders++ == 0) context.startForegroundService(Intent(context, DownloadService::class.java))
+            if (holders++ == 0 && !foreground) {
+                context.startForegroundService(Intent(context, DownloadService::class.java))
+            }
         }
 
         @Synchronized
         fun release(context: Context) {
-            if (--holders == 0) context.stopService(Intent(context, DownloadService::class.java))
+            if (--holders == 0 && foreground) context.stopService(Intent(context, DownloadService::class.java))
+        }
+
+        @Synchronized
+        private fun onForeground(service: Service) {
+            foreground = true
+            if (holders == 0) service.stopSelf()
+        }
+
+        @Synchronized
+        private fun onStopped() {
+            foreground = false
         }
     }
 }

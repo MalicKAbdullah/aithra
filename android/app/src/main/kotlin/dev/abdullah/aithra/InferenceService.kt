@@ -31,7 +31,16 @@ class InferenceService : Service() {
             .setOngoing(true)
             .build()
         startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        // Main thread, like acquire and release.
+        foreground = true
+        starting = false
+        if (holders == 0 && stopper == null) stopSelf()
         return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        foreground = false
+        super.onDestroy()
     }
 
     companion object {
@@ -46,14 +55,22 @@ class InferenceService : Service() {
         private var holders = 0
         private var stopper: Runnable? = null
 
+        // Stopping a service that has not yet called startForeground kills
+        // the app on some Android versions; until it has, the stop is left
+        // to onStartCommand.
+        private var foreground = false
+        private var starting = false
+
         /** Holds the service until the matching [release]. Any thread. */
         fun acquire(context: Context) = main.post {
             stopper?.let(main::removeCallbacks)
             stopper = null
-            if (holders++ == 0) {
+            if (holders++ == 0 && !foreground && !starting) {
                 try {
+                    starting = true
                     context.startForegroundService(Intent(context, InferenceService::class.java))
                 } catch (_: ForegroundServiceStartNotAllowedException) {
+                    starting = false
                     // Work that begins while the app is already in the
                     // background (a calibration started by a finished
                     // download) cannot hold one; it runs as before.
@@ -63,8 +80,10 @@ class InferenceService : Service() {
 
         fun release(context: Context) = main.post {
             if (--holders == 0) {
-                stopper = Runnable { context.stopService(Intent(context, InferenceService::class.java)) }
-                    .also { main.postDelayed(it, LINGER_MS) }
+                stopper = Runnable {
+                    stopper = null
+                    if (foreground) context.stopService(Intent(context, InferenceService::class.java))
+                }.also { main.postDelayed(it, LINGER_MS) }
             }
         }
     }

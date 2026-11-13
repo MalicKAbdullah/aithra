@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:aithra/main.dart' as app;
 import 'package:aithra/src/data/vault.dart';
+import 'package:aithra/src/models/catalog.dart';
 import 'package:aithra/src/platform/native.dart';
 import 'package:aithra/src/ui/screens/chat_screen.dart';
 import 'package:aithra/src/ui/screens/home_screen.dart';
@@ -123,6 +124,25 @@ void main() {
       expect(await native.dbConversation(id), isNull);
     });
 
+    test('an edited message keeps its photo through truncate', () async {
+      final id = 'it-edit-${Random().nextInt(1 << 31)}';
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await native.dbCreateConversation(id, 'Photo', now);
+      await native.dbPutImage('$id-photo', tinyJpeg);
+      await native.dbAddMessage(
+        convId: id,
+        role: 'user',
+        content: 'What is this?',
+        images: ['$id-photo'],
+        stats: null,
+        now: now,
+      );
+      await native.dbTruncate(id, 0, keepImages: ['$id-photo']);
+      expect(await native.dbMessages(id, 1 << 30, 10), isEmpty);
+      expect(await native.dbImage('$id-photo', thumb: true), isNotNull);
+      await native.dbDeleteConversation(id);
+    });
+
     test('images store and come back as thumbnails', () async {
       await native.dbPutImage('it-image', tinyJpeg);
       expect(await native.dbImage('it-image', thumb: false), tinyJpeg);
@@ -139,6 +159,26 @@ void main() {
       expect((await native.dbSelfTest(50))['messages'], 50);
       expect(await native.listModelFiles(), isA<List<Object?>>());
       expect(await native.queryDownloads(), isA<List<Object?>>());
+      expect(await native.hasData(), isTrue);
+    });
+
+    test('a download starts once, and removing it forgets it', () async {
+      final spec = embeddingModel;
+      Future<int> start() => native.startDownload(
+        url: spec.url,
+        fileName: spec.fileName,
+        title: spec.name,
+        size: spec.sizeBytes,
+        sha256: spec.sha256!,
+      );
+      final id = await start();
+      expect(await start(), id);
+      expect((await native.queryDownloads()).map((d) => d['id']), contains(id));
+      await native.removeDownload(id);
+      expect(
+        (await native.queryDownloads()).map((d) => d['id']),
+        isNot(contains(id)),
+      );
     });
 
     test('engine calls with no model loaded', () async {
