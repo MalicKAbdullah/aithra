@@ -47,7 +47,7 @@ jobs:
           script: |
             .github/scripts/launch_smoke.sh build/app/outputs/flutter-apk/app-release.apk
             adb uninstall dev.abdullah.aithra
-            flutter test integration_test -d emulator-5554 --timeout 20m
+            flutter test integration_test -d emulator-5554 --no-dds --timeout 20m
       - uses: actions/upload-artifact@v4
         if: always()
         with:
