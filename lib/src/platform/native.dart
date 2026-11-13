@@ -247,7 +247,25 @@ class NativeBridge {
 
   Future<Map<String, Object?>> deviceInfo() => _map('device.info');
 
+  /// Models folder and free space on shared storage.
   Future<Map<String, Object?>> storageInfo() => _map('storage.info');
+
+  /// Internal app storage for the encrypted settings and memories.
+  Future<String> dataDir() => _call<String>('storage.dataDir');
+
+  /// Whether the CPU has the instructions llama.cpp is built for; without
+  /// them GGUF models and cross-chat memory cannot run.
+  Future<bool> runsLlama() => _call<bool>('device.runsLlama');
+
+  // -- Crash report ---------------------------------------------------------
+
+  /// What went wrong since the report was last cleared, or null.
+  Future<String?> crashRead() => _channel.invokeMethod<String>('crash.read');
+
+  Future<void> crashRecord(String title, String detail) =>
+      _channel.invokeMethod('crash.record', {'title': title, 'detail': detail});
+
+  Future<void> crashClear() => _channel.invokeMethod('crash.clear');
 
   Future<List<Map<String, Object?>>> listModelFiles() async => [
     for (final e in await _call<List<Object?>>('file.list'))

@@ -9,13 +9,19 @@ import android.net.Uri
 import android.os.Build
 import android.os.StatFs
 import android.provider.OpenableColumns
+import dev.abdullah.aithra.engine.CpuFeatures
 import dev.abdullah.aithra.engine.LlamaNative
 import java.io.ByteArrayOutputStream
 import java.io.File
 
-/** Model files live in app-specific external storage: private, removed on uninstall. */
+/**
+ * Model files live in app-specific external storage: private, removed on
+ * uninstall, and the only place DownloadManager (another process) can write
+ * to for this app. It is null only while shared storage is unmounted.
+ */
 fun modelsDir(context: Context): File =
-    File(context.getExternalFilesDir(null), "models").apply { mkdirs() }
+    File(checkNotNull(context.getExternalFilesDir(null)) { "Phone storage is not available right now" }, "models")
+        .apply { mkdirs() }
 
 object DeviceInfo {
     fun collect(context: Context): Map<String, Any?> {
@@ -37,7 +43,7 @@ object DeviceInfo {
             "appVersion" to pkg.versionName,
             "appBuild" to pkg.longVersionCode,
             "cpuFeatures" to features,
-            "llamaSystemInfo" to LlamaNative.nativeSystemInfo(),
+            "llamaSystemInfo" to if (CpuFeatures.runsLlama) LlamaNative.nativeSystemInfo() else null,
             // The Tensor NPU dispatch library talks to this vendor library.
             "edgeTpuRuntime" to listOf("/vendor/lib64/libedgetpu_litert.so", "/system/lib64/libedgetpu_litert.so")
                 .any { File(it).exists() },
@@ -51,8 +57,6 @@ object Storage {
         val stat = StatFs(dir.path)
         return mapOf(
             "modelsDir" to dir.path,
-            "dataDir" to context.filesDir.path,
-            "cacheDir" to context.cacheDir.path,
             "freeBytes" to stat.availableBytes,
         )
     }

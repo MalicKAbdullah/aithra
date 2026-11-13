@@ -11,6 +11,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import dev.abdullah.aithra.engine.ChatTurn
+import dev.abdullah.aithra.engine.CpuFeatures
 import dev.abdullah.aithra.engine.Embedder
 import dev.abdullah.aithra.engine.EngineHost
 import dev.abdullah.aithra.engine.GenerateRequest
@@ -49,6 +50,13 @@ class MainActivity : FlutterFragmentActivity() {
     private var captureFile: File? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Created before super.onCreate, which attaches the Flutter engine
+        // (configureFlutterEngine), so every callback that uses them, such
+        // as onTrimMemory and onDestroy, finds them set.
+        engineHost = EngineHost(applicationContext)
+        db = ChatDb(applicationContext)
+        speech = SpeechBridge(this)
+        tts = TtsBridge(this)
         super.onCreate(savedInstanceState)
         pickImage = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
             deliverImage(uri)
@@ -79,10 +87,6 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        engineHost = EngineHost(applicationContext)
-        db = ChatDb(applicationContext)
-        speech = SpeechBridge(this)
-        tts = TtsBridge(this)
         val messenger = flutterEngine.dartExecutor.binaryMessenger
         EventChannel(messenger, "aithra/events").setStreamHandler(Events)
         MethodChannel(messenger, "aithra/native").setMethodCallHandler(::onCall)
@@ -251,21 +255,29 @@ class MainActivity : FlutterFragmentActivity() {
             "db.selfTest" -> onDb(result) { db.selfTest(call.argument<Int>("messages")!!) }
 
             "device.info" -> onIo(result) { DeviceInfo.collect(this) }
-            "storage.info" -> result.success(Storage.info(this))
+            "device.runsLlama" -> result.success(CpuFeatures.runsLlama)
 
-            "download.start" -> result.success(
+            "crash.read" -> result.success(CrashLog.read(this))
+            "crash.record" -> onIo(result) {
+                CrashLog.record(this, call.argument<String>("title")!!, call.argument<String>("detail")!!)
+            }
+            "crash.clear" -> onIo(result) { CrashLog.clear(this) }
+
+            // Internal storage: always present, so startup never depends on
+            // shared storage being mounted.
+            "storage.dataDir" -> result.success(filesDir.path)
+            "storage.info" -> onIo(result) { Storage.info(this) }
+
+            "download.start" -> onIo(result) {
                 Downloads.start(
                     this,
                     call.argument<String>("url")!!,
                     call.argument<String>("fileName")!!,
                     call.argument<String>("title")!!,
-                ),
-            )
-            "download.query" -> onIo(result) { Downloads.query(this) }
-            "download.remove" -> {
-                Downloads.remove(this, (call.argument<Number>("id")!!).toLong())
-                result.success(null)
+                )
             }
+            "download.query" -> onIo(result) { Downloads.query(this) }
+            "download.remove" -> onIo(result) { Downloads.remove(this, (call.argument<Number>("id")!!).toLong()) }
             "file.delete" -> onIo(result) { File(call.argument<String>("path")!!).delete() }
             "file.list" -> onIo(result) {
                 modelsDir(this).listFiles()!!.filter { it.isFile }.map {
