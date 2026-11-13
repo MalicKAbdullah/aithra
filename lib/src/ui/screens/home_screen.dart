@@ -3,392 +3,181 @@ import 'package:core_ui/core_ui.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../chat/chat_models.dart';
+import '../../chat/chat_session.dart';
 import '../../models/catalog.dart';
 import '../../models/download_state.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
-import '../widgets/aithra_mark.dart';
-import 'chat_screen.dart';
+import '../widgets/chat_drawer.dart';
+import 'chat_view.dart';
 import 'models_screen.dart';
-import 'settings_screen.dart';
 import 'voice_mode_screen.dart';
 
-/// The conversation list.
-class HomeScreen extends StatefulWidget {
+/// The app's home: always a chat, a new one at launch, with every other
+/// chat in the drawer. Which chat shows is ChatSessions.current, so a chat
+/// can be opened from anywhere (the drawer, voice mode).
+class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
-}
-
-class _HomeScreenState extends State<HomeScreen> {
-  final _scroll = ScrollController();
-
-  @override
-  void initState() {
-    super.initState();
-    _scroll.addListener(() {
-      if (_scroll.position.extentAfter < 600) context.services.chats.loadMore();
-    });
-  }
-
-  @override
-  void dispose() {
-    _scroll.dispose();
-    super.dispose();
-  }
-
-  void _open(ConversationInfo? c) {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => ChatScreen(conversation: c)),
+  Widget build(BuildContext context) {
+    final s = context.services;
+    return ListenableBuilder(
+      listenable: s.sessions,
+      builder: (context, _) {
+        final session = s.sessions.current;
+        return Scaffold(
+          drawer: const ChatDrawer(),
+          drawerEdgeDragWidth: 32,
+          appBar: AppBar(
+            titleSpacing: 0,
+            leading: Builder(
+              builder: (context) => IconButton(
+                tooltip: 'Chats',
+                icon: const Icon(Icons.menu_rounded),
+                onPressed: () {
+                  HapticFeedback.selectionClick();
+                  Scaffold.of(context).openDrawer();
+                },
+              ),
+            ),
+            title: _Title(session),
+            actions: [
+              IconButton(
+                tooltip: 'Voice mode',
+                icon: const Icon(Icons.graphic_eq_rounded),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const VoiceModeScreen(),
+                  ),
+                ),
+              ),
+              ListenableBuilder(
+                listenable: session,
+                builder: (context, _) => session.conversation == null
+                    ? const SizedBox.shrink()
+                    : IconButton(
+                        tooltip: 'New chat',
+                        icon: const Icon(Icons.edit_square),
+                        onPressed: () {
+                          HapticFeedback.selectionClick();
+                          s.sessions.startNew();
+                        },
+                      ),
+              ),
+              _ChatMenu(session),
+            ],
+          ),
+          body: Column(
+            children: [
+              const _StatusBanner(),
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: AppMotion.fast,
+                  switchInCurve: AppMotion.standard,
+                  switchOutCurve: AppMotion.standard,
+                  child: ChatView(key: ObjectKey(session), session: session),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
+}
+
+/// The open chat's title over the model that answers.
+class _Title extends StatelessWidget {
+  const _Title(this.session);
+
+  final ChatSession session;
 
   @override
   Widget build(BuildContext context) {
     final s = context.services;
     final c = SuiteColors.of(context);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Row(
-          children: [
-            AithraMark(size: 30),
-            SizedBox(width: AppSpacing.smd),
-            Text('Aithra'),
-          ],
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Voice mode',
-            icon: const Icon(Icons.graphic_eq_rounded),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const VoiceModeScreen()),
-            ),
-          ),
-          IconButton(
-            tooltip: 'Settings',
-            icon: const Icon(Icons.settings_outlined),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
-            ),
-          ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        heroTag: 'new-chat',
-        onPressed: () {
-          HapticFeedback.selectionClick();
-          _open(null);
-        },
-        icon: const Icon(Icons.edit_outlined),
-        label: const Text('New chat'),
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-              AppSpacing.gutter,
-              0,
-              AppSpacing.gutter,
-              AppSpacing.sm,
-            ),
-            child: SearchBar(
-              hintText: 'Search chats',
-              constraints: const BoxConstraints(minHeight: 46),
-              textStyle: WidgetStatePropertyAll(
-                AithraType.body.copyWith(color: c.textPrimary),
-              ),
-              hintStyle: WidgetStatePropertyAll(
-                AithraType.body.copyWith(color: c.textTertiary),
-              ),
-              leading: Icon(
-                Icons.search_rounded,
-                size: 20,
-                color: c.textTertiary,
-              ),
-              onChanged: s.chats.search,
-            ),
-          ),
-          const _StatusBanner(),
-          Expanded(
-            child: ListenableBuilder(
-              listenable: s.chats,
-              builder: (context, _) {
-                final items = s.chats.items;
-                if (items.isEmpty) {
-                  return s.chats.searching
-                      ? const AppEmptyState(
-                          title: 'No matches',
-                          message: 'Try another word.',
-                          icon: Icons.search_off_rounded,
-                          compact: true,
-                        )
-                      : AppEmptyState(
-                          title: 'Ask me anything',
-                          message:
-                              'Your chats appear here, encrypted on this phone.',
-                          icon: Icons.chat_bubble_outline_rounded,
-                          action: FilledButton(
-                            onPressed: () => _open(null),
-                            child: const Text('Start a chat'),
-                          ),
-                        );
-                }
-                return ListView.builder(
-                  controller: _scroll,
-                  padding: const EdgeInsets.only(bottom: 96),
-                  itemCount: items.length,
-                  itemBuilder: (context, i) => _ConversationRow(
-                    key: ValueKey(items[i].id),
-                    info: items[i],
-                    match: s.chats.snippets[items[i].id],
-                    onTap: () => _open(items[i]),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ConversationRow extends StatelessWidget {
-  const _ConversationRow({
-    required this.info,
-    required this.onTap,
-    this.match,
-    super.key,
-  });
-
-  final ConversationInfo info;
-
-  /// While searching, the message that matched (rather than the title).
-  final String? match;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = SuiteColors.of(context);
-    final draft = info.draft?.isNotEmpty == true ? info.draft : null;
-    final preview = info.preview;
-    final secondary = AithraType.bodySmall.copyWith(color: c.textSecondary);
-    return InkWell(
-      onTap: onTap,
-      onLongPress: () => _actions(context),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 68),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.gutter,
-            vertical: AppSpacing.smd - 2,
-          ),
-          child: Row(
-            children: [
-              _Monogram(info),
-              const SizedBox(width: AppSpacing.smd + 2),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.baseline,
-                      textBaseline: TextBaseline.alphabetic,
-                      children: [
-                        Expanded(
-                          child: Text(
-                            info.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: AithraType.title.copyWith(
-                              color: c.textPrimary,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: AppSpacing.sm),
-                        Text(
-                          friendlyDate(info.updated, DateTime.now()),
-                          style: AithraType.caption.copyWith(
-                            color: c.textTertiary,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 2),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text.rich(
-                            match != null
-                                ? TextSpan(
-                                    children: [
-                                      WidgetSpan(
-                                        alignment: PlaceholderAlignment.middle,
-                                        child: Padding(
-                                          padding: const EdgeInsets.only(
-                                            right: 4,
-                                          ),
-                                          child: Icon(
-                                            Icons.search_rounded,
-                                            size: 14,
-                                            color: c.accent,
-                                          ),
-                                        ),
-                                      ),
-                                      TextSpan(text: match),
-                                    ],
-                                  )
-                                : draft != null
-                                ? TextSpan(
-                                    children: [
-                                      TextSpan(
-                                        text: 'Draft  ',
-                                        style: TextStyle(
-                                          color: c.accent,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                      TextSpan(text: draft),
-                                    ],
-                                  )
-                                : TextSpan(
-                                    text: preview == null
-                                        ? 'No messages yet'
-                                        : info.previewFromUser
-                                        ? 'You: $preview'
-                                        : preview,
-                                  ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: secondary,
-                          ),
-                        ),
-                        if (info.pinned) ...[
-                          const SizedBox(width: AppSpacing.sm),
-                          Icon(
-                            Icons.push_pin_rounded,
-                            size: 14,
-                            color: c.textTertiary,
-                            semanticLabel: 'Pinned',
-                          ),
-                        ],
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _actions(BuildContext context) async {
-    HapticFeedback.mediumImpact();
-    final chats = context.services.chats;
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
+    return ListenableBuilder(
+      listenable: Listenable.merge([session, s.chats, s.assistant]),
+      builder: (context, _) {
+        final id = session.conversation?.id;
+        final title = id == null
+            ? 'Aithra'
+            : s.chats.items.where((x) => x.id == id).firstOrNull?.title ??
+                  session.conversation!.title;
+        return Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ListTile(
-              leading: Icon(
-                info.pinned ? Icons.push_pin_outlined : Icons.push_pin_rounded,
-              ),
-              title: Text(info.pinned ? 'Unpin' : 'Pin'),
-              onTap: () => Navigator.pop(context, 'pin'),
+            Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AithraType.chatTitle.copyWith(color: c.textPrimary),
             ),
-            ListTile(
-              leading: const Icon(Icons.drive_file_rename_outline_rounded),
-              title: const Text('Rename'),
-              onTap: () => Navigator.pop(context, 'rename'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline_rounded),
-              title: const Text('Delete'),
-              onTap: () => Navigator.pop(context, 'delete'),
+            const SizedBox(height: 1),
+            Text(
+              _modelLine(s),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AithraType.caption.copyWith(color: c.textTertiary),
             ),
           ],
-        ),
-      ),
+        );
+      },
     );
-    if (!context.mounted) return;
-    switch (action) {
-      case 'pin':
-        await chats.setPinned(info.id, !info.pinned);
-      case 'rename':
-        final title = await renameDialog(context, info.title);
-        if (title != null && title.isNotEmpty) {
-          await chats.rename(info.id, title);
-        }
-      case 'delete':
-        await chats.delete(info.id);
-    }
+  }
+
+  static String _modelLine(Services s) {
+    final m = s.assistant.activeModel;
+    if (m == null) return 'No model';
+    final b = s.assistant.backendFor(m);
+    return b == null ? m.name : '${m.name} · ${b.label}';
   }
 }
 
-/// A chat's leading tile: its first letter on a soft tint. The tint is
-/// picked from the id, so a chat keeps its colour as it moves in the list.
-class _Monogram extends StatelessWidget {
-  const _Monogram(this.info);
+/// Rename and delete for the chat on screen, once it has been saved.
+class _ChatMenu extends StatelessWidget {
+  const _ChatMenu(this.session);
 
-  final ConversationInfo info;
+  final ChatSession session;
 
   @override
   Widget build(BuildContext context) {
-    final c = SuiteColors.of(context);
-    final tints = [c.accent, c.info, c.positive, c.warning, c.textSecondary];
-    final tint =
-        tints[info.id.codeUnits.fold(0, (a, b) => a + b) % tints.length];
-    final title = info.title.trim();
-    final letter = title.isEmpty
-        ? '·'
-        : String.fromCharCode(title.runes.first).toUpperCase();
-    return Container(
-      width: 40,
-      height: 40,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: tint.withValues(alpha: 0.14),
-        shape: BoxShape.circle,
-      ),
-      child: Text(
-        letter,
-        style: AithraType.labelStrong.copyWith(color: tint, fontSize: 15),
-      ),
+    final s = context.services;
+    return ListenableBuilder(
+      listenable: session,
+      builder: (context, _) {
+        final conv = session.conversation;
+        if (conv == null) return const SizedBox.shrink();
+        return PopupMenuButton<String>(
+          onSelected: (action) async {
+            final title =
+                s.chats.items
+                    .where((x) => x.id == conv.id)
+                    .firstOrNull
+                    ?.title ??
+                conv.title;
+            switch (action) {
+              case 'rename':
+                final renamed = await renameDialog(context, title);
+                if (renamed != null && renamed.isNotEmpty) {
+                  await s.chats.rename(conv.id, renamed);
+                }
+              case 'delete':
+                if (await confirmDelete(context, title)) {
+                  await s.sessions.delete(conv.id);
+                }
+            }
+          },
+          itemBuilder: (_) => const [
+            PopupMenuItem(value: 'rename', child: Text('Rename')),
+            PopupMenuItem(value: 'delete', child: Text('Delete chat')),
+          ],
+        );
+      },
     );
   }
-}
-
-Future<String?> renameDialog(BuildContext context, String current) {
-  final controller = TextEditingController(text: current);
-  return showDialog<String>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('Rename chat'),
-      content: TextField(
-        controller: controller,
-        autofocus: true,
-        textCapitalization: TextCapitalization.sentences,
-        onSubmitted: (v) => Navigator.pop(context, v.trim()),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, controller.text.trim()),
-          child: const Text('Save'),
-        ),
-      ],
-    ),
-  );
 }
 
 /// What stands between the user and a reply: no model, a download, or tuning.

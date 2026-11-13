@@ -13,6 +13,15 @@ class SettingsStore extends ChangeNotifier {
   String? selectedModelId;
   bool speakReplies = false;
   bool perfOverlay = false;
+
+  /// Custom instructions: what the user wants Aithra to know about them and
+  /// how it should respond. Both go into every chat's system prompt.
+  String aboutUser = '';
+  String replyStyle = '';
+
+  /// Whether Aithra keeps and uses long-term memories about the user.
+  bool memoryEnabled = true;
+
   final Map<String, Calibration> calibrations = {};
 
   /// Highest prompt tokens per UTF-8 byte each model (by id) has shown in a
@@ -26,6 +35,9 @@ class SettingsStore extends ChangeNotifier {
     selectedModelId = j['selectedModel'] as String?;
     speakReplies = j['speakReplies'] as bool? ?? false;
     perfOverlay = j['perfOverlay'] as bool? ?? false;
+    aboutUser = j['aboutUser'] as String? ?? '';
+    replyStyle = j['replyStyle'] as String? ?? '';
+    memoryEnabled = j['memoryEnabled'] as bool? ?? true;
     for (final c in (j['calibrations'] as List? ?? const [])) {
       final cal = Calibration.fromJson(Map<String, Object?>.from(c as Map));
       calibrations[cal.modelId] = cal;
@@ -43,6 +55,9 @@ class SettingsStore extends ChangeNotifier {
       'selectedModel': selectedModelId,
       'speakReplies': speakReplies,
       'perfOverlay': perfOverlay,
+      'aboutUser': aboutUser,
+      'replyStyle': replyStyle,
+      'memoryEnabled': memoryEnabled,
       'calibrations': [for (final c in calibrations.values) c.toJson()],
       'tokensPerByte': tokensPerByte,
     });

@@ -118,24 +118,81 @@ void main() {
       expect(messagesToSummarize(history.take(5).toList()), isEmpty);
     });
 
-    test('system prompt includes memories, recall and summary', () {
+    test('system prompt includes instructions, memories, recall, summary', () {
       final p = buildSystemPrompt(
-        now: DateTime(2026, 3, 4),
-        memories: ["User's name is Sam"],
-        recalled: ['We discussed tide tables'],
-        summary: 'Sam is planning a trip.',
+        SystemContext(
+          now: DateTime(2026, 3, 4),
+          aboutUser: 'I teach physics.',
+          replyStyle: 'Be brief.',
+          memories: ["User's name is Sam"],
+          recalled: ['We discussed tide tables'],
+          summary: 'Sam is planning a trip.',
+        ),
       );
       expect(p, contains('Today is 2026-03-04.'));
+      expect(p, contains('LaTeX'));
+      expect(p, contains('know about them:\nI teach physics.'));
+      expect(p, contains('respond:\nBe brief.'));
       expect(p, contains("- User's name is Sam"));
       expect(p, contains('- We discussed tide tables'));
       expect(p, endsWith('Sam is planning a trip.'));
-      final bare = buildSystemPrompt(
-        now: DateTime(2026),
-        memories: const [],
-        recalled: const [],
-        summary: null,
-      );
+      final bare = buildSystemPrompt(SystemContext(now: DateTime(2026)));
       expect(bare, isNot(contains('know about the user')));
+      expect(bare, isNot(contains('custom instructions')));
+    });
+
+    test('an over-budget system prompt sheds recall, then memories, then '
+        'shortens instructions, and keeps the summary', () async {
+      final full = SystemContext(
+        now: DateTime(2026),
+        aboutUser: 'a' * 1000,
+        replyStyle: 'b' * 1000,
+        memories: [for (var i = 0; i < 8; i++) 'Memory $i'],
+        recalled: const ['Recalled'],
+        summary: 'The summary.',
+      );
+      Future<int> cost(String s) async => s.length;
+      final first = buildSystemPrompt(full);
+
+      final noRecall = await fitSystemPrompt(
+        full,
+        budget: first.length - 5,
+        firstCost: first.length,
+        cost: cost,
+      );
+      expect(noRecall, isNot(contains('Recalled')));
+      expect(noRecall, contains('Memory 7'));
+
+      final tight = await fitSystemPrompt(
+        full,
+        budget: 900,
+        firstCost: first.length,
+        cost: cost,
+      );
+      expect(tight, isNot(contains('Memory 0')));
+      expect(tight.length, lessThanOrEqualTo(900));
+      expect(tight, endsWith('The summary.'));
+
+      expect(
+        await fitSystemPrompt(
+          full,
+          budget: 1 << 20,
+          firstCost: first.length,
+          cost: cost,
+        ),
+        first,
+      );
+    });
+
+    test('memories are shed from the end of the list, newest kept', () {
+      final c = SystemContext(
+        now: DateTime(2026),
+        memories: const ['new', 'mid', 'old', 'oldest'],
+      );
+      expect(c.shed()!.memories, ['new', 'mid']);
+      expect(c.shed()!.shed()!.memories, ['new']);
+      expect(c.shed()!.shed()!.shed()!.memories, isEmpty);
+      expect(c.shed()!.shed()!.shed()!.shed(), isNull);
     });
 
     test('summarize prompt labels speakers', () {

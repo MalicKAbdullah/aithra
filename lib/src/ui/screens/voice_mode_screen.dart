@@ -11,7 +11,6 @@ import '../../voice/sentence_splitter.dart';
 import '../../voice/speech_service.dart';
 import '../aithra_type.dart';
 import '../widgets/voice_orb.dart';
-import 'chat_screen.dart';
 
 enum VoicePhase { listening, thinking, speaking, paused }
 
@@ -40,14 +39,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
   void initState() {
     super.initState();
     _s = context.services;
-    _session = ChatSession(
-      native: _s.native,
-      assistant: _s.assistant,
-      store: _s.chats,
-      memories: _s.memories,
-      recall: _s.recall,
-      suggestFacts: false,
-    );
+    _session = _s.sessions.detached();
     _session.streaming.addListener(_onReplyText);
     _s.speech.addListener(_onSpeech);
     _finals = _s.speech.finals.listen(_onHeard);
@@ -155,11 +147,8 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
 
   void _typeInstead() {
     final conversation = _session.conversation;
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute<void>(
-        builder: (_) => ChatScreen(conversation: conversation),
-      ),
-    );
+    if (conversation != null) _s.sessions.open(conversation);
+    Navigator.of(context).pop();
   }
 
   @override

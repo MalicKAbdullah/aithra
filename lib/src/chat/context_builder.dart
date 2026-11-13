@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import '../model_output.dart';
+
 /// One message of history as the prompt builder sees it.
 class PromptMessage {
   const PromptMessage({
@@ -40,15 +42,106 @@ class PromptPlan {
   final int promptTokens;
 }
 
-/// The system message: who Aithra is, what it remembers about the user,
-/// snippets recalled from other chats, and the summary of this chat's
-/// earlier turns.
-String buildSystemPrompt({
-  required DateTime now,
-  required List<String> memories,
-  required List<String> recalled,
-  required String? summary,
-}) {
+/// Everything the hidden system message carries besides who Aithra is.
+class SystemContext {
+  const SystemContext({
+    required this.now,
+    this.aboutUser = '',
+    this.replyStyle = '',
+    this.memories = const [],
+    this.recalled = const [],
+    this.summary,
+  });
+
+  final DateTime now;
+
+  /// The user's custom instructions.
+  final String aboutUser;
+  final String replyStyle;
+
+  /// Long-term memories, most important first.
+  final List<String> memories;
+
+  /// Snippets recalled from other chats.
+  final List<String> recalled;
+
+  /// The summary of this chat's earlier turns.
+  final String? summary;
+
+  /// A smaller version for a system message over its budget, or null when
+  /// nothing optional is left. Recalled snippets go first, then memories
+  /// from the end of the list (half at a time), then the custom
+  /// instructions are shortened; this chat's own summary is always kept.
+  SystemContext? shed() {
+    if (recalled.isNotEmpty) return _copy(recalled: const []);
+    if (memories.isNotEmpty) {
+      return _copy(memories: memories.sublist(0, memories.length ~/ 2));
+    }
+    if (aboutUser.length > _minInstructionChars ||
+        replyStyle.length > _minInstructionChars) {
+      String half(String s) =>
+          s.length > _minInstructionChars ? clipChars(s, s.length ~/ 2) : s;
+      return _copy(aboutUser: half(aboutUser), replyStyle: half(replyStyle));
+    }
+    return null;
+  }
+
+  static const _minInstructionChars = 100;
+
+  SystemContext _copy({
+    String? aboutUser,
+    String? replyStyle,
+    List<String>? memories,
+    List<String>? recalled,
+  }) => SystemContext(
+    now: now,
+    aboutUser: aboutUser ?? this.aboutUser,
+    replyStyle: replyStyle ?? this.replyStyle,
+    memories: memories ?? this.memories,
+    recalled: recalled ?? this.recalled,
+    summary: summary,
+  );
+}
+
+/// The share of the context the system message may take, so memories and
+/// instructions never crowd out the conversation itself.
+int systemBudget(int contextTokens) => (contextTokens * 0.3).floor();
+
+/// Builds the system message for [context], shedding optional parts (see
+/// [SystemContext.shed]) until it costs at most [budget] tokens as measured
+/// by [cost]. [firstCost] is the cost of the full message when the caller
+/// already measured it.
+Future<String> fitSystemPrompt(
+  SystemContext context, {
+  required int budget,
+  required int firstCost,
+  required Future<int> Function(String text) cost,
+}) async {
+  var current = context;
+  var text = buildSystemPrompt(current);
+  var tokens = firstCost;
+  while (tokens > budget) {
+    final smaller = current.shed();
+    if (smaller == null) break;
+    current = smaller;
+    text = buildSystemPrompt(current);
+    tokens = await cost(text);
+  }
+  return text;
+}
+
+/// The system message: who Aithra is, the user's custom instructions, what
+/// it remembers about the user, snippets recalled from other chats, and the
+/// summary of this chat's earlier turns.
+String buildSystemPrompt(SystemContext context) {
+  final SystemContext(
+    :now,
+    :aboutUser,
+    :replyStyle,
+    :memories,
+    :recalled,
+    :summary,
+  ) = context;
   final b = StringBuffer()
     ..writeln(
       'You are Aithra, a helpful assistant that runs entirely on the '
@@ -57,6 +150,22 @@ String buildSystemPrompt({
       'own for display equations.',
     )
     ..writeln('Today is ${now.year}-${_two(now.month)}-${_two(now.day)}.');
+  if (aboutUser.trim().isNotEmpty || replyStyle.trim().isNotEmpty) {
+    b.writeln(
+      "\nThe user's custom instructions. Follow them unless they conflict "
+      'with being helpful, honest and safe.',
+    );
+    if (aboutUser.trim().isNotEmpty) {
+      b
+        ..writeln('What the user wants you to know about them:')
+        ..writeln(aboutUser.trim());
+    }
+    if (replyStyle.trim().isNotEmpty) {
+      b
+        ..writeln('How the user wants you to respond:')
+        ..writeln(replyStyle.trim());
+    }
+  }
   if (memories.isNotEmpty) {
     b.writeln('\nWhat you know about the user:');
     for (final m in memories) {

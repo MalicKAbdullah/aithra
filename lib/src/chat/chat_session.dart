@@ -7,7 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../assistant.dart';
 import '../engine/engine_service.dart';
-import '../memory/fact_suggester.dart';
+import '../memory/memory_curator.dart';
 import '../memory/memory_store.dart';
 import '../memory/recall_index.dart';
 import '../models/catalog.dart';
@@ -16,6 +16,7 @@ import 'chat_models.dart';
 import 'chat_titler.dart';
 import 'chat_store.dart';
 import 'context_builder.dart';
+import 'reply_queue.dart';
 
 /// Reply text that grows while tokens stream in. Chunks are coalesced and
 /// published at most once per frame, so only the streaming bubble rebuilds
@@ -40,7 +41,14 @@ class StreamingText extends ValueNotifier<String> {
   String get full => _buffer.toString();
 }
 
-enum ReplyPhase { idle, preparing, streaming }
+enum ReplyPhase {
+  idle,
+
+  /// Waiting for another chat's reply to finish with the engine.
+  queued,
+  preparing,
+  streaming,
+}
 
 /// Something that did not work for a reply; the reply itself is fine.
 class ReplyNotice {
@@ -66,37 +74,44 @@ class PendingImage {
   final Uint8List jpeg;
 }
 
-/// One open chat: its messages (paged newest first), the reply being
-/// generated, and the actions on it (send, stop, regenerate, edit).
+/// One chat: its messages (paged newest first), the reply being generated,
+/// and the actions on it (send, stop, regenerate, edit). A session outlives
+/// the screen that shows it while its reply runs (see ChatSessions), so all
+/// reply state lives here.
 class ChatSession extends ChangeNotifier {
   ChatSession({
     required NativeBridge native,
     required Assistant assistant,
     required ChatStore store,
     required MemoryStore memories,
+    required MemoryKeeper keeper,
     required RecallIndex recall,
+    required ReplyQueue queue,
     ConversationInfo? conversation,
-    this.suggestFacts = true,
   }) : _native = native,
        _assistant = assistant,
        _store = store,
        _memories = memories,
+       _keeper = keeper,
        _recallIndex = recall,
+       _queue = queue,
        _conversation = conversation;
 
   static const int pageSize = 30;
   static const int replyTokens = 1024;
   static const int summaryTokens = 256;
 
+  /// Newest memories offered to the system prompt, before its budget
+  /// (see [fitSystemPrompt]) trims them.
+  static const int maxMemories = 40;
+
   final NativeBridge _native;
   final Assistant _assistant;
   final ChatStore _store;
   final MemoryStore _memories;
+  final MemoryKeeper _keeper;
   final RecallIndex _recallIndex;
-
-  /// Whether to ask the model for memory suggestions after each reply
-  /// (voice mode has nowhere to show them).
-  final bool suggestFacts;
+  final ReplyQueue _queue;
   bool _disposed = false;
 
   ConversationInfo? _conversation;
@@ -107,6 +122,11 @@ class ChatSession extends ChangeNotifier {
 
   ReplyPhase phase = ReplyPhase.idle;
   final StreamingText streaming = StreamingText();
+  Completer<void>? _replying;
+
+  /// Completes once the reply in progress, if any, has ended and been
+  /// saved.
+  Future<void> get settled => _replying?.future ?? Future.value();
   Generation? _generation;
   bool _stopRequested = false;
   String? error;
@@ -119,9 +139,9 @@ class ChatSession extends ChangeNotifier {
   /// it for this session.
   final Map<int, ReplyNotice> notices = {};
 
-  /// Facts the model found in the user's last message, offered as
-  /// suggestions; they arrive after the reply, when the engine is free.
-  List<String> suggestions = const [];
+  /// Replies (by seq) after which the model updated long-term memory; each
+  /// shows a quiet hint.
+  final Set<int> memoryUpdates = {};
 
   ConversationInfo? get conversation => _conversation;
 
@@ -171,7 +191,6 @@ class ChatSession extends ChangeNotifier {
     _assistant.engine.preemptBackground();
     unawaited(HapticFeedback.lightImpact());
     error = null;
-    suggestions = const [];
     final now = DateTime.now();
     // Optimistic: the message shows before anything is written.
     final optimistic = ChatMessage(
@@ -183,7 +202,7 @@ class ChatSession extends ChangeNotifier {
       created: now,
     );
     _messages.insert(0, optimistic);
-    phase = ReplyPhase.preparing;
+    phase = _queue.busy ? ReplyPhase.queued : ReplyPhase.preparing;
     streaming.value = '';
     notifyListeners();
 
@@ -238,11 +257,30 @@ class ChatSession extends ChangeNotifier {
   }
 
   Future<void> _reply({required String recallQuery}) async {
-    final conv = _conversation!;
-    phase = ReplyPhase.preparing;
+    final done = _replying = Completer<void>();
+    try {
+      await _replyIn(_conversation!, recallQuery);
+    } finally {
+      _replying = null;
+      done.complete();
+    }
+  }
+
+  Future<void> _replyIn(ConversationInfo conv, String recallQuery) async {
+    phase = _queue.busy ? ReplyPhase.queued : ReplyPhase.preparing;
     lastReply = '';
     _stopRequested = false;
     notifyListeners();
+    if (!await _queue.acquire(this)) {
+      // Stopped while it waited for another chat's reply.
+      phase = ReplyPhase.idle;
+      notifyListeners();
+      return;
+    }
+    if (phase == ReplyPhase.queued) {
+      phase = ReplyPhase.preparing;
+      notifyListeners();
+    }
     try {
       final prepared = await _assistant.prepare();
       if (prepared == null) {
@@ -262,18 +300,36 @@ class ChatSession extends ChangeNotifier {
         ))
           ChatMessage.fromMap(r),
       ];
-      final recall = await _recallIndex.recall(recallQuery, conv.id);
+      final settings = _assistant.settings;
+      final remembering = settings.memoryEnabled;
+      final recall = remembering
+          ? await _recallIndex.recall(recallQuery, conv.id)
+          : const RecallOff();
       final recalled = switch (recall) {
         Recalled(:final snippets) => snippets,
         RecallOff() || RecallFailed() => const <String>[],
       };
-      final system = buildSystemPrompt(
+      final context = SystemContext(
         now: DateTime.now(),
-        memories: [for (final m in _memories.items.take(40)) m.text],
+        aboutUser: settings.aboutUser,
+        replyStyle: settings.replyStyle,
+        memories: remembering
+            ? [for (final m in _memories.items.take(maxMemories)) m.text]
+            : const [],
         recalled: recalled,
         summary: fresh.summary,
       );
-      final counted = await _countTokens(spec, system, history);
+      final full = buildSystemPrompt(context);
+      final counted = await _countTokens(spec, full, history);
+      final system = await fitSystemPrompt(
+        context,
+        budget: systemBudget(contextSize),
+        firstCost: counted.system,
+        cost: counted.cost,
+      );
+      final systemTokens = identical(system, full)
+          ? counted.system
+          : await counted.cost(system);
       final messages = [
         for (final m in history)
           PromptMessage(
@@ -287,7 +343,7 @@ class ChatSession extends ChangeNotifier {
       final latest = messages.last;
       final newest = await fitMessage(
         latest,
-        room: contextSize - replyTokens - counted.system - counted.overhead,
+        room: contextSize - replyTokens - systemTokens - counted.overhead,
         cost: counted.cost,
       );
       messages.last = newest;
@@ -296,7 +352,7 @@ class ChatSession extends ChangeNotifier {
         history: messages,
         contextTokens: contextSize,
         replyTokens: replyTokens,
-        systemTokens: counted.system,
+        systemTokens: systemTokens,
         overheadTokens: counted.overhead,
       );
       final turns = <EngineTurn>[EngineTurn('system', plan.system)];
@@ -398,11 +454,12 @@ class ChatSession extends ChangeNotifier {
       final asked = history.lastWhere((m) => m.role == Role.user);
       _reportFailures(
         replySeq,
-        _afterReply(conv.id, history, asked.content, text),
+        _afterReply(conv.id, replySeq, history, asked.content, text),
       );
     } catch (e) {
       error = e is PlatformException ? (e.message ?? e.code) : '$e';
     } finally {
+      _queue.release(this);
       _generation = null;
       lastReply = streaming.full;
       phase = ReplyPhase.idle;
@@ -421,7 +478,7 @@ class ChatSession extends ChangeNotifier {
         notices[replySeq] = ReplyNotice(
           'Background task failed',
           'After this reply Aithra could not finish its housekeeping '
-              '(naming the chat, memory suggestions or summarizing): '
+              '(naming the chat, updating memory or summarizing): '
               '${e.message ?? e.code}',
         );
         notifyListeners();
@@ -430,12 +487,12 @@ class ChatSession extends ChangeNotifier {
   }
 
   /// Housekeeping once the reply is in and the engine is free: naming a new
-  /// chat, spotting facts worth remembering and embedding the new messages
-  /// for recall. Each
-  /// step yields to the user's next message (see
+  /// chat, letting the model update long-term memory and embedding the new
+  /// messages for recall. Each step yields to the user's next message (see
   /// [BackgroundRun]); a new message ends the whole run.
   Future<void> _afterReply(
     String convId,
+    int replySeq,
     List<ChatMessage> history,
     String asked,
     String reply,
@@ -459,15 +516,10 @@ class ChatSession extends ChangeNotifier {
         }
       }
     }
-    if (suggestFacts && asked.trim().isNotEmpty && !_disposed) {
-      final raw = await run.generate(
-        FactSuggester.prompt(asked),
-        maxTokens: FactSuggester.maxTokens,
-      );
-      if (raw != null && !_disposed && !busy) {
-        suggestions = _memories.filterSuggestions(FactSuggester.parse(raw));
-        notifyListeners();
-      }
+    final learned = await _keeper.learn(run, asked: asked, reply: reply);
+    if (learned == true && !_disposed) {
+      memoryUpdates.add(replySeq);
+      notifyListeners();
     }
     if (!run.preempted) _recallIndex.indexInBackground();
   }
@@ -585,11 +637,13 @@ class ChatSession extends ChangeNotifier {
     });
   }
 
-  /// Stops the reply in any phase: while the model loads, while it waits
-  /// for the engine, or while it streams.
+  /// Stops the reply in any phase: while it waits for another chat's
+  /// reply, while the model loads, while it waits for the engine, or while
+  /// it streams.
   Future<void> stop() async {
     unawaited(HapticFeedback.mediumImpact());
     _stopRequested = true;
+    _queue.withdraw(this);
     await _generation?.cancel();
   }
 
@@ -627,11 +681,21 @@ class ChatSession extends ChangeNotifier {
     await _reply(recallQuery: lastUser.content);
   }
 
+  // A reply stopped by [dispose] (voice mode closed mid-answer) still winds
+  // down afterwards; nobody listens any more, so its updates go nowhere.
+  // [streaming] is left undisposed for the same reason; it holds nothing
+  // but text.
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
   @override
   void dispose() {
     _disposed = true;
+    _stopRequested = true;
+    _queue.withdraw(this);
     _generation?.cancel();
-    streaming.dispose();
     super.dispose();
   }
 }

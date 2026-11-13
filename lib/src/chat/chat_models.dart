@@ -131,6 +131,30 @@ String titleFrom(String text) {
   return line.length <= 48 ? line : '${line.substring(0, 47).trimRight()}…';
 }
 
+/// Where a chat sits in the drawer: pinned chats on top, then by when it
+/// was last active.
+enum ChatGroup {
+  pinned('Pinned'),
+  today('Today'),
+  yesterday('Yesterday'),
+  week('Previous 7 days'),
+  older('Older');
+
+  const ChatGroup(this.label);
+  final String label;
+
+  static ChatGroup of(ConversationInfo c, DateTime now) {
+    if (c.pinned) return pinned;
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(c.updated.year, c.updated.month, c.updated.day);
+    final days = today.difference(day).inDays;
+    if (days <= 0) return ChatGroup.today;
+    if (days == 1) return yesterday;
+    if (days <= 7) return week;
+    return older;
+  }
+}
+
 const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const _months = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //

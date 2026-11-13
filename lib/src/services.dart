@@ -3,9 +3,13 @@ import 'package:core_theme/core_theme.dart';
 import 'package:flutter/widgets.dart';
 
 import 'assistant.dart';
+import 'chat/chat_session.dart';
+import 'chat/chat_sessions.dart';
 import 'chat/chat_store.dart';
+import 'chat/reply_queue.dart';
 import 'data/settings_store.dart';
 import 'engine/engine_service.dart';
+import 'memory/memory_curator.dart';
 import 'memory/memory_store.dart';
 import 'memory/recall_index.dart';
 import 'models/model_manager.dart';
@@ -24,6 +28,7 @@ class Services {
     required this.recall,
     required this.chats,
     required this.assistant,
+    required this.keeper,
     required this.lock,
     required this.appearance,
     required this.speech,
@@ -38,10 +43,30 @@ class Services {
   final RecallIndex recall;
   final ChatStore chats;
   final Assistant assistant;
+  final MemoryKeeper keeper;
   final LockController lock;
   final AppearanceController appearance;
   final SpeechService speech;
   final TtsService tts;
+
+  /// The chat on screen and every chat still replying; one reply runs on
+  /// the engine at a time.
+  late final ChatSessions sessions = () {
+    final queue = ReplyQueue();
+    return ChatSessions(
+      store: chats,
+      create: (conversation) => ChatSession(
+        native: native,
+        assistant: assistant,
+        store: chats,
+        memories: memories,
+        keeper: keeper,
+        recall: recall,
+        queue: queue,
+        conversation: conversation,
+      ),
+    );
+  }();
 }
 
 class ServicesScope extends InheritedWidget {

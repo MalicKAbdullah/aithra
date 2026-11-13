@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
 import '../widgets/section_label.dart';
+import 'custom_instructions_screen.dart';
 import 'memories_screen.dart';
 import 'models_screen.dart';
 import 'performance_screen.dart';
@@ -54,11 +55,29 @@ class SettingsScreen extends StatelessWidget {
                 },
               ),
               ListenableBuilder(
-                listenable: s.memories,
+                listenable: s.settings,
+                builder: (context, _) {
+                  final about = s.settings.aboutUser;
+                  final style = s.settings.replyStyle;
+                  return SettingsTile(
+                    icon: Icons.tune_rounded,
+                    title: 'Custom instructions',
+                    subtitle: about.isEmpty && style.isEmpty
+                        ? 'Tell Aithra about you and how to respond'
+                        : oneLinePreview(about.isEmpty ? style : about),
+                    onTap: () =>
+                        _push(context, const CustomInstructionsScreen()),
+                  );
+                },
+              ),
+              ListenableBuilder(
+                listenable: Listenable.merge([s.memories, s.settings]),
                 builder: (context, _) => SettingsTile(
-                  icon: Icons.bookmark_outline_rounded,
-                  title: 'Memories',
-                  subtitle: '${s.memories.items.length} saved on this phone',
+                  icon: Icons.auto_awesome_outlined,
+                  title: 'Memory',
+                  subtitle: s.settings.memoryEnabled
+                      ? 'On · ${s.memories.items.length} saved on this phone'
+                      : 'Off',
                   onTap: () => _push(context, const MemoriesScreen()),
                 ),
               ),
@@ -93,6 +112,10 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 }
+
+/// [text] on one line, for a settings subtitle.
+String oneLinePreview(String text) =>
+    text.replaceAll(RegExp(r'\s+'), ' ').trim();
 
 class _VoiceStatus extends StatefulWidget {
   const _VoiceStatus();
