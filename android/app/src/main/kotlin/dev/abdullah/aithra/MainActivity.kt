@@ -388,7 +388,7 @@ class MainActivity : FlutterFragmentActivity() {
             }
             "speech.downloadModel" -> result.success(speech.downloadModel())
             "speech.openSettings" -> {
-                startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS))
+                startActivity(speech.settingsIntent())
                 result.success(null)
             }
             "tts.speak" -> {

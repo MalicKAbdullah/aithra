@@ -300,7 +300,8 @@ class FakeNative extends NativeBridge {
   @override
   Future<Map<String, Object?>> speechStatus() async => {
     'onDevice': true,
-    'languageInstalled': true,
+    'language': 'en-US',
+    'model': 'installed',
   };
   @override
   Future<void> startListening({required bool continuous}) async {}
