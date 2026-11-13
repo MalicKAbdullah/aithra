@@ -154,6 +154,7 @@ String failureReason(int reason) => switch (reason) {
   1007 => 'No storage available',
   1008 => 'Download cannot resume',
   1009 => 'File already exists',
+  2001 => 'The downloaded file was damaged; try again',
   >= 400 && < 600 => 'Server error (HTTP $reason)',
   _ => 'Download failed',
 };

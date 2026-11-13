@@ -1,7 +1,6 @@
 package dev.abdullah.aithra
 
 import android.app.ActivityManager
-import android.app.DownloadManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
@@ -52,6 +51,21 @@ object DeviceInfo {
 }
 
 object Storage {
+    private const val DB = "aithra.db"
+
+    private fun vaultFiles(context: Context) =
+        context.filesDir.listFiles()!!.filter { it.name.endsWith(".vault") || it.name.endsWith(".vault.tmp") }
+
+    /** Encrypted data from an earlier run: the chat database or a vault document. */
+    fun hasData(context: Context): Boolean =
+        context.getDatabasePath(DB).exists() || vaultFiles(context).isNotEmpty()
+
+    /** Deletes all encrypted data. Only before the database is opened. */
+    fun erase(context: Context) {
+        context.deleteDatabase(DB)
+        vaultFiles(context).forEach { it.delete() }
+    }
+
     fun info(context: Context): Map<String, Any?> {
         val dir = modelsDir(context)
         val stat = StatFs(dir.path)
@@ -59,47 +73,6 @@ object Storage {
             "modelsDir" to dir.path,
             "freeBytes" to stat.availableBytes,
         )
-    }
-}
-
-/** System DownloadManager: survives the app being backgrounded and resumes after network drops. */
-object Downloads {
-    fun start(context: Context, url: String, fileName: String, title: String): Long {
-        val dm = context.getSystemService(DownloadManager::class.java)
-        val target = File(modelsDir(context), fileName)
-        if (target.exists()) target.delete()
-        val request = DownloadManager.Request(Uri.parse(url))
-            .setTitle(title)
-            .setDescription(fileName)
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationUri(Uri.fromFile(target))
-            .setAllowedOverMetered(true)
-        return dm.enqueue(request)
-    }
-
-    fun query(context: Context): List<Map<String, Any?>> {
-        val dm = context.getSystemService(DownloadManager::class.java)
-        val out = mutableListOf<Map<String, Any?>>()
-        dm.query(DownloadManager.Query()).use { c ->
-            while (c.moveToNext()) {
-                fun long(col: String) = c.getLong(c.getColumnIndexOrThrow(col))
-                fun str(col: String) = c.getString(c.getColumnIndexOrThrow(col))
-                out += mapOf(
-                    "id" to long(DownloadManager.COLUMN_ID),
-                    "fileName" to str(DownloadManager.COLUMN_DESCRIPTION),
-                    "status" to c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)),
-                    "reason" to c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)),
-                    "downloaded" to long(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR),
-                    "total" to long(DownloadManager.COLUMN_TOTAL_SIZE_BYTES),
-                )
-            }
-        }
-        return out
-    }
-
-    /** Cancels (and deletes the partial file of) a download, or forgets a finished one. */
-    fun remove(context: Context, id: Long) {
-        context.getSystemService(DownloadManager::class.java).remove(id)
     }
 }
 
@@ -138,32 +111,49 @@ object Media {
         return uri.lastPathSegment ?: "model"
     }
 
-    /** Copies a picked model file into the models folder, reporting progress as `import` events. */
+    const val PARTIAL_SUFFIX = ".importing"
+    private val MODEL_EXTENSIONS = listOf(".litertlm", ".gguf")
+
+    /**
+     * Copies a picked model file into `models/imported/`, reporting progress
+     * as `import` events. Imports live apart from catalog downloads so a
+     * file named like a catalog model can neither replace nor hide one.
+     */
     fun importModel(context: Context, uri: Uri): String {
         val name = displayName(context, uri).replace('/', '_')
+        require(MODEL_EXTENSIONS.any { name.endsWith(it, ignoreCase = true) }) {
+            "$name is not a model file. Aithra runs .litertlm and .gguf files."
+        }
         val total = context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use {
             if (it.moveToFirst()) it.getLong(0) else -1L
         } ?: -1L
-        val target = File(modelsDir(context), name)
-        val partial = File(target.path + ".importing")
-        context.contentResolver.openInputStream(uri)!!.use { input ->
-            partial.outputStream().use { output ->
-                val buf = ByteArray(1 shl 20)
-                var copied = 0L
-                var lastReport = 0L
-                while (true) {
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    output.write(buf, 0, n)
-                    copied += n
-                    if (copied - lastReport >= 32L shl 20) {
-                        lastReport = copied
-                        Events.send(mapOf("type" to "import", "copied" to copied, "total" to total))
+        val dir = File(modelsDir(context), IMPORTED_DIR).apply { mkdirs() }
+        val target = File(dir, name)
+        val partial = File(target.path + PARTIAL_SUFFIX)
+        try {
+            context.contentResolver.openInputStream(uri)!!.use { input ->
+                partial.outputStream().use { output ->
+                    val buf = ByteArray(1 shl 20)
+                    var copied = 0L
+                    var lastReport = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        output.write(buf, 0, n)
+                        copied += n
+                        if (copied - lastReport >= 32L shl 20) {
+                            lastReport = copied
+                            Events.send(mapOf("type" to "import", "copied" to copied, "total" to total))
+                        }
                     }
                 }
             }
+            check(partial.renameTo(target)) { "Could not move the imported file into place" }
+        } finally {
+            partial.delete()
         }
-        partial.renameTo(target)
         return target.path
     }
+
+    const val IMPORTED_DIR = "imported"
 }
