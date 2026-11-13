@@ -13,8 +13,17 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 adb uninstall "$pkg" >/dev/null 2>&1 || true
 adb logcat -c
 
+# Flutter draws no frames while the display is asleep, and the tests pump
+# frames, so they stall until it wakes. Keep it awake and unlocked.
+adb shell svc power stayon true
+adb shell input keyevent KEYCODE_WAKEUP
+adb shell wm dismiss-keyguard
+
 status=0
-"$root/android/gradlew" -p "$root/android" app:connectedDebugAndroidTest \
+# FlutterTestRunner waits without limit for the Dart results, so a Dart side
+# that never reports would otherwise hang until the job is killed, with no
+# logcat saved.
+timeout 20m "$root/android/gradlew" -p "$root/android" app:connectedDebugAndroidTest \
   -Ptarget="$root/integration_test/app_test.dart" "$@" || status=$?
 
 adb logcat -d > test-logcat.txt
