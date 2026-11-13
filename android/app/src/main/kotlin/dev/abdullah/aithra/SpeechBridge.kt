@@ -25,6 +25,13 @@ import java.util.Locale
  * Android's built-in speech recognizer. Prefers the on-device recognizer
  * (API 31+); otherwise the default recognizer with EXTRA_PREFER_OFFLINE.
  *
+ * One recognizer serves listening, language checks and downloads, and
+ * lives until its connection breaks. Android shares one connection to the
+ * recognition service among all of an app's recognizers, and destroying
+ * any of them unbinds it when none is mid-session. A second, short-lived
+ * recognizer would leave this one holding a dead connection, whose next
+ * startListening answers ERROR_SERVER_DISCONNECTED.
+ *
  * The recognizer stops after each utterance, so continuous dictation
  * restarts it after every final result (and after "no speech" timeouts)
  * until [stop] is called. All calls must be made on the main thread.
@@ -36,10 +43,14 @@ class SpeechBridge(private val context: Context) {
     private var active = false
     private var onDevice = false
 
-    // triggerModelDownload hands the request to the recognizer's service;
-    // destroying that recognizer drops the request, so it lives as long
-    // as this bridge.
-    private var downloader: SpeechRecognizer? = null
+    /**
+     * Language checks awaiting the recognizer's answer. A broken connection
+     * is reported only to the recognition listener, which fails these.
+     */
+    private val supportWaiters = mutableListOf<(ModelState?, Int?) -> Unit>()
+
+    /** Like [supportWaiters], for a download request. */
+    private var downloadPending = false
 
     /**
      * The language recognition and downloads use: a tag the on-device
@@ -77,8 +88,12 @@ class SpeechBridge(private val context: Context) {
      * `SpeechRecognizer.ERROR_*` code when the recognizer cannot say.
      */
     private fun resolveLanguage(done: (state: ModelState?, error: Int?) -> Unit) {
-        val probe = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        probe.checkRecognitionSupport(
+        supportWaiters += done
+        // Answers once: from this callback or from a broken connection.
+        fun answer(state: ModelState?, error: Int?) {
+            if (supportWaiters.remove(done)) done(state, error)
+        }
+        recognizer().checkRecognitionSupport(
             intent(),
             context.mainExecutor,
             object : RecognitionSupportCallback {
@@ -101,14 +116,10 @@ class SpeechBridge(private val context: Context) {
                         "pending" to pending,
                         "supported" to support.supportedOnDeviceLanguages,
                     )
-                    probe.destroy()
-                    done(state, null)
+                    answer(state, null)
                 }
 
-                override fun onError(error: Int) {
-                    probe.destroy()
-                    done(null, error)
-                }
+                override fun onError(error: Int) = answer(null, error)
             },
         )
     }
@@ -131,18 +142,24 @@ class SpeechBridge(private val context: Context) {
         callback(base + mapOf("language" to language, "model" to "checking"))
     }
 
+    private fun recognizer(): SpeechRecognizer = recognizer ?: run {
+        onDevice = SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+        (if (onDevice) {
+            SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+        } else {
+            SpeechRecognizer.createSpeechRecognizer(context)
+        }).also {
+            it.setRecognitionListener(listener)
+            recognizer = it
+        }
+    }
+
     /**
      * Creates the recognizer ahead of the first tap so listening starts
      * without the service bind delay.
      */
     fun prewarm() {
-        if (recognizer != null) return
-        onDevice = SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-        recognizer = (if (onDevice) {
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        } else {
-            SpeechRecognizer.createSpeechRecognizer(context)
-        }).apply { setRecognitionListener(listener) }
+        recognizer()
     }
 
     fun start(continuous: Boolean) {
@@ -171,8 +188,7 @@ class SpeechBridge(private val context: Context) {
             }
             return
         }
-        prewarm()
-        recognizer!!.startListening(intent())
+        recognizer().startListening(intent())
     }
 
     /** Stops listening; the recognizer still delivers the final result. */
@@ -191,8 +207,8 @@ class SpeechBridge(private val context: Context) {
         cancel()
         recognizer?.destroy()
         recognizer = null
-        downloader?.destroy()
-        downloader = null
+        supportWaiters.clear()
+        downloadPending = false
     }
 
     /**
@@ -218,17 +234,13 @@ class SpeechBridge(private val context: Context) {
     }
 
     private fun triggerDownload() {
-        val r = downloader ?: SpeechRecognizer.createOnDeviceSpeechRecognizer(context).also {
-            // Connection failures reach the recognition listener, not the
-            // download listener.
-            it.setRecognitionListener(downloadConnection)
-            downloader = it
-        }
+        val r = recognizer()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             r.triggerModelDownload(intent())
             emitDownload("requested")
             return
         }
+        downloadPending = true
         r.triggerModelDownload(
             intent(),
             context.mainExecutor,
@@ -237,13 +249,18 @@ class SpeechBridge(private val context: Context) {
                     emitDownload("progress", mapOf("percent" to completedPercent))
 
                 override fun onSuccess() {
+                    downloadPending = false
                     resolved = false
                     emitDownload("success")
                 }
 
-                override fun onScheduled() = emitDownload("scheduled")
+                override fun onScheduled() {
+                    downloadPending = false
+                    emitDownload("scheduled")
+                }
 
                 override fun onError(error: Int) {
+                    downloadPending = false
                     if (error == SpeechRecognizer.ERROR_CANNOT_LISTEN_TO_DOWNLOAD_EVENTS) {
                         // RecognitionService's default for the listener
                         // overload: it only answers this error and does not
@@ -257,18 +274,6 @@ class SpeechBridge(private val context: Context) {
                 }
             },
         )
-    }
-
-    private val downloadConnection = object : RecognitionListener {
-        override fun onError(error: Int) = emitDownload("error", mapOf("code" to error))
-        override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {}
-        override fun onResults(results: Bundle?) {}
-        override fun onPartialResults(partialResults: Bundle?) {}
-        override fun onEvent(eventType: Int, params: Bundle?) {}
     }
 
     /** The tag sent and what the recognizer last reported having. */
@@ -362,13 +367,23 @@ class SpeechBridge(private val context: Context) {
                 emit("nomatch")
                 restartOrFinish()
             } else {
+                val listening = active
                 active = false
-                // After a client, server or busy error the recognizer's
-                // service connection is unusable; the next start builds a
-                // new one.
-                val broken = recognizer
-                recognizer = null
-                main.post { broken?.destroy() }
+                if (error in brokenConnection) {
+                    // The next request builds a new recognizer, and a new
+                    // connection. Requests the old one took are never
+                    // answered now.
+                    val broken = recognizer
+                    recognizer = null
+                    main.post { broken?.destroy() }
+                    val waiters = supportWaiters.toList()
+                    supportWaiters.clear()
+                    waiters.forEach { it(null, error) }
+                    if (downloadPending) {
+                        downloadPending = false
+                        emitDownload("error", mapOf("code" to error))
+                    }
+                }
                 if (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED ||
                     error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE
                 ) {
@@ -376,7 +391,9 @@ class SpeechBridge(private val context: Context) {
                     // last check; the next start asks again.
                     resolved = false
                 }
-                emit("error", mapOf("code" to error) + diagnostics())
+                // A connection that breaks between sessions is not a
+                // failed listen; the next one reconnects.
+                if (listening) emit("error", mapOf("code" to error) + diagnostics())
             }
         }
 
@@ -396,3 +413,11 @@ class SpeechBridge(private val context: Context) {
 }
 
 private const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
+
+/** Errors after which a recognizer's service connection is unusable. */
+private val brokenConnection = setOf(
+    SpeechRecognizer.ERROR_SERVER,
+    SpeechRecognizer.ERROR_CLIENT,
+    SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
+    SpeechRecognizer.ERROR_SERVER_DISCONNECTED,
+)

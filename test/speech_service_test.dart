@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:aithra/src/data/settings_store.dart';
+import 'package:aithra/src/data/vault.dart';
 import 'package:aithra/src/platform/native.dart';
 import 'package:aithra/src/voice/speech_service.dart';
 import 'package:flutter/services.dart';
@@ -26,9 +29,12 @@ class FakeSpeechNative extends NativeBridge {
   int settingsOpened = 0;
 
   Future<void> emit(Map<String, Object?> e) async {
-    _events.add(e);
+    push(e);
     await pumpEventQueue();
   }
+
+  /// For fake-time tests, which deliver it with `tester.pump()`.
+  void push(Map<String, Object?> e) => _events.add(e);
 
   @override
   Future<Map<String, Object?>> speechStatus() async {
@@ -187,20 +193,45 @@ void main() {
       expect(notice.error, isTrue);
     });
 
-    test('an unreported request polls until the model arrives', () async {
-      await native.emit(download('requested'));
+    testWidgets('an unreported request polls until the model arrives', (
+      tester,
+    ) async {
+      // Built in the fake-time zone, so its poll timer runs on fake time.
+      final speech = SpeechService(
+        native,
+        pollEvery: const Duration(milliseconds: 5),
+        pollFor: const Duration(milliseconds: 60),
+      );
+      addTearDown(speech.dispose);
+      native.push(download('requested'));
+      await tester.pump();
       expect(speech.download.phase, DownloadPhase.waiting);
       native.status = {...native.status, 'model': 'installed'};
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await tester.pump(const Duration(milliseconds: 5));
       expect(speech.download.phase, DownloadPhase.done);
       final checks = native.statusChecks;
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await tester.pump(const Duration(milliseconds: 50));
       expect(native.statusChecks, checks, reason: 'polling stopped');
     });
 
-    test('an unreported request that never arrives fails visibly', () async {
-      await native.emit(download('requested'));
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+    testWidgets('an unreported request that never arrives fails visibly', (
+      tester,
+    ) async {
+      // Built in the fake-time zone, so its poll timer runs on fake time.
+      final speech = SpeechService(
+        native,
+        pollEvery: const Duration(milliseconds: 5),
+        pollFor: const Duration(milliseconds: 60),
+      );
+      addTearDown(speech.dispose);
+      native.push(download('requested'));
+      await tester.pump();
+      for (var i = 0; i < 12; i++) {
+        expect(speech.download.phase, DownloadPhase.waiting);
+        await tester.pump(const Duration(milliseconds: 5));
+      }
+      expect(native.statusChecks, 12);
+      await tester.pump(const Duration(milliseconds: 5));
       expect(speech.download.phase, DownloadPhase.failed);
       expect(speech.download.errorCode, isNull);
       expect(speech.modelNotice!.action, SpeechAction.openSpeechSettings);
@@ -244,4 +275,30 @@ void main() {
     backgroundAndReturn(tester);
     expect(native.statusChecks, checks + 2, reason: 'installed: no check');
   });
+
+  group('voice transcript setting', () {
+    test('is on until turned off, and stays off', () async {
+      final vault = MemVault();
+      final first = SettingsStore(vault);
+      await first.load();
+      expect(first.voiceTranscript, isTrue);
+      await first.update((s) => s.voiceTranscript = false);
+
+      final reopened = SettingsStore(vault);
+      await reopened.load();
+      expect(reopened.voiceTranscript, isFalse);
+    });
+  });
+}
+
+class MemVault extends Vault {
+  MemVault() : super('/dev/null', Uint8List(32));
+  final Map<String, Object?> docs = {};
+
+  @override
+  Future<Object?> read(String name) async => docs[name];
+
+  @override
+  Future<void> write(String name, Object? value) async =>
+      docs[name] = jsonDecode(jsonEncode(value));
 }

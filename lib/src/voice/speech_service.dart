@@ -241,7 +241,6 @@ class SpeechService extends ChangeNotifier {
   final Duration pollEvery;
   final Duration pollFor;
   Timer? _poll;
-  DateTime? _pollUntil;
 
   bool listening = false;
   bool continuous = false;
@@ -459,10 +458,10 @@ class SpeechService extends ChangeNotifier {
   }
 
   void _startPolling() {
-    _pollUntil = DateTime.now().add(pollFor);
     _poll?.cancel();
-    _poll = Timer.periodic(pollEvery, (_) {
-      if (DateTime.now().isAfter(_pollUntil!)) {
+    final checks = pollFor.inMicroseconds ~/ pollEvery.inMicroseconds;
+    _poll = Timer.periodic(pollEvery, (timer) {
+      if (timer.tick > checks) {
         _stopPolling();
         download = const SpeechDownload(DownloadPhase.failed);
         notifyListeners();
