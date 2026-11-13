@@ -2,7 +2,9 @@ import 'package:core_theme/core_theme.dart';
 import 'package:flutter/material.dart';
 
 import '../../models/catalog.dart';
+import '../../models/download_state.dart';
 import '../../services.dart';
+import '../aithra_type.dart';
 import '../widgets/aithra_mark.dart';
 import '../widgets/model_tile.dart';
 import 'models_screen.dart';
@@ -24,6 +26,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   void dispose() {
     _pages.dispose();
     super.dispose();
+  }
+
+  static bool _modelReady(BuildContext context) {
+    final s = context.services;
+    return s.assistant.activeModel != null ||
+        s.models.availability(defaultModel) is Ready;
   }
 
   void _next() {
@@ -69,10 +77,26 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       ),
                     ),
                   const Spacer(),
-                  FilledButton(
-                    onPressed: _next,
-                    child: Text(_page < 2 ? 'Next' : 'Start chatting'),
-                  ),
+                  if (_page < 2)
+                    FilledButton(onPressed: _next, child: const Text('Next'))
+                  else
+                    // Until a model is on the phone the card's Download is
+                    // the page's one primary action; leaving is secondary.
+                    ListenableBuilder(
+                      listenable: Listenable.merge([
+                        context.services.models,
+                        context.services.assistant,
+                      ]),
+                      builder: (context, _) => _modelReady(context)
+                          ? FilledButton(
+                              onPressed: _next,
+                              child: const Text('Start chatting'),
+                            )
+                          : TextButton(
+                              onPressed: _next,
+                              child: const Text('Download later'),
+                            ),
+                    ),
                 ],
               ),
             ),
@@ -85,13 +109,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
 class _Page extends StatelessWidget {
   const _Page({
-    required this.top,
+    required this.hero,
     required this.title,
     required this.body,
     this.extra,
   });
 
-  final Widget top;
+  final Widget hero;
   final String title;
   final String body;
   final Widget? extra;
@@ -99,27 +123,63 @@ class _Page extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = SuiteColors.of(context);
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.gutter,
-        AppSpacing.xxl,
-        AppSpacing.gutter,
-        AppSpacing.lg,
-      ),
-      children: [
-        Align(alignment: Alignment.centerLeft, child: top),
-        const SizedBox(height: AppSpacing.xl),
-        Text(title, style: AppTextStyles.h1.copyWith(color: c.textPrimary)),
-        const SizedBox(height: AppSpacing.md),
-        Text(
-          body,
-          style: AppTextStyles.body.copyWith(
-            color: c.textSecondary,
-            height: 1.5,
+    // Content sits in the visual middle when it fits and scrolls when it
+    // does not (large text, small phones).
+    return LayoutBuilder(
+      builder: (context, box) => SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.gutter),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: box.maxHeight),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: AppSpacing.lg),
+              SizedBox.square(dimension: _heroSize, child: hero),
+              const SizedBox(height: AppSpacing.lg),
+              Text(
+                title,
+                style: AithraType.display.copyWith(color: c.textPrimary),
+              ),
+              const SizedBox(height: AppSpacing.smd),
+              Text(
+                body,
+                style: AithraType.body.copyWith(
+                  color: c.textSecondary,
+                  fontSize: 15.5,
+                ),
+              ),
+              if (extra != null) ...[
+                const SizedBox(height: AppSpacing.lg),
+                extra!,
+              ],
+              // Lifts the block slightly above centre, where the eye rests.
+              const SizedBox(height: AppSpacing.xxl),
+            ],
           ),
         ),
-        if (extra != null) ...[const SizedBox(height: AppSpacing.xl), extra!],
-      ],
+      ),
+    );
+  }
+}
+
+const double _heroSize = 64;
+
+/// A hero tile matching [AithraMark]'s size and shape.
+class _HeroIcon extends StatelessWidget {
+  const _HeroIcon(this.icon);
+
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: c.accentContainer,
+        borderRadius: BorderRadius.circular(_heroSize * 0.28),
+      ),
+      child: Icon(icon, size: 30, color: c.accent),
     );
   }
 }
@@ -129,7 +189,7 @@ class _Intro extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => const _Page(
-    top: AithraMark(size: 72),
+    hero: AithraMark(size: _heroSize),
     title: 'Meet Aithra',
     body:
         'An AI assistant that lives on your phone. Ask questions, think '
@@ -145,23 +205,23 @@ class _Privacy extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = SuiteColors.of(context);
     Widget point(IconData icon, String text) => Padding(
-      padding: const EdgeInsets.only(bottom: AppSpacing.md),
+      padding: const EdgeInsets.only(bottom: AppSpacing.smd + 2),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: c.accent, size: 22),
+          Icon(icon, color: c.accent, size: 20),
           const SizedBox(width: AppSpacing.smd),
           Expanded(
             child: Text(
               text,
-              style: AppTextStyles.bodyMedium.copyWith(color: c.textPrimary),
+              style: AithraType.body.copyWith(color: c.textPrimary),
             ),
           ),
         ],
       ),
     );
     return _Page(
-      top: Icon(Icons.shield_outlined, size: 64, color: c.accent),
+      hero: const _HeroIcon(Icons.shield_outlined),
       title: 'Private by design',
       body: 'Aithra thinks on your phone, not in the cloud.',
       extra: Column(
@@ -191,11 +251,7 @@ class _Download extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = context.services;
     return _Page(
-      top: Icon(
-        Icons.download_rounded,
-        size: 64,
-        color: SuiteColors.of(context).accent,
-      ),
+      hero: const _HeroIcon(Icons.download_rounded),
       title: 'Download its brain',
       body:
           'Aithra needs a model file. Gemma 4 E2B is the best fit for most '
@@ -206,7 +262,8 @@ class _Download extends StatelessWidget {
         children: [
           ListenableBuilder(
             listenable: s.models,
-            builder: (context, _) => ModelTile(spec: defaultModel),
+            builder: (context, _) =>
+                ModelTile(spec: defaultModel, prominent: true),
           ),
           const SizedBox(height: AppSpacing.sm),
           TextButton(
