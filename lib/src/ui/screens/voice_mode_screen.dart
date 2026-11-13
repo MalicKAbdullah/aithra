@@ -45,6 +45,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
       assistant: _s.assistant,
       store: _s.chats,
       memories: _s.memories,
+      recall: _s.recall,
       suggestFacts: false,
     );
     _session.streaming.addListener(_onReplyText);

@@ -160,42 +160,22 @@ class EngineService extends ChangeNotifier {
     if (_backgroundRunning) unawaited(_native.cancel());
   }
 
-  /// A short generation for Aithra's own housekeeping (titles, memory
-  /// suggestions) on the already loaded model. It runs only once the
-  /// engine is free and returns null if any foreground work arrives first
-  /// or meanwhile, or if no model is loaded; it never loads one.
-  Future<String?> generateInBackground(
-    List<EngineTurn> turns, {
-    required int maxTokens,
-    double temperature = 0.1,
-  }) {
-    final epoch = _epoch;
-    final id = _nextRequest++;
-    final out = StringBuffer();
-    final sub = _native
-        .eventsOf('token')
-        .where((e) => e['requestId'] == id)
-        .listen((e) => out.write(e['text']! as String));
-    return _exclusive(() async {
-      try {
-        if (epoch != _epoch || _loadedKey == null) return null;
-        _backgroundRunning = true;
-        await _native.generate(
-          requestId: id,
-          turns: turns,
-          maxTokens: maxTokens,
-          temperature: temperature,
-          ignoreEos: false,
-        );
-        return epoch == _epoch ? out.toString() : null;
-      } on PlatformException {
-        return null;
-      } finally {
-        _backgroundRunning = false;
-        await sub.cancel();
-      }
-    });
-  }
+  /// Starts a run of background work (titles, memory suggestions,
+  /// embedding) that ends for good at the first foreground load or
+  /// generation after this call.
+  BackgroundRun backgroundRun() => BackgroundRun._(this, _epoch);
+
+  Future<T?> _background<T extends Object>(
+    int epoch,
+    Future<T?> Function() task,
+  ) => _exclusive(() async {
+    if (epoch != _epoch) return null;
+    try {
+      return await task();
+    } on PlatformException {
+      return null;
+    }
+  });
 
   /// Frees the model's memory (app backgrounded for long).
   Future<void> release() => _exclusive(() async {
@@ -205,4 +185,55 @@ class EngineService extends ChangeNotifier {
     _status = EngineStatus.idle;
     notifyListeners();
   });
+}
+
+/// Background steps that each wait for the engine to be free and are all
+/// skipped once foreground work has arrived since the run began; a running
+/// generation step is cancelled, so the user never waits on one.
+class BackgroundRun {
+  BackgroundRun._(this._engine, this._epoch);
+
+  final EngineService _engine;
+  final int _epoch;
+
+  bool get preempted => _epoch != _engine._epoch;
+
+  /// Runs [task] when the engine is free; null if preempted first. A running
+  /// task is not interrupted, so keep tasks short.
+  Future<T?> step<T extends Object>(Future<T> Function() task) =>
+      _engine._background(_epoch, task);
+
+  /// A short generation on the already loaded model; null if preempted
+  /// before or during it, or if no model is loaded (it never loads one).
+  Future<String?> generate(
+    List<EngineTurn> turns, {
+    required int maxTokens,
+    double temperature = 0.1,
+  }) {
+    final e = _engine;
+    final id = e._nextRequest++;
+    final out = StringBuffer();
+    final sub = e._native
+        .eventsOf('token')
+        .where((ev) => ev['requestId'] == id)
+        .listen((ev) => out.write(ev['text']! as String));
+    return e
+        ._background(_epoch, () async {
+          if (e._loadedKey == null) return null;
+          e._backgroundRunning = true;
+          try {
+            await e._native.generate(
+              requestId: id,
+              turns: turns,
+              maxTokens: maxTokens,
+              temperature: temperature,
+              ignoreEos: false,
+            );
+            return preempted ? null : out.toString();
+          } finally {
+            e._backgroundRunning = false;
+          }
+        })
+        .whenComplete(sub.cancel);
+  }
 }

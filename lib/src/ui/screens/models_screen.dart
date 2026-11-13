@@ -39,6 +39,9 @@ class ModelsScreen extends StatelessWidget {
                 ModelTile(spec: m),
                 const SizedBox(height: AppSpacing.sm + 2),
               ],
+              const SectionLabel('Memory across chats'),
+              const ModelTile(spec: embeddingModel),
+              const SizedBox(height: AppSpacing.sm + 2),
               if (imported.isNotEmpty) ...[
                 const SectionLabel('Imported'),
                 for (final m in imported) ...[

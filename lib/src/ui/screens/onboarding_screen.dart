@@ -266,6 +266,11 @@ class _Download extends StatelessWidget {
                 ModelTile(spec: defaultModel, prominent: true),
           ),
           const SizedBox(height: AppSpacing.sm),
+          ListenableBuilder(
+            listenable: s.models,
+            builder: (context, _) => const ModelTile(spec: embeddingModel),
+          ),
+          const SizedBox(height: AppSpacing.sm),
           TextButton(
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const ModelsScreen()),

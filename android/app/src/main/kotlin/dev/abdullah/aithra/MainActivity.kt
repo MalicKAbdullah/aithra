@@ -11,6 +11,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import dev.abdullah.aithra.engine.ChatTurn
+import dev.abdullah.aithra.engine.Embedder
 import dev.abdullah.aithra.engine.EngineHost
 import dev.abdullah.aithra.engine.GenerateRequest
 import io.flutter.embedding.android.FlutterFragmentActivity
@@ -30,6 +31,11 @@ class MainActivity : FlutterFragmentActivity() {
     private lateinit var db: ChatDb
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "aithra-io") }
     private val dbExec = Executors.newSingleThreadExecutor { r -> Thread(r, "aithra-db") }
+
+    // Embedding runs off the db thread so chat-list and message reads never
+    // wait behind it; SQLite (WAL) handles the two threads.
+    private val embedExec = Executors.newSingleThreadExecutor { r -> Thread(r, "aithra-embed") }
+    private val embedder = Embedder()
 
     private lateinit var pickImage: ActivityResultLauncher<PickVisualMediaRequest>
     private lateinit var takePicture: ActivityResultLauncher<Uri>
@@ -144,6 +150,15 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
+    private fun <T> onEmbed(result: MethodChannel.Result, block: () -> T) {
+        embedExec.execute {
+            val outcome = runCatching(block)
+            runOnUiThread {
+                outcome.fold({ result.success(it) }, { result.error("embed", it.message, null) })
+            }
+        }
+    }
+
     @Suppress("UNCHECKED_CAST")
     private fun onCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
@@ -214,8 +229,17 @@ class MainActivity : FlutterFragmentActivity() {
             }
             "db.image" -> onDb(result) { db.image(call.argument<String>("id")!!, call.argument<Boolean>("thumb")!!) }
             "db.search" -> onDb(result) { db.search(call.argument<String>("query")!!, call.argument<Int>("limit")!!) }
-            "db.recall" -> onDb(result) {
-                db.recall(call.argument<String>("query")!!, call.argument<String>("excludeConv"), call.argument<Int>("limit")!!)
+            "db.recall" -> onEmbed(result) {
+                db.recall(
+                    embedder,
+                    call.argument<String>("modelPath")!!,
+                    call.argument<String>("query")!!,
+                    call.argument<String>("excludeConv"),
+                    call.argument<Int>("limit")!!,
+                )
+            }
+            "db.indexVectors" -> onEmbed(result) {
+                db.indexVectors(embedder, call.argument<String>("modelPath")!!, call.argument<Int>("limit")!!)
             }
             "db.selfTest" -> onDb(result) { db.selfTest(call.argument<Int>("messages")!!) }
 

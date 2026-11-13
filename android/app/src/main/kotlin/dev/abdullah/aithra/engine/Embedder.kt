@@ -1,0 +1,61 @@
+package dev.abdullah.aithra.engine
+
+import android.os.Handler
+import android.os.Looper
+
+/**
+ * Sentence embeddings from EmbeddingGemma through llama.cpp, for cross-chat
+ * recall. The model loads on first use and is freed after a minute without
+ * work, so it only holds memory while recall or indexing runs. Calls must
+ * come from one thread (the caller's executor).
+ */
+class Embedder {
+    private var handle = 0L
+    private var path: String? = null
+    private val main = Handler(Looper.getMainLooper())
+    private val freeIdle = Runnable { synchronized(this) { release() } }
+
+    /** Unit vectors of [DIMS] floats, one per text. */
+    @Synchronized
+    fun embed(modelPath: String, texts: List<String>): List<FloatArray> {
+        main.removeCallbacks(freeIdle)
+        if (path != modelPath) {
+            release()
+            handle = LlamaNative.nativeEmbedLoad(modelPath, THREADS)
+            path = modelPath
+        }
+        val out = texts.map { truncate(LlamaNative.nativeEmbed(handle, it)) }
+        main.postDelayed(freeIdle, IDLE_MS)
+        return out
+    }
+
+    private fun release() {
+        if (handle != 0L) LlamaNative.nativeEmbedFree(handle)
+        handle = 0L
+        path = null
+    }
+
+    companion object {
+        /**
+         * EmbeddingGemma is trained with Matryoshka learning, so the first
+         * 256 of its 768 dimensions, renormalised, keep most of the quality
+         * at a third of the storage and scan time.
+         */
+        const val DIMS = 256
+        private const val THREADS = 4
+        private const val IDLE_MS = 60_000L
+
+        // EmbeddingGemma's retrieval prompts.
+        fun query(text: String) = "task: search result | query: $text"
+        fun document(text: String) = "title: none | text: $text"
+
+        private fun truncate(v: FloatArray): FloatArray {
+            val out = v.copyOf(minOf(DIMS, v.size))
+            var norm = 0.0
+            for (x in out) norm += x * x
+            val n = Math.sqrt(norm).toFloat()
+            if (n > 0f) for (i in out.indices) out[i] /= n
+            return out
+        }
+    }
+}

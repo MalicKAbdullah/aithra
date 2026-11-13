@@ -124,7 +124,7 @@ void main() {
     });
 
     test('return the full reply once the engine is free', () async {
-      final result = engine.generateInBackground(const [], maxTokens: 8);
+      final result = engine.backgroundRun().generate(const [], maxTokens: 8);
       await pumpEventQueue();
       native.finish();
       expect(await result, '{"facts": []}');
@@ -132,12 +132,18 @@ void main() {
 
     test('never load a model themselves', () async {
       await engine.release();
-      expect(await engine.generateInBackground(const [], maxTokens: 8), isNull);
+      expect(
+        await engine.backgroundRun().generate(const [], maxTokens: 8),
+        isNull,
+      );
       expect(native.started, isEmpty);
     });
 
     test('a running one is cancelled when the user sends', () async {
-      final background = engine.generateInBackground(const [], maxTokens: 8);
+      final background = engine.backgroundRun().generate(
+        const [],
+        maxTokens: 8,
+      );
       await pumpEventQueue();
       expect(native.started, hasLength(1));
       final reply = engine.generate(const [], maxTokens: 8);
@@ -153,13 +159,32 @@ void main() {
     test('a queued one is dropped without running', () async {
       final first = engine.generate(const [], maxTokens: 8);
       first.text.listen((_) {});
-      final background = engine.generateInBackground(const [], maxTokens: 8);
+      final background = engine.backgroundRun().generate(
+        const [],
+        maxTokens: 8,
+      );
       engine.preemptBackground();
       await pumpEventQueue();
       native.finish();
       await first.done;
       expect(await background, isNull);
       expect(native.started, hasLength(1));
+    });
+
+    test('one preemption ends every later step of the run', () async {
+      final run = engine.backgroundRun();
+      final first = run.generate(const [], maxTokens: 8);
+      await pumpEventQueue();
+      native.finish();
+      expect(await first, isNotNull);
+      final reply = engine.generate(const [], maxTokens: 8);
+      reply.text.listen((_) {});
+      await pumpEventQueue();
+      native.finish();
+      await reply.done;
+      expect(await run.generate(const [], maxTokens: 8), isNull);
+      expect(await run.step(() async => 1), isNull);
+      expect(native.started, hasLength(2));
     });
   });
 }

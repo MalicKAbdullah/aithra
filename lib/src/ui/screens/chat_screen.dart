@@ -39,6 +39,7 @@ class _ChatScreenState extends State<ChatScreen> {
       assistant: s.assistant,
       store: s.chats,
       memories: s.memories,
+      recall: s.recall,
       conversation: widget.conversation,
     );
     _composer.text.text = widget.conversation?.draft ?? '';

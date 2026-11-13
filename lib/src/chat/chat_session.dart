@@ -9,6 +9,7 @@ import '../assistant.dart';
 import '../engine/engine_service.dart';
 import '../memory/fact_suggester.dart';
 import '../memory/memory_store.dart';
+import '../memory/recall_index.dart';
 import '../platform/native.dart';
 import 'chat_models.dart';
 import 'chat_titler.dart';
@@ -54,12 +55,14 @@ class ChatSession extends ChangeNotifier {
     required Assistant assistant,
     required ChatStore store,
     required MemoryStore memories,
+    required RecallIndex recall,
     ConversationInfo? conversation,
     this.suggestFacts = true,
   }) : _native = native,
        _assistant = assistant,
        _store = store,
        _memories = memories,
+       _recallIndex = recall,
        _conversation = conversation;
 
   static const int pageSize = 30;
@@ -69,6 +72,7 @@ class ChatSession extends ChangeNotifier {
   final Assistant _assistant;
   final ChatStore _store;
   final MemoryStore _memories;
+  final RecallIndex _recallIndex;
 
   /// Whether to ask the model for memory suggestions after each reply
   /// (voice mode has nowhere to show them).
@@ -214,7 +218,7 @@ class ChatSession extends ChangeNotifier {
         ))
           ChatMessage.fromMap(r),
       ];
-      final recalled = await _recall(recallQuery, conv.id);
+      final recalled = await _recallIndex.recall(recallQuery, conv.id);
       final system = buildSystemPrompt(
         now: DateTime.now(),
         memories: [for (final m in _memories.items.take(40)) m.text],
@@ -304,21 +308,22 @@ class ChatSession extends ChangeNotifier {
     }
   }
 
-  /// Housekeeping the model does once the reply is in and the engine is
-  /// free: naming a new chat and spotting facts worth remembering. Each
+  /// Housekeeping once the reply is in and the engine is free: naming a new
+  /// chat, spotting facts worth remembering and embedding the new messages
+  /// for recall. Each
   /// step yields to the user's next message (see
-  /// [EngineService.generateInBackground]).
+  /// [BackgroundRun]); a new message ends the whole run.
   Future<void> _afterReply(
     String convId,
     List<ChatMessage> history,
     String asked,
     String reply,
   ) async {
-    final engine = _assistant.engine;
+    final run = _assistant.engine.backgroundRun();
     final firstUser = history.where((m) => m.role == Role.user).toList();
     if (firstUser.length == 1 && history.first.seq == 0) {
       final provisional = titleFrom(firstUser.single.content);
-      final raw = await engine.generateInBackground(
+      final raw = await run.generate(
         ChatTitler.prompt(asked, reply),
         maxTokens: ChatTitler.maxTokens,
       );
@@ -333,14 +338,17 @@ class ChatSession extends ChangeNotifier {
         }
       }
     }
-    if (!suggestFacts || asked.trim().isEmpty || _disposed) return;
-    final raw = await engine.generateInBackground(
-      FactSuggester.prompt(asked),
-      maxTokens: FactSuggester.maxTokens,
-    );
-    if (raw == null || _disposed || busy) return;
-    suggestions = _memories.filterSuggestions(FactSuggester.parse(raw));
-    notifyListeners();
+    if (suggestFacts && asked.trim().isNotEmpty && !_disposed) {
+      final raw = await run.generate(
+        FactSuggester.prompt(asked),
+        maxTokens: FactSuggester.maxTokens,
+      );
+      if (raw != null && !_disposed && !busy) {
+        suggestions = _memories.filterSuggestions(FactSuggester.parse(raw));
+        notifyListeners();
+      }
+    }
+    if (!run.preempted) _recallIndex.indexInBackground();
   }
 
   /// Images are sent for the two most recent user messages that have any;
@@ -352,20 +360,6 @@ class ChatSession extends ChangeNotifier {
       withImages.length - 2 < 0 ? 0 : withImages.length - 2,
     );
     return recent.contains(m) ? m.imageIds.length : 0;
-  }
-
-  Future<List<String>> _recall(String query, String convId) async {
-    if (query.trim().isEmpty) return const [];
-    final rows = await _native.dbRecall(query, convId, 3);
-    return [
-      for (final r in rows)
-        if ((r['score']! as num) > 2.0) _clip(r['content']! as String, 240),
-    ];
-  }
-
-  static String _clip(String s, int max) {
-    final flat = s.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return flat.length <= max ? flat : '${flat.substring(0, max)}…';
   }
 
   /// Folds older turns into the conversation summary so the chat keeps its

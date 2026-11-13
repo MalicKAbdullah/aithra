@@ -37,6 +37,7 @@ class ModelManager extends ChangeNotifier {
     for (final f in _files)
       if (!f.name.endsWith('.importing') &&
           !catalog.any((m) => m.fileName == f.name) &&
+          f.name != embeddingModel.fileName &&
           (f.name.endsWith('.litertlm') || f.name.endsWith('.gguf')))
         ModelSpec.imported(f.name, f.size),
   ];

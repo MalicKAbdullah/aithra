@@ -27,6 +27,10 @@ object LlamaNative {
         temperature: Float,
         callback: TokenCallback,
     ): DoubleArray
+
+    external fun nativeEmbedLoad(path: String, threads: Int): Long
+    external fun nativeEmbedFree(handle: Long)
+    external fun nativeEmbed(handle: Long, text: String): FloatArray
 }
 
 /** llama.cpp on the CPU, for GGUF models. Text only. */

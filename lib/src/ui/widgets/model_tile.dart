@@ -185,7 +185,7 @@ class ModelTile extends StatelessWidget {
                       ],
                     )
                   : _ActionRow(
-                      status: active
+                      status: active || spec.kind == ModelKind.embedding
                           ? Row(
                               children: [
                                 Icon(
@@ -196,7 +196,9 @@ class ModelTile extends StatelessWidget {
                                 const SizedBox(width: 6),
                                 Flexible(
                                   child: Text(
-                                    _backendLine(context, spec),
+                                    spec.kind == ModelKind.embedding
+                                        ? 'On · runs when Aithra is idle'
+                                        : _backendLine(context, spec),
                                     style: caption,
                                   ),
                                 ),
@@ -254,7 +256,12 @@ class ModelTile extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Delete ${spec.name}?'),
-        content: Text('Frees ${formatBytes(spec.sizeBytes)}. Your chats stay.'),
+        content: Text(
+          spec.kind == ModelKind.embedding
+              ? 'Frees ${formatBytes(spec.sizeBytes)}. Aithra stops bringing '
+                    'up your other chats; the chats themselves stay.'
+              : 'Frees ${formatBytes(spec.sizeBytes)}. Your chats stay.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -269,7 +276,7 @@ class ModelTile extends StatelessWidget {
     );
     if (ok == true && context.mounted) {
       final s = context.services;
-      await s.engine.release();
+      if (spec.kind == ModelKind.chat) await s.engine.release();
       await s.models.delete(spec);
     }
   }

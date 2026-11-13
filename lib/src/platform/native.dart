@@ -178,15 +178,26 @@ class NativeBridge {
   Future<List<Map<String, Object?>>> dbSearch(String query, int limit) =>
       _rows('db.search', {'query': query, 'limit': limit});
 
+  /// Past messages from other chats closest in meaning to [query], using
+  /// the embedding model at [modelPath].
   Future<List<Map<String, Object?>>> dbRecall(
+    String modelPath,
     String query,
     String? excludeConv,
     int limit,
   ) => _rows('db.recall', {
+    'modelPath': modelPath,
     'query': query,
     'excludeConv': excludeConv,
     'limit': limit,
   });
+
+  /// Embeds up to [limit] unindexed messages; returns how many (0 when done).
+  Future<int> dbIndexVectors(String modelPath, int limit) async =>
+      (await _channel.invokeMethod<int>('db.indexVectors', {
+        'modelPath': modelPath,
+        'limit': limit,
+      }))!;
 
   Future<Map<String, Object?>> dbSelfTest(int messages) =>
       _map('db.selfTest', {'messages': messages});
