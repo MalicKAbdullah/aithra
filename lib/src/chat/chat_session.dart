@@ -7,10 +7,11 @@ import 'package:flutter/services.dart';
 
 import '../assistant.dart';
 import '../engine/engine_service.dart';
-import '../memory/fact_extractor.dart';
+import '../memory/fact_suggester.dart';
 import '../memory/memory_store.dart';
 import '../platform/native.dart';
 import 'chat_models.dart';
+import 'chat_titler.dart';
 import 'chat_store.dart';
 import 'context_builder.dart';
 
@@ -54,6 +55,7 @@ class ChatSession extends ChangeNotifier {
     required ChatStore store,
     required MemoryStore memories,
     ConversationInfo? conversation,
+    this.suggestFacts = true,
   }) : _native = native,
        _assistant = assistant,
        _store = store,
@@ -67,6 +69,11 @@ class ChatSession extends ChangeNotifier {
   final Assistant _assistant;
   final ChatStore _store;
   final MemoryStore _memories;
+
+  /// Whether to ask the model for memory suggestions after each reply
+  /// (voice mode has nowhere to show them).
+  final bool suggestFacts;
+  bool _disposed = false;
 
   ConversationInfo? _conversation;
   final List<ChatMessage> _messages = [];
@@ -83,7 +90,8 @@ class ChatSession extends ChangeNotifier {
   /// have been published to [streaming] before the reply ended.
   String lastReply = '';
 
-  /// Fact suggestions from the user's last message.
+  /// Facts the model found in the user's last message, offered as
+  /// suggestions; they arrive after the reply, when the engine is free.
   List<String> suggestions = const [];
 
   ConversationInfo? get conversation => _conversation;
@@ -122,8 +130,10 @@ class ChatSession extends ChangeNotifier {
 
   Future<void> send(String text, List<PendingImage> images) async {
     if (busy || (text.trim().isEmpty && images.isEmpty)) return;
+    _assistant.engine.preemptBackground();
     unawaited(HapticFeedback.lightImpact());
     error = null;
+    suggestions = const [];
     final now = DateTime.now();
     // Optimistic: the message shows before anything is written.
     final optimistic = ChatMessage(
@@ -162,7 +172,6 @@ class ChatSession extends ChangeNotifier {
       imageIds: imageIds,
       created: now,
     );
-    suggestions = _memories.filterSuggestions(suggestFacts(text));
     notifyListeners();
     unawaited(_store.upsert(convId));
     await _reply(recallQuery: text);
@@ -281,6 +290,8 @@ class ChatSession extends ChangeNotifier {
       if (shouldSummarize(usedTokens: used, contextTokens: contextSize)) {
         unawaited(_summarize());
       }
+      final asked = history.lastWhere((m) => m.role == Role.user);
+      unawaited(_afterReply(conv.id, history, asked.content, text));
     } catch (e) {
       error = e is PlatformException ? (e.message ?? e.code) : '$e';
     } finally {
@@ -291,6 +302,45 @@ class ChatSession extends ChangeNotifier {
       streaming._buffer.clear();
       notifyListeners();
     }
+  }
+
+  /// Housekeeping the model does once the reply is in and the engine is
+  /// free: naming a new chat and spotting facts worth remembering. Each
+  /// step yields to the user's next message (see
+  /// [EngineService.generateInBackground]).
+  Future<void> _afterReply(
+    String convId,
+    List<ChatMessage> history,
+    String asked,
+    String reply,
+  ) async {
+    final engine = _assistant.engine;
+    final firstUser = history.where((m) => m.role == Role.user).toList();
+    if (firstUser.length == 1 && history.first.seq == 0) {
+      final provisional = titleFrom(firstUser.single.content);
+      final raw = await engine.generateInBackground(
+        ChatTitler.prompt(asked, reply),
+        maxTokens: ChatTitler.maxTokens,
+      );
+      final title = raw == null ? null : ChatTitler.parse(raw);
+      final current = await _native.dbConversation(convId);
+      // Only replace the provisional title, never one the user chose.
+      if (title != null && current?['title'] == provisional) {
+        await _store.rename(convId, title);
+        if (!_disposed && _conversation?.id == convId) {
+          _conversation = _conversation!.copyWith(title: title);
+          notifyListeners();
+        }
+      }
+    }
+    if (!suggestFacts || asked.trim().isEmpty || _disposed) return;
+    final raw = await engine.generateInBackground(
+      FactSuggester.prompt(asked),
+      maxTokens: FactSuggester.maxTokens,
+    );
+    if (raw == null || _disposed || busy) return;
+    suggestions = _memories.filterSuggestions(FactSuggester.parse(raw));
+    notifyListeners();
   }
 
   /// Images are sent for the two most recent user messages that have any;
@@ -391,6 +441,7 @@ class ChatSession extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _generation?.cancel();
     streaming.dispose();
     super.dispose();

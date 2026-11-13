@@ -1,7 +1,6 @@
 import 'package:aithra/src/chat/chat_models.dart';
 import 'package:aithra/src/chat/context_builder.dart';
 import 'package:aithra/src/chat/markdown.dart';
-import 'package:aithra/src/memory/fact_extractor.dart';
 import 'package:aithra/src/voice/sentence_splitter.dart';
 import 'package:aithra/src/voice/speech_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -92,39 +91,6 @@ void main() {
     expect(titleFrom('  Plan my week\nwith details'), 'Plan my week');
     expect(titleFrom(''), 'Image');
     expect(titleFrom('a' * 60).length, 48);
-  });
-
-  group('fact suggestions', () {
-    test('recognise first-person facts', () {
-      expect(suggestFacts('Hi! My name is Sam Lee.'), [
-        "User's name is Sam Lee",
-      ]);
-      expect(suggestFacts('I live in Lahore'), ['User lives in Lahore']);
-      expect(suggestFacts("I'm allergic to peanuts."), [
-        'User is allergic to peanuts',
-      ]);
-      expect(suggestFacts('I really love hiking in the hills'), [
-        'User loves hiking in the hills',
-      ]);
-      expect(suggestFacts('Remember that my flight is on Friday'), [
-        'My flight is on Friday',
-      ]);
-      expect(suggestFacts("My dog's name is Biscuit"), [
-        "User's dog is Biscuit",
-      ]);
-      expect(suggestFacts('I work as a nurse.'), ['User works as a nurse']);
-    });
-
-    test('ignore ordinary questions', () {
-      expect(suggestFacts('What is the weather like on Mars?'), isEmpty);
-    });
-
-    test('one suggestion per sentence, deduplicated', () {
-      expect(suggestFacts('My name is Sam. I live in Oslo. My name is Sam.'), [
-        "User's name is Sam",
-        'User lives in Oslo',
-      ]);
-    });
   });
 
   group('markdown', () {

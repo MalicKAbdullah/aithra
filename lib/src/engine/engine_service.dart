@@ -47,6 +47,11 @@ class EngineService extends ChangeNotifier {
   Future<void> _queue = Future.value();
   int _nextRequest = 0;
 
+  /// Bumped whenever foreground work arrives; background generations
+  /// queued under an older epoch are skipped and a running one is cancelled.
+  int _epoch = 0;
+  bool _backgroundRunning = false;
+
   String? _loadedKey;
   EngineStatus _status = EngineStatus.idle;
   String? _error;
@@ -77,38 +82,41 @@ class EngineService extends ChangeNotifier {
     ModelSpec spec,
     String path,
     BackendOption backend,
-  ) => _exclusive(() async {
-    final key = _key(spec, backend);
-    if (_loadedKey == key) return null;
-    _status = EngineStatus.loading;
-    _error = null;
-    notifyListeners();
-    try {
-      final r = await _native.load(
-        runtime: spec.runtime.name,
-        path: path,
-        backend: backend.nativeId,
-        threads: backend.threads,
-        vision: spec.vision,
-        maxTokens: spec.contextTokens,
-      );
-      _loadedKey = key;
-      _contextSize = r['contextSize']! as int;
-      _status = EngineStatus.ready;
+  ) {
+    preemptBackground();
+    return _exclusive(() async {
+      final key = _key(spec, backend);
+      if (_loadedKey == key) return null;
+      _status = EngineStatus.loading;
+      _error = null;
       notifyListeners();
-      return LoadResult(
-        (r['loadMs']! as num).toDouble(),
-        (r['peakRssMb']! as num).toDouble(),
-        _contextSize!,
-      );
-    } catch (e) {
-      _loadedKey = null;
-      _status = EngineStatus.failed;
-      _error = e is PlatformException ? e.message : '$e';
-      notifyListeners();
-      rethrow;
-    }
-  });
+      try {
+        final r = await _native.load(
+          runtime: spec.runtime.name,
+          path: path,
+          backend: backend.nativeId,
+          threads: backend.threads,
+          vision: spec.vision,
+          maxTokens: spec.contextTokens,
+        );
+        _loadedKey = key;
+        _contextSize = r['contextSize']! as int;
+        _status = EngineStatus.ready;
+        notifyListeners();
+        return LoadResult(
+          (r['loadMs']! as num).toDouble(),
+          (r['peakRssMb']! as num).toDouble(),
+          _contextSize!,
+        );
+      } catch (e) {
+        _loadedKey = null;
+        _status = EngineStatus.failed;
+        _error = e is PlatformException ? e.message : '$e';
+        notifyListeners();
+        rethrow;
+      }
+    });
+  }
 
   /// Streams a reply from the loaded model. Call [ensureLoaded] first.
   Generation generate(
@@ -117,6 +125,7 @@ class EngineService extends ChangeNotifier {
     double temperature = 0.7,
     bool ignoreEos = false,
   }) {
+    preemptBackground();
     final id = _nextRequest++;
     final controller = StreamController<String>();
     final sub = _native
@@ -141,6 +150,51 @@ class EngineService extends ChangeNotifier {
       }
     });
     return Generation(controller.stream, done, _native.cancel);
+  }
+
+  /// Gives way to foreground work: queued background generations are
+  /// dropped and a running one is cancelled, so the user never waits on
+  /// one.
+  void preemptBackground() {
+    _epoch++;
+    if (_backgroundRunning) unawaited(_native.cancel());
+  }
+
+  /// A short generation for Aithra's own housekeeping (titles, memory
+  /// suggestions) on the already loaded model. It runs only once the
+  /// engine is free and returns null if any foreground work arrives first
+  /// or meanwhile, or if no model is loaded; it never loads one.
+  Future<String?> generateInBackground(
+    List<EngineTurn> turns, {
+    required int maxTokens,
+    double temperature = 0.1,
+  }) {
+    final epoch = _epoch;
+    final id = _nextRequest++;
+    final out = StringBuffer();
+    final sub = _native
+        .eventsOf('token')
+        .where((e) => e['requestId'] == id)
+        .listen((e) => out.write(e['text']! as String));
+    return _exclusive(() async {
+      try {
+        if (epoch != _epoch || _loadedKey == null) return null;
+        _backgroundRunning = true;
+        await _native.generate(
+          requestId: id,
+          turns: turns,
+          maxTokens: maxTokens,
+          temperature: temperature,
+          ignoreEos: false,
+        );
+        return epoch == _epoch ? out.toString() : null;
+      } on PlatformException {
+        return null;
+      } finally {
+        _backgroundRunning = false;
+        await sub.cancel();
+      }
+    });
   }
 
   /// Frees the model's memory (app backgrounded for long).

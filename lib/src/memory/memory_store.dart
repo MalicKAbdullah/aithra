@@ -55,11 +55,11 @@ class MemoryStore extends ChangeNotifier {
   /// Suggestions worth showing: not already saved, not dismissed.
   List<String> filterSuggestions(List<String> candidates) => [
     for (final c in candidates)
-      if (!knows(c) && !_dismissed.contains(c)) c,
+      if (!knows(c) && !_dismissed.contains(c.toLowerCase())) c,
   ];
 
   void dismiss(String suggestion) {
-    _dismissed.add(suggestion);
+    _dismissed.add(suggestion.toLowerCase());
     notifyListeners();
   }
 
