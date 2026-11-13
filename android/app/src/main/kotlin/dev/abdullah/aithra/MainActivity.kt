@@ -20,6 +20,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
 // FlutterFragmentActivity (not FlutterActivity) is required by local_auth
@@ -121,42 +122,29 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
-    private fun <T> onEngine(result: MethodChannel.Result, block: () -> T) {
-        engineHost.submit(block) { outcome ->
-            runOnUiThread {
-                outcome.fold(
-                    { result.success(it) },
-                    { result.error("engine", it.message ?: it.javaClass.simpleName, null) },
-                )
-            }
-        }
-    }
+    private fun <T> onEngine(result: MethodChannel.Result, block: () -> T) =
+        engineHost.submit(block) { reply(result, "engine", it) }
 
-    private fun <T> onIo(result: MethodChannel.Result, block: () -> T) {
-        io.execute {
-            val outcome = runCatching(block)
-            runOnUiThread {
-                outcome.fold({ result.success(it) }, { result.error("io", it.message, null) })
-            }
-        }
-    }
+    private fun <T> onIo(result: MethodChannel.Result, block: () -> T) = runOn(io, "io", result, block)
 
-    private fun <T> onDb(result: MethodChannel.Result, block: () -> T) {
-        dbExec.execute {
-            val outcome = runCatching(block)
-            runOnUiThread {
-                outcome.fold({ result.success(it) }, { result.error("db", it.message, null) })
-            }
-        }
-    }
+    private fun <T> onDb(result: MethodChannel.Result, block: () -> T) = runOn(dbExec, "db", result, block)
 
-    private fun <T> onEmbed(result: MethodChannel.Result, block: () -> T) {
-        embedExec.execute {
-            val outcome = runCatching(block)
-            runOnUiThread {
-                outcome.fold({ result.success(it) }, { result.error("embed", it.message, null) })
-            }
-        }
+    private fun <T> onEmbed(result: MethodChannel.Result, block: () -> T) = runOn(embedExec, "embed", result, block)
+
+    private fun <T> runOn(executor: Executor, code: String, result: MethodChannel.Result, block: () -> T) =
+        executor.execute { reply(result, code, runCatching(block)) }
+
+    /**
+     * The one place a background outcome reaches the channel. A Kotlin
+     * function with no return value yields [Unit], which StandardMessageCodec
+     * cannot encode (it throws on the main thread and kills the process), so
+     * it is sent as null, the channel's void.
+     */
+    private fun <T> reply(result: MethodChannel.Result, code: String, outcome: Result<T>) = runOnUiThread {
+        outcome.fold(
+            { result.success(if (it is Unit) null else it) },
+            { result.error(code, it.message ?: it.javaClass.simpleName, null) },
+        )
     }
 
     @Suppress("UNCHECKED_CAST")
