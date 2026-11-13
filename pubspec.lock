@@ -61,8 +61,8 @@ packages:
     dependency: "direct main"
     description:
       path: core_crypto
-      ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
-      resolved-ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
+      ref: "969da8527078646fe3558556a9f69710fe30b65b"
+      resolved-ref: "969da8527078646fe3558556a9f69710fe30b65b"
       url: "https://github.com/MalicKAbdullah/secure-suite-core.git"
     source: git
     version: "0.0.1"
@@ -70,8 +70,8 @@ packages:
     dependency: "direct main"
     description:
       path: core_lock
-      ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
-      resolved-ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
+      ref: "969da8527078646fe3558556a9f69710fe30b65b"
+      resolved-ref: "969da8527078646fe3558556a9f69710fe30b65b"
       url: "https://github.com/MalicKAbdullah/secure-suite-core.git"
     source: git
     version: "0.3.0"
@@ -79,8 +79,8 @@ packages:
     dependency: "direct main"
     description:
       path: core_storage
-      ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
-      resolved-ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
+      ref: "969da8527078646fe3558556a9f69710fe30b65b"
+      resolved-ref: "969da8527078646fe3558556a9f69710fe30b65b"
       url: "https://github.com/MalicKAbdullah/secure-suite-core.git"
     source: git
     version: "0.0.1"
@@ -88,8 +88,8 @@ packages:
     dependency: "direct main"
     description:
       path: core_theme
-      ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
-      resolved-ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
+      ref: "969da8527078646fe3558556a9f69710fe30b65b"
+      resolved-ref: "969da8527078646fe3558556a9f69710fe30b65b"
       url: "https://github.com/MalicKAbdullah/secure-suite-core.git"
     source: git
     version: "0.2.0"
@@ -97,8 +97,8 @@ packages:
     dependency: "direct main"
     description:
       path: core_ui
-      ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
-      resolved-ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
+      ref: "969da8527078646fe3558556a9f69710fe30b65b"
+      resolved-ref: "969da8527078646fe3558556a9f69710fe30b65b"
       url: "https://github.com/MalicKAbdullah/secure-suite-core.git"
     source: git
     version: "0.0.1"
