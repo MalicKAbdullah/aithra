@@ -160,6 +160,9 @@ class ModelTile extends StatelessWidget {
               ),
             Unsupported(:final reason) => _ActionRow(
               status: Text(reason, style: caption.copyWith(color: c.warning)),
+              action: s.models.onDisk(spec)
+                  ? _deleteButton(context, spec)
+                  : null,
             ),
             DownloadFailed(:final message) => _ActionRow(
               status: Text(message, style: caption.copyWith(color: c.negative)),
@@ -198,10 +201,16 @@ class ModelTile extends StatelessWidget {
                         "Can't run on this phone: ${s.assistant.loadFailure(spec)}",
                         style: caption.copyWith(color: c.negative),
                       ),
-                      action: TextButton(
-                        onPressed: () => s.assistant.calibrate(spec),
-                        style: _trailingText,
-                        child: const Text('Tune again'),
+                      action: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextButton(
+                            onPressed: () => s.assistant.calibrate(spec),
+                            style: _trailingText,
+                            child: const Text('Tune again'),
+                          ),
+                          _deleteButton(context, spec),
+                        ],
                       ),
                     )
                   : _ActionRow(
@@ -262,6 +271,16 @@ class ModelTile extends StatelessWidget {
     padding: const EdgeInsets.only(left: AppSpacing.smd),
     minimumSize: const Size(48, 40),
     alignment: Alignment.centerRight,
+  );
+
+  Widget _deleteButton(BuildContext context, ModelSpec spec) => IconButton(
+    tooltip: 'Delete',
+    iconSize: 22,
+    icon: Icon(
+      Icons.delete_outline_rounded,
+      color: SuiteColors.of(context).textSecondary,
+    ),
+    onPressed: () => _confirmDelete(context, spec),
   );
 
   Future<void> _download(BuildContext context, ModelSpec spec) async {

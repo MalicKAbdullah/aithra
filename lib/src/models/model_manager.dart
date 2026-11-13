@@ -65,6 +65,9 @@ class ModelManager extends ChangeNotifier {
     _ => null,
   };
 
+  /// Whether [spec]'s file is on the phone, whatever its state.
+  bool onDisk(ModelSpec spec) => _files.any((f) => f.name == spec.fileName);
+
   int sizeOf(ModelSpec spec) =>
       _files.where((f) => f.name == spec.fileName).firstOrNull?.size ??
       spec.sizeBytes;

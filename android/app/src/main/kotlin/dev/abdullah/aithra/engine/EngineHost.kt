@@ -69,6 +69,7 @@ class EngineHost(private val context: Context) {
         engine = null
         val path = args["path"] as String
         val runtime = args["runtime"] as String
+        ModelFormat.require(File(path), runtime)
         val sampler = RssSampler().also { it.start() }
         val start = System.nanoTime()
         val loaded = try {

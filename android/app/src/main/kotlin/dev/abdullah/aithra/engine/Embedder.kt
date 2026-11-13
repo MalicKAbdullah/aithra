@@ -28,6 +28,7 @@ class Embedder(private val executor: Executor) {
     fun embed(modelPath: String, texts: List<String>): List<FloatArray> {
         main.removeCallbacks(freeIdle)
         if (path != modelPath) {
+            ModelFormat.require(java.io.File(modelPath), "llamacpp")
             release()
             handle = LlamaNative.nativeEmbedLoad(modelPath, THREADS)
             path = modelPath

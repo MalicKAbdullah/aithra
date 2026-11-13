@@ -10,6 +10,7 @@ import android.os.StatFs
 import android.provider.OpenableColumns
 import dev.abdullah.aithra.engine.CpuFeatures
 import dev.abdullah.aithra.engine.LlamaNative
+import dev.abdullah.aithra.engine.ModelFormat
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -147,6 +148,9 @@ object Media {
                         }
                     }
                 }
+            }
+            require(ModelFormat.runtimeOf(partial) != null) {
+                "$name is not a model file Aithra can run"
             }
             check(partial.renameTo(target)) { "Could not move the imported file into place" }
         } finally {

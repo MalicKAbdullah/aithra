@@ -40,6 +40,7 @@ class MainActivity : FlutterFragmentActivity() {
     private lateinit var takePicture: ActivityResultLauncher<Uri>
     private lateinit var pickModel: ActivityResultLauncher<Array<String>>
     private lateinit var askPermission: ActivityResultLauncher<String>
+    private lateinit var askNotifications: ActivityResultLauncher<String>
 
     // One request of each kind can be open at a time: each launcher has one
     // result slot.
@@ -71,6 +72,9 @@ class MainActivity : FlutterFragmentActivity() {
             }
             onIo(result) { Media.importModel(this, uri) }
         }
+        // Downloads run the same either way; the answer only decides whether
+        // their progress notification shows.
+        askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
         askPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             pendingPermission?.success(microphoneState(granted))
             pendingPermission = null
@@ -161,6 +165,17 @@ class MainActivity : FlutterFragmentActivity() {
         outcome.fold(
             { result.success(if (it is Unit) null else it) },
             { result.error(code, it.message ?: it.javaClass.simpleName, null) },
+        )
+    }
+
+    private fun startDownload(call: MethodCall, result: MethodChannel.Result) = onIo(result) {
+        ModelDownloads.start(
+            this,
+            call.argument<String>("url")!!,
+            call.argument<String>("fileName")!!,
+            call.argument<String>("title")!!,
+            call.argument<Number>("size")!!.toLong(),
+            call.argument<String>("sha256")!!,
         )
     }
 
@@ -290,15 +305,11 @@ class MainActivity : FlutterFragmentActivity() {
             "storage.hasData" -> onIo(result) { Storage.hasData(this) }
             "storage.erase" -> onIo(result) { Storage.erase(this) }
 
-            "download.start" -> onIo(result) {
-                ModelDownloads.start(
-                    this,
-                    call.argument<String>("url")!!,
-                    call.argument<String>("fileName")!!,
-                    call.argument<String>("title")!!,
-                    call.argument<Number>("size")!!.toLong(),
-                    call.argument<String>("sha256")!!,
-                )
+            "download.start" -> {
+                if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                    askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+                startDownload(call, result)
             }
             "download.query" -> onIo(result) { ModelDownloads.query(this) }
             "download.remove" -> onIo(result) { ModelDownloads.remove(this, (call.argument<Number>("id")!!).toLong()) }

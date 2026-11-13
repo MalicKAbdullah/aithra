@@ -7,7 +7,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.app.PendingIntent
 import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkRequest
 import android.net.NetworkCapabilities
 import android.os.IBinder
 import android.os.StatFs
@@ -19,7 +22,9 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Model downloads the app runs itself, so a dropped connection resumes from
@@ -178,10 +183,66 @@ object ModelDownloads {
             r.status = PAUSED
             r.reason = if (online(context)) PAUSED_RETRYING else PAUSED_NO_NETWORK
             synchronized(this) { save(context) }
-            Thread.sleep(backoff)
-            backoff = minOf(backoff * 2, MAX_BACKOFF_MS)
-            while (!online(context) && !r.cancelled) Thread.sleep(2_000L)
+            notifyProgress(context)
+            if (r.reason == PAUSED_NO_NETWORK) {
+                awaitNetwork(context, r)
+                backoff = 2_000L
+            } else {
+                Thread.sleep(backoff)
+                backoff = minOf(backoff * 2, MAX_BACKOFF_MS)
+            }
         }
+    }
+
+    /** Blocks until a network with internet access is up or [r] is cancelled. */
+    private fun awaitNetwork(context: Context, r: Record) {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val up = CountDownLatch(1)
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = up.countDown()
+        }
+        cm.registerNetworkCallback(
+            NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
+            callback,
+        )
+        try {
+            while (!r.cancelled && !up.await(2, TimeUnit.SECONDS)) Unit
+        } finally {
+            cm.unregisterNetworkCallback(callback)
+        }
+    }
+
+    /** Cancels every unfinished download (the notification's Cancel). */
+    @Synchronized
+    fun cancelAll(context: Context) {
+        load(context)
+        records.values.filter { it.status != SUCCESSFUL }.map { it.id }.forEach { remove(context, it) }
+    }
+
+    private var lastNotified = 0L
+
+    /** Shows the combined progress of running downloads, at most once a second. */
+    private fun notifyProgress(context: Context, throttle: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (throttle && now - lastNotified < 1_000L) return
+        lastNotified = now
+        val active = synchronized(this) { records.values.filter { it.active && !it.cancelled } }
+        if (active.isEmpty()) return
+        val done = active.sumOf { part(context, it).length() }
+        val total = active.sumOf { it.size }
+        val waiting = active.all { it.status == PAUSED }
+        val noNetwork = active.any { it.reason == PAUSED_NO_NETWORK }
+        DownloadService.progress(
+            context,
+            title = if (active.size == 1) active.single().title else "Downloading ${active.size} models",
+            done = done,
+            total = total,
+            waiting = when {
+                !waiting -> null
+                noNetwork -> "Waiting for network"
+                else -> "Retrying shortly"
+            },
+        )
     }
 
     private fun fail(r: Record, reason: Int) {
@@ -215,10 +276,12 @@ object ModelDownloads {
             conn.inputStream.use { input ->
                 FileOutputStream(part, append).use { output ->
                     val buf = ByteArray(1 shl 16)
+                    notifyProgress(context)
                     while (!r.cancelled) {
                         val n = input.read(buf)
                         if (n < 0) break
                         output.write(buf, 0, n)
+                        notifyProgress(context, throttle = true)
                     }
                 }
             }
@@ -294,22 +357,20 @@ object ModelDownloads {
     }
 }
 
-/** Keeps the process alive, with a notification, while any download runs. */
+/**
+ * Keeps the process alive while any download runs, whether or not the app
+ * is open, with a progress notification whose Cancel stops them all.
+ */
 class DownloadService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Model downloads", NotificationManager.IMPORTANCE_LOW),
-        )
-        val notification = Notification.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("Downloading a model")
-            .setContentText("Continues when the connection drops")
-            .setOngoing(true)
-            .build()
-        startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        if (intent?.action == ACTION_CANCEL) {
+            ModelDownloads.cancelAll(this)
+            if (!foreground) stopSelf()
+            return START_NOT_STICKY
+        }
+        startForeground(ID, build(this, "Downloading a model", 0, 0, null), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         onForeground(this)
         return START_NOT_STICKY
     }
@@ -328,12 +389,44 @@ class DownloadService : Service() {
     companion object {
         private const val CHANNEL = "downloads"
         private const val ID = 2
+        private const val ACTION_CANCEL = "dev.abdullah.aithra.CANCEL_DOWNLOADS"
         private var holders = 0
 
         // Stopping a service that has not yet called startForeground kills
         // the app on some Android versions, so a release that comes first
         // leaves the stop to [onForeground].
         private var foreground = false
+
+        private fun build(context: Context, title: String, done: Long, total: Long, waiting: String?): Notification {
+            context.getSystemService(NotificationManager::class.java).createNotificationChannel(
+                NotificationChannel(CHANNEL, "Model downloads", NotificationManager.IMPORTANCE_LOW),
+            )
+            val cancel = PendingIntent.getService(
+                context,
+                0,
+                Intent(context, DownloadService::class.java).setAction(ACTION_CANCEL),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+            val open = context.packageManager.getLaunchIntentForPackage(context.packageName)!!
+            val percent = if (total > 0) (done * 100 / total).toInt() else 0
+            return Notification.Builder(context, CHANNEL)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentTitle(title)
+                .setContentText(waiting ?: "${done shr 20} of ${total shr 20} MB")
+                .setProgress(100, percent, total == 0L)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentIntent(PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_IMMUTABLE))
+                .addAction(Notification.Action.Builder(null, "Cancel", cancel).build())
+                .build()
+        }
+
+        @Synchronized
+        fun progress(context: Context, title: String, done: Long, total: Long, waiting: String?) {
+            if (!foreground) return
+            context.getSystemService(NotificationManager::class.java)
+                .notify(ID, build(context, title, done, total, waiting))
+        }
 
         @Synchronized
         fun hold(context: Context) {
