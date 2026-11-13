@@ -43,10 +43,7 @@ class AithraGlyphPainter extends CustomPainter {
     final scale = size.shortestSide * 0.6 / 24;
     canvas
       ..save()
-      ..translate(
-        (size.width - 24 * scale) / 2,
-        (size.height - 24 * scale) / 2,
-      )
+      ..translate((size.width - 24 * scale) / 2, (size.height - 24 * scale) / 2)
       ..scale(scale);
     canvas
       ..drawPath(

@@ -154,7 +154,7 @@ class _MemoryRow extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.only(left: AppSpacing.md),
+        padding: const EdgeInsets.only(left: AppSpacing.md, right: 4),
         child: Row(
           children: [
             Expanded(
@@ -168,6 +168,7 @@ class _MemoryRow extends StatelessWidget {
             ),
             PopupMenuButton<String>(
               tooltip: 'More',
+              padding: EdgeInsets.zero,
               icon: Icon(Icons.more_vert_rounded, color: c.textTertiary),
               onSelected: (v) => v == 'edit' ? onTap() : onDelete(),
               itemBuilder: (_) => const [
