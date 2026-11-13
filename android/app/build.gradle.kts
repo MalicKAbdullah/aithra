@@ -38,6 +38,7 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             abiFilters += listOf(appAbi)
@@ -114,4 +115,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("androidx.activity:activity-ktx:1.11.0")
     implementation("androidx.core:core-ktx:1.17.0")
+
+    // integration_test pins these through the debug runtime classpath, and
+    // AGP resolves the test classpath consistently with it.
+    androidTestImplementation("androidx.test:runner:1.2.0")
+    androidTestImplementation("androidx.test:rules:1.2.0")
+    androidTestImplementation("junit:junit:4.12")
 }

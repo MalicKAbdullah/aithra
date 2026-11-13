@@ -72,6 +72,9 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  // testWidgets, not test: the native instrumentation runner only sees
+  // results the integration_test binding records, and it records only
+  // testWidgets outcomes.
   group('native channel', () {
     setUpAll(() async {
       final storage = await CachedSecureStorage.load(
@@ -82,7 +85,7 @@ void main() {
       );
     });
 
-    test('conversation and message writes round-trip', () async {
+    testWidgets('conversation and message writes round-trip', (_) async {
       final id = 'it-${Random().nextInt(1 << 31)}';
       final now = DateTime.now().millisecondsSinceEpoch;
       await native.dbCreateConversation(id, 'Harbour trip', now);
@@ -124,7 +127,9 @@ void main() {
       expect(await native.dbConversation(id), isNull);
     });
 
-    test('an edited message keeps its photo through truncate', () async {
+    testWidgets('an edited message keeps its photo through truncate', (
+      _,
+    ) async {
       final id = 'it-edit-${Random().nextInt(1 << 31)}';
       final now = DateTime.now().millisecondsSinceEpoch;
       await native.dbCreateConversation(id, 'Photo', now);
@@ -143,13 +148,13 @@ void main() {
       await native.dbDeleteConversation(id);
     });
 
-    test('images store and come back as thumbnails', () async {
+    testWidgets('images store and come back as thumbnails', (_) async {
       await native.dbPutImage('it-image', tinyJpeg);
       expect(await native.dbImage('it-image', thumb: false), tinyJpeg);
       expect(await native.dbImage('it-image', thumb: true), isNotEmpty);
     });
 
-    test('device, storage and store diagnostics', () async {
+    testWidgets('device, storage and store diagnostics', (_) async {
       expect(await native.dataDir(), isNotEmpty);
       expect((await native.storageInfo())['freeBytes'], isA<int>());
       expect((await native.deviceInfo())['sdkInt'], isA<int>());
@@ -162,7 +167,9 @@ void main() {
       expect(await native.hasData(), isTrue);
     });
 
-    test('a download starts once, and removing it forgets it', () async {
+    testWidgets('a download starts once, and removing it forgets it', (
+      _,
+    ) async {
       final spec = embeddingModel;
       Future<int> start() => native.startDownload(
         url: spec.url,
@@ -181,7 +188,7 @@ void main() {
       );
     });
 
-    test('engine calls with no model loaded', () async {
+    testWidgets('engine calls with no model loaded', (_) async {
       // Cancelling a request the engine never received is a no-op.
       await native.cancel(1 << 30);
       await native.unload();
@@ -191,7 +198,7 @@ void main() {
       );
     });
 
-    test('crash report records, reads back and clears', () async {
+    testWidgets('crash report records, reads back and clears', (_) async {
       await native.crashClear();
       expect(await native.crashRead(), isNull);
       await native.crashRecord('Test entry', 'detail line');
@@ -203,7 +210,7 @@ void main() {
       expect(await native.crashRead(), isNull);
     });
 
-    test('speech and voice output stop cleanly when idle', () async {
+    testWidgets('speech and voice output stop cleanly when idle', (_) async {
       await native.stopSpeaking();
       await native.cancelListening();
     });

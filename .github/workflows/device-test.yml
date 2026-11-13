@@ -36,8 +36,16 @@ jobs:
       - run: flutter pub get
       - name: Build x86_64 release APK
         run: flutter build apk --release --target-platform android-x64
+      # The integration test runs as an Android instrumentation test, so it
+      # needs no flutter_tools or Dart Development Service connection to the
+      # emulator. Built here so the emulator step only installs and runs.
+      - name: Build x86_64 integration test APKs
+        run: >-
+          android/gradlew -p android app:assembleDebug app:assembleDebugAndroidTest
+          -Ptarget=$PWD/integration_test/app_test.dart -Ptarget-platform=android-x64
       - name: Launch smoke and integration test
         uses: reactivecircus/android-emulator-runner@v2
+        timeout-minutes: 60
         with:
           api-level: 35
           arch: x86_64
@@ -46,8 +54,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: |
             .github/scripts/launch_smoke.sh build/app/outputs/flutter-apk/app-release.apk
-            adb uninstall dev.abdullah.aithra
-            flutter test integration_test -d emulator-5554 --timeout 20m
+            .github/scripts/integration_test.sh -Ptarget-platform=android-x64
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -55,4 +62,8 @@ jobs:
           path: |
             launch-logcat.txt
             launch-screen.png
+            test-logcat.txt
+            test-screen.png
+            build/app/reports/androidTests/
+            build/app/outputs/androidTest-results/
           if-no-files-found: ignore
