@@ -1,0 +1,50 @@
+name: aithra
+description: "Aithra — a private AI assistant that runs entirely on your phone."
+publish_to: 'none'
+
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Only used to construct core_storage's SecureStorageImpl.
+  flutter_secure_storage: ^9.2.2
+
+  # Shared Offlyne packages
+  core_crypto:
+    git:
+      url: https://github.com/MalicKAbdullah/secure-suite-core.git
+      path: core_crypto
+      ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
+  core_storage:
+    git:
+      url: https://github.com/MalicKAbdullah/secure-suite-core.git
+      path: core_storage
+      ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
+  core_theme:
+    git:
+      url: https://github.com/MalicKAbdullah/secure-suite-core.git
+      path: core_theme
+      ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
+  core_ui:
+    git:
+      url: https://github.com/MalicKAbdullah/secure-suite-core.git
+      path: core_ui
+      ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
+  core_lock:
+    git:
+      url: https://github.com/MalicKAbdullah/secure-suite-core.git
+      path: core_lock
+      ref: be869646b86d9654a83fe8194d69d9acbe28fd7d
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

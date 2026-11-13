@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish signed APK
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.41.3
+          channel: stable
+          cache: true
+
+      - name: Decode keystore and write signing config
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/aithra-release.jks
+          cat > android/key.properties <<PROPS
+          storeFile=aithra-release.jks
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          PROPS
+
+      - name: Build APK
+        run: |
+          flutter pub get
+          flutter build apk --release --target-platform android-arm64
+          version=$(grep '^version:' pubspec.yaml | sed 's/version: //; s/+.*//')
+          cp build/app/outputs/flutter-apk/app-release.apk "aithra-${version}-arm64-v8a.apk"
+          echo "APK=aithra-${version}-arm64-v8a.apk" >> "$GITHUB_ENV"
+
+      - name: Clean up signing material
+        if: always()
+        run: rm -f android/app/aithra-release.jks android/key.properties
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: ${{ env.APK }}
