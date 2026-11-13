@@ -2,7 +2,7 @@ name: aithra
 description: "Aithra — a private AI assistant that runs entirely on your phone."
 publish_to: 'none'
 
-version: 0.1.0+1
+version: 0.1.1+2
 
 environment:
   sdk: ^3.11.1
