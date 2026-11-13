@@ -51,7 +51,12 @@ class CancellingEngine extends NativeBridge {
     required int? threads,
     required bool vision,
     required int? maxTokens,
-  }) async => {'contextSize': 4096, 'loadMs': 1.0, 'peakRssMb': 1.0};
+  }) async => {
+    'contextSize': 4096,
+    'loadMs': 1.0,
+    'peakRssMb': 1.0,
+    'cacheWrittenMb': 0.0,
+  };
 
   @override
   Future<Map<String, Object?>> generate({

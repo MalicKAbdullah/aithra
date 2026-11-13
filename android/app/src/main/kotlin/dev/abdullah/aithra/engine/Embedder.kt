@@ -39,6 +39,12 @@ class Embedder(private val executor: Executor) {
         return out
     }
 
+    /** Frees the model now, after any embedding already queued. Any thread. */
+    fun releaseNow() {
+        main.removeCallbacks(freeIdle)
+        executor.execute { release() }
+    }
+
     private fun release() {
         if (handle != 0L) LlamaNative.nativeEmbedFree(handle)
         handle = 0L

@@ -32,12 +32,25 @@ class Generation {
 }
 
 class LoadResult {
-  const LoadResult(this.loadMs, this.peakRssMb, this.contextSize);
+  const LoadResult(
+    this.loadMs,
+    this.peakRssMb,
+    this.contextSize, {
+    this.cacheWrittenMb = 0,
+  });
 
   final double loadMs;
   final double peakRssMb;
   final int contextSize;
+
+  /// What the load added to LiteRT-LM's compiled-program and weight cache:
+  /// a first load on a backend builds it, later loads reuse it and write
+  /// nothing.
+  final double cacheWrittenMb;
 }
+
+/// The most recent model load, for diagnostics.
+typedef LastLoad = ({ModelSpec spec, BackendOption backend, LoadResult result});
 
 /// Keeps one model resident and serializes all work on it. Loading is lazy:
 /// the first [ensureLoaded] (usually a background warm-up) pays the cost and
@@ -81,6 +94,8 @@ class EngineService extends ChangeNotifier {
   /// Metrics of the latest generation, for the on-screen performance HUD.
   final ValueNotifier<RunMetrics?> lastRun = ValueNotifier(null);
 
+  LastLoad? lastLoad;
+
   bool isLoaded(ModelSpec spec, BackendOption backend) =>
       _loadedKey == _key(spec, backend);
 
@@ -117,12 +132,15 @@ class EngineService extends ChangeNotifier {
         _loadedKey = key;
         _contextSize = r['contextSize']! as int;
         _status = EngineStatus.ready;
-        notifyListeners();
-        return LoadResult(
+        final result = LoadResult(
           (r['loadMs']! as num).toDouble(),
           (r['peakRssMb']! as num).toDouble(),
           _contextSize!,
+          cacheWrittenMb: (r['cacheWrittenMb']! as num).toDouble(),
         );
+        lastLoad = (spec: spec, backend: backend, result: result);
+        notifyListeners();
+        return result;
       } catch (e) {
         _loadedKey = null;
         _status = EngineStatus.failed;
