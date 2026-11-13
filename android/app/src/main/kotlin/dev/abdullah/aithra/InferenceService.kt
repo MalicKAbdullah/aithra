@@ -78,6 +78,18 @@ class InferenceService : Service() {
             }
         }
 
+        /**
+         * Stops the service now when nothing holds it, instead of after
+         * [LINGER_MS]: with no UI left, no next job is coming, and a
+         * lingering foreground service would keep the process alive.
+         */
+        fun stopIfIdle(context: Context) = main.post {
+            if (holders > 0) return@post
+            stopper?.let(main::removeCallbacks)
+            stopper = null
+            if (foreground) context.stopService(Intent(context, InferenceService::class.java))
+        }
+
         fun release(context: Context) = main.post {
             if (--holders == 0) {
                 stopper = Runnable {

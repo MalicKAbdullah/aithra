@@ -15,6 +15,7 @@ import 'src/chat/chat_store.dart';
 import 'src/data/settings_store.dart';
 import 'src/data/vault.dart';
 import 'src/engine/engine_service.dart';
+import 'src/memory/memory_curator.dart';
 import 'src/memory/memory_store.dart';
 import 'src/memory/recall_index.dart';
 import 'src/models/model_manager.dart';
@@ -139,15 +140,22 @@ Future<Services> start(NativeBridge native) async {
   final engine = EngineService(native);
   final models = ModelManager(native, runsLlama: results[5] as bool);
   final recall = RecallIndex(native: native, engine: engine, models: models);
+  final memories = MemoryStore(vault);
   final services = Services(
     native: native,
     engine: engine,
     models: models,
     settings: settings,
-    memories: MemoryStore(vault),
+    memories: memories,
     recall: recall,
     chats: ChatStore(native, searchMessages: recall.search),
     assistant: Assistant(engine: engine, models: models, settings: settings),
+    keeper: MemoryKeeper(
+      native: native,
+      memories: memories,
+      models: models,
+      settings: settings,
+    ),
     lock: LockController(
       deviceAuth: LocalAuthDeviceAuth(),
       hasher: const Argon2PasswordHasher(),

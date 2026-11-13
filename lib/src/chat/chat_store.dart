@@ -10,8 +10,9 @@ import 'chat_models.dart';
 typedef MessageSearch = Future<List<SearchHit>> Function(String query);
 
 /// The conversation list: paged from the encrypted store, newest first with
-/// pinned chats on top, plus search: title word prefixes always, and message
-/// text by meaning when the embedding model is on the phone.
+/// pinned chats on top, plus search: title word prefixes and message text
+/// always, and messages by meaning when the embedding model is on the
+/// phone.
 class ChatStore extends ChangeNotifier {
   ChatStore(this._native, {required MessageSearch searchMessages})
     : _searchMessages = searchMessages;
@@ -69,27 +70,37 @@ class ChatStore extends ChangeNotifier {
     }
     _debounce = Timer(const Duration(milliseconds: 150), () async {
       final q = _query;
-      final rows = await _native.dbSearch(q, 50);
+      final (titles, texts) = await (
+        _native.dbSearch(q, 50),
+        _native.dbSearchText(q, 50),
+      ).wait;
       if (q != _query) return;
-      final byTitle = rows.map(ConversationInfo.fromMap).toList();
-      _results = byTitle;
-      snippets = const {};
+      final found = titles.map(ConversationInfo.fromMap).toList();
+      final matched = <String, String>{};
+      for (final row in texts) {
+        final info = ConversationInfo.fromMap(row);
+        if (found.any((c) => c.id == info.id)) continue;
+        found.add(info);
+        matched[info.id] = row['snippet']! as String;
+      }
+      _results = found;
+      snippets = matched;
       notifyListeners();
-      // Message matches need the embedding model and arrive after titles.
+      // Matches by meaning need the embedding model and arrive last.
       final hits = await _searchMessages(q);
       if (q != _query || hits.isEmpty) return;
-      final found = <ConversationInfo>[];
-      final found2 = <String, String>{};
+      final byMeaning = <ConversationInfo>[];
+      final meaningSnippets = <String, String>{};
       for (final h in hits) {
-        if (byTitle.any((c) => c.id == h.convId)) continue;
+        if (found.any((c) => c.id == h.convId)) continue;
         final row = await _native.dbConversation(h.convId);
         if (row == null) continue;
-        found.add(ConversationInfo.fromMap(row));
-        found2[h.convId] = h.snippet;
+        byMeaning.add(ConversationInfo.fromMap(row));
+        meaningSnippets[h.convId] = h.snippet;
       }
-      if (q != _query) return;
-      _results = [...byTitle, ...found];
-      snippets = found2;
+      if (q != _query || byMeaning.isEmpty) return;
+      _results = [...found, ...byMeaning];
+      snippets = {...matched, ...meaningSnippets};
       notifyListeners();
     });
   }

@@ -22,16 +22,15 @@ class Memory {
   };
 }
 
-/// Facts the user chose to have Aithra remember, encrypted on this phone.
-/// Every chat's system prompt includes them.
+/// What Aithra remembers about the user, newest first, encrypted on this
+/// phone. The model adds, updates and retires memories itself after replies
+/// (see MemoryKeeper); the user can view, edit and delete them, and every
+/// chat's system prompt includes them while memory is on.
 class MemoryStore extends ChangeNotifier {
   MemoryStore(this._vault);
 
   final Vault _vault;
   List<Memory> _items = [];
-
-  /// Facts suggested in this session that the user dismissed; not offered again.
-  final Set<String> _dismissed = {};
 
   List<Memory> get items => List.unmodifiable(_items);
 
@@ -50,22 +49,13 @@ class MemoryStore extends ChangeNotifier {
   }
 
   bool knows(String text) =>
-      _items.any((m) => m.text.toLowerCase() == text.toLowerCase());
+      _items.any((m) => m.text.toLowerCase() == text.trim().toLowerCase());
 
-  /// Suggestions worth showing: not already saved, not dismissed.
-  List<String> filterSuggestions(List<String> candidates) => [
-    for (final c in candidates)
-      if (!knows(c) && !_dismissed.contains(c.toLowerCase())) c,
-  ];
-
-  void dismiss(String suggestion) {
-    _dismissed.add(suggestion.toLowerCase());
-    notifyListeners();
-  }
-
-  Future<void> add(String text) {
+  /// Adds [text] unless it is blank or already remembered; returns whether
+  /// it was added.
+  Future<bool> add(String text) async {
     final t = text.trim();
-    if (t.isEmpty || knows(t)) return Future.value();
+    if (t.isEmpty || knows(t)) return false;
     _items.insert(
       0,
       Memory(
@@ -74,17 +64,19 @@ class MemoryStore extends ChangeNotifier {
         created: DateTime.now(),
       ),
     );
-    return _save();
+    await _save();
+    return true;
   }
 
-  Future<void> edit(String id, String text) {
-    _items = [
-      for (final m in _items)
-        m.id == id
-            ? Memory(id: m.id, text: text.trim(), created: m.created)
-            : m,
-    ];
-    return _save();
+  /// Rewrites memory [id]; returns whether it exists and changed.
+  Future<bool> edit(String id, String text) async {
+    final t = text.trim();
+    final i = _items.indexWhere((m) => m.id == id);
+    if (i < 0 || t.isEmpty || _items[i].text == t) return false;
+    final m = _items[i];
+    _items = [..._items]..[i] = Memory(id: m.id, text: t, created: m.created);
+    await _save();
+    return true;
   }
 
   /// Removes the memory and returns it with its position, for [restore].

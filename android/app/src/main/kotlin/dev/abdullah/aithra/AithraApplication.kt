@@ -3,6 +3,7 @@ package dev.abdullah.aithra
 import android.app.Application
 import android.content.ComponentCallbacks2
 import dev.abdullah.aithra.engine.Embedder
+import dev.abdullah.aithra.engine.EngineCache
 import dev.abdullah.aithra.engine.EngineHost
 import java.io.File
 import java.util.concurrent.Executors
@@ -34,7 +35,10 @@ class AithraApplication : Application() {
         engineHost = EngineHost(this)
         db = ChatDb(this)
         embedder = Embedder(embedExec)
-        io.execute { sweepPartialImports() }
+        io.execute {
+            sweepPartialImports()
+            EngineCache.migrate(this)
+        }
     }
 
     /** Frees the model's memory when Android asks; Dart reloads it on next use. */

@@ -13,6 +13,7 @@ import androidx.core.content.FileProvider
 import dev.abdullah.aithra.engine.ChatTurn
 import dev.abdullah.aithra.engine.CpuFeatures
 import dev.abdullah.aithra.engine.Embedder
+import dev.abdullah.aithra.engine.EngineCache
 import dev.abdullah.aithra.engine.EngineHost
 import dev.abdullah.aithra.engine.GenerateRequest
 import io.flutter.embedding.android.FlutterFragmentActivity
@@ -98,6 +99,15 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onDestroy() {
         speech.destroy()
         tts.shutdown()
+        // Swiped from recents (or otherwise finished): the Flutter engine,
+        // and with it the timer that frees the model after a while in the
+        // background, ends with this activity, while the process can live
+        // on with the model loaded, under a lingering foreground service or
+        // on an Android that keeps it cached.
+        if (isFinishing && !isChangingConfigurations) {
+            engineHost.releaseWhenIdle()
+            embedder.releaseNow()
+        }
         super.onDestroy()
     }
 
@@ -266,6 +276,7 @@ class MainActivity : FlutterFragmentActivity() {
             }
             "db.image" -> onDb(result) { db.image(call.argument<String>("id")!!, call.argument<Boolean>("thumb")!!) }
             "db.search" -> onDb(result) { db.search(call.argument<String>("query")!!, call.argument<Int>("limit")!!) }
+            "db.searchText" -> onDb(result) { db.searchText(call.argument<String>("query")!!, call.argument<Int>("limit")!!) }
             "db.recall" -> onEmbed(result) {
                 db.recall(
                     embedder,
@@ -284,6 +295,13 @@ class MainActivity : FlutterFragmentActivity() {
                 )
             }
             "db.vectorStatus" -> onDb(result) { db.vectorStatus() }
+            "embed.texts" -> onEmbed(result) {
+                val query = call.argument<Boolean>("query")!!
+                embedder.embed(
+                    call.argument<String>("modelPath")!!,
+                    call.argument<List<String>>("texts")!!.map { if (query) Embedder.query(it) else Embedder.document(it) },
+                )
+            }
             "db.indexVectors" -> onEmbed(result) {
                 db.indexVectors(embedder, call.argument<String>("modelPath")!!, call.argument<Int>("limit")!!)
             }
@@ -313,7 +331,11 @@ class MainActivity : FlutterFragmentActivity() {
             }
             "download.query" -> onIo(result) { ModelDownloads.query(this) }
             "download.remove" -> onIo(result) { ModelDownloads.remove(this, (call.argument<Number>("id")!!).toLong()) }
-            "file.delete" -> onIo(result) { File(call.argument<String>("path")!!).delete() }
+            "file.delete" -> onIo(result) {
+                val path = call.argument<String>("path")!!
+                EngineCache.forget(this, path)
+                File(path).delete()
+            }
             // Complete files only, named relative to the models folder
             // ("imported/x.gguf" for imports).
             "file.list" -> onIo(result) {

@@ -1,6 +1,7 @@
 package dev.abdullah.aithra.engine
 
 import android.content.Context
+import android.util.Log
 import dev.abdullah.aithra.Events
 import dev.abdullah.aithra.InferenceService
 import java.io.File
@@ -70,6 +71,7 @@ class EngineHost(private val context: Context) {
         val path = args["path"] as String
         val runtime = args["runtime"] as String
         ModelFormat.require(File(path), runtime)
+        val cacheBefore = EngineCache.snapshot(context)
         val sampler = RssSampler().also { it.start() }
         val start = System.nanoTime()
         val loaded = try {
@@ -79,7 +81,7 @@ class EngineHost(private val context: Context) {
                     backend = args["backend"] as String,
                     vision = args["vision"] as Boolean,
                     maxTokens = args["maxTokens"] as Int?,
-                    cacheDir = File(context.cacheDir, "litertlm").apply { mkdirs() }.path,
+                    cacheDir = EngineCache.dir(context).path,
                     nativeLibraryDir = context.applicationInfo.nativeLibraryDir,
                 )
                 "llamacpp" -> LlamaEngine(path, args["threads"] as Int, args["maxTokens"] as Int)
@@ -89,10 +91,14 @@ class EngineHost(private val context: Context) {
             sampler.stop()
         }
         engine = loaded
+        val loadMs = (System.nanoTime() - start) / 1e6
+        val cacheWrittenMb = EngineCache.written(cacheBefore, EngineCache.snapshot(context)) / (1024.0 * 1024.0)
+        Log.i("aithra.engine", "loaded $runtime/${args["backend"]} in ${loadMs.toLong()} ms, wrote ${cacheWrittenMb.toLong()} MB of cache")
         return mapOf(
-            "loadMs" to (System.nanoTime() - start) / 1e6,
+            "loadMs" to loadMs,
             "peakRssMb" to sampler.peakMb,
             "contextSize" to loaded.contextSize,
+            "cacheWrittenMb" to cacheWrittenMb,
         )
     }
 
@@ -133,6 +139,14 @@ class EngineHost(private val context: Context) {
         engine?.close()
         engine = null
     }
+
+    /**
+     * Frees the model once the work already queued has run. For when the
+     * app's UI is gone for good (swiped from recents): nothing will use the
+     * model again in this process, and a reopened app loads it afresh. A
+     * reply still generating under the foreground service finishes first.
+     */
+    fun releaseWhenIdle() = submit({ unload() }) { InferenceService.stopIfIdle(context) }
 }
 
 /** Samples this process's resident set size until stopped and keeps the peak. */

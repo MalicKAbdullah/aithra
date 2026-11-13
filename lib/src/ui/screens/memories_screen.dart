@@ -6,7 +6,9 @@ import '../../memory/memory_store.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
 
-/// Facts Aithra remembers about the user, included in every chat.
+/// What Aithra remembers about the user. The model keeps this list itself;
+/// here the user reads, corrects, deletes or adds to it, or turns memory
+/// off altogether.
 class MemoriesScreen extends StatelessWidget {
   const MemoriesScreen({super.key});
 
@@ -67,29 +69,27 @@ class MemoriesScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final store = context.services.memories;
+    final s = context.services;
+    final store = s.memories;
     final c = SuiteColors.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Memories')),
-      floatingActionButton: FloatingActionButton.extended(
-        heroTag: 'add-memory',
-        onPressed: () => _edit(context),
-        icon: const Icon(Icons.add_rounded),
-        label: const Text('Add memory'),
+      appBar: AppBar(title: const Text('Memory')),
+      floatingActionButton: ListenableBuilder(
+        listenable: s.settings,
+        builder: (context, _) => s.settings.memoryEnabled
+            ? FloatingActionButton.extended(
+                heroTag: 'add-memory',
+                onPressed: () => _edit(context),
+                icon: const Icon(Icons.add_rounded),
+                label: const Text('Add memory'),
+              )
+            : const SizedBox.shrink(),
       ),
       body: ListenableBuilder(
-        listenable: store,
+        listenable: Listenable.merge([store, s.settings]),
         builder: (context, _) {
           final items = store.items;
-          if (items.isEmpty) {
-            return const AppEmptyState(
-              title: 'Nothing remembered yet',
-              message:
-                  'Tell Aithra things like "my name is Sam" and it will '
-                  'offer to remember them. Long-press any message to save it.',
-              icon: Icons.bookmark_outline_rounded,
-            );
-          }
+          final on = s.settings.memoryEnabled;
           return ListView(
             padding: const EdgeInsets.fromLTRB(
               AppSpacing.gutter,
@@ -98,37 +98,74 @@ class MemoriesScreen extends StatelessWidget {
               112,
             ),
             children: [
-              Text(
-                'Stored encrypted on this phone and added to every chat. '
-                'Swipe one away to forget it.',
-                style: AithraType.bodySmall.copyWith(color: c.textSecondary),
-              ),
-              const SizedBox(height: AppSpacing.md),
               RowGroup(
                 separatorIndent: AppSpacing.md,
                 children: [
-                  for (final m in items)
-                    Dismissible(
-                      key: ValueKey(m.id),
-                      direction: DismissDirection.endToStart,
-                      background: Container(
-                        color: c.negativeContainer,
-                        alignment: Alignment.centerRight,
-                        padding: const EdgeInsets.only(right: AppSpacing.md),
-                        child: Icon(
-                          Icons.delete_outline_rounded,
-                          color: c.negative,
-                        ),
-                      ),
-                      onDismissed: (_) => _delete(context, m),
-                      child: _MemoryRow(
-                        memory: m,
-                        onTap: () => _edit(context, memory: m),
-                        onDelete: () => _delete(context, m),
-                      ),
+                  SwitchListTile(
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: AppSpacing.md,
                     ),
+                    title: const Text('Remember things about me'),
+                    subtitle: const Text(
+                      'Lasting facts and preferences from your chats, used in '
+                      'new ones along with your past chats',
+                    ),
+                    value: on,
+                    onChanged: (v) =>
+                        s.settings.update((x) => x.memoryEnabled = v),
+                  ),
                 ],
               ),
+              const SizedBox(height: AppSpacing.md),
+              Text(
+                on
+                    ? 'Aithra decides what is worth remembering. Everything '
+                          'is encrypted on this phone; tap one to correct it, '
+                          'or swipe it away to forget it.'
+                    : 'Memory is off: Aithra neither saves nor uses these '
+                          'until you turn it back on.',
+                style: AithraType.bodySmall.copyWith(color: c.textSecondary),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              if (items.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(top: AppSpacing.xl),
+                  child: AppEmptyState(
+                    title: 'Nothing remembered yet',
+                    message:
+                        'As you chat, Aithra keeps what will help next time: '
+                        'your name, what you are working on, how you like '
+                        'answers.',
+                    icon: Icons.auto_awesome_outlined,
+                    compact: true,
+                  ),
+                )
+              else
+                RowGroup(
+                  separatorIndent: AppSpacing.md,
+                  children: [
+                    for (final m in items)
+                      Dismissible(
+                        key: ValueKey(m.id),
+                        direction: DismissDirection.endToStart,
+                        background: Container(
+                          color: c.negativeContainer,
+                          alignment: Alignment.centerRight,
+                          padding: const EdgeInsets.only(right: AppSpacing.md),
+                          child: Icon(
+                            Icons.delete_outline_rounded,
+                            color: c.negative,
+                          ),
+                        ),
+                        onDismissed: (_) => _delete(context, m),
+                        child: _MemoryRow(
+                          memory: m,
+                          onTap: () => _edit(context, memory: m),
+                          onDelete: () => _delete(context, m),
+                        ),
+                      ),
+                  ],
+                ),
             ],
           );
         },

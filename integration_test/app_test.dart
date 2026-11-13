@@ -5,8 +5,10 @@ import 'package:aithra/main.dart' as app;
 import 'package:aithra/src/data/vault.dart';
 import 'package:aithra/src/models/catalog.dart';
 import 'package:aithra/src/platform/native.dart';
-import 'package:aithra/src/ui/screens/chat_screen.dart';
+import 'package:aithra/src/ui/screens/chat_view.dart';
 import 'package:aithra/src/ui/screens/home_screen.dart';
+import 'package:aithra/src/ui/widgets/chat_drawer.dart';
+import 'package:aithra/src/ui/widgets/greeting.dart';
 import 'package:core_storage/core_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -51,7 +53,9 @@ void main() {
   final native = NativeBridge();
 
   // Expects a fresh install: onboarding shows only until it is finished.
-  testWidgets('launches through onboarding to a chat', (tester) async {
+  testWidgets('launches through onboarding to a new chat and its drawer', (
+    tester,
+  ) async {
     // main() installs the app's error reporters; the test framework
     // requires its own back when the test ends.
     final testOnError = FlutterError.onError;
@@ -67,8 +71,12 @@ void main() {
     await pumpUntil(tester, find.text('Download later'));
     await tester.tap(find.text('Download later'));
     await pumpUntil(tester, find.byType(HomeScreen));
-    await tester.tap(find.text('New chat'));
-    await pumpUntil(tester, find.byType(ChatScreen));
+    expect(find.byType(ChatView), findsOneWidget);
+    expect(find.byType(Greeting), findsOneWidget);
+    await tester.tap(find.byTooltip('Chats'));
+    await pumpUntil(tester, find.byType(ChatDrawer));
+    await tester.enterText(find.byType(TextField).first, 'harbour');
+    await tester.pump(const Duration(milliseconds: 400));
     expect(tester.takeException(), isNull);
   });
 
@@ -119,6 +127,12 @@ void main() {
       expect(range.first['content'], 'When does the ferry sail?');
       expect(range.first['tokens'], 7);
 
+      final hits = await native.dbSearchText('FERRY SAIL', 10);
+      final hit = hits.singleWhere((h) => h['id'] == id);
+      expect(hit['snippet'], 'When does the ferry sail?');
+      expect(hit['title'], 'Harbour plans');
+      expect(await native.dbSearchText('no message says this', 10), isEmpty);
+
       await native.dbTruncate(id, 1);
       expect(await native.dbMessages(id, 1 << 30, 10), hasLength(1));
       expect(await native.dbSearch('harb', 10), isNotEmpty);
@@ -161,7 +175,9 @@ void main() {
       expect(await native.runsLlama(), isA<bool>());
       final status = await native.dbVectorStatus();
       expect(status.total, greaterThanOrEqualTo(status.indexed));
-      expect((await native.dbSelfTest(50))['messages'], 50);
+      final selfTest = await native.dbSelfTest(50);
+      expect(selfTest['messages'], 50);
+      expect(selfTest['textSearchMs'], isA<double>());
       expect(await native.listModelFiles(), isA<List<Object?>>());
       expect(await native.queryDownloads(), isA<List<Object?>>());
       expect(await native.hasData(), isTrue);
@@ -185,6 +201,13 @@ void main() {
       expect(
         (await native.queryDownloads()).map((d) => d['id']),
         isNot(contains(id)),
+      );
+    });
+
+    testWidgets('embedding without the model file fails cleanly', (_) async {
+      await expectLater(
+        native.embed('/nonexistent/embedding.gguf', ['hello'], query: true),
+        throwsA(isA<PlatformException>()),
       );
     });
 
