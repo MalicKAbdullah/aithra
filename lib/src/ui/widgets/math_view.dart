@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_math_fork/ast.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 
 /// LaTeX in replies, typeset by flutter_math_fork. Widgets are cached per
@@ -22,8 +23,8 @@ abstract final class MathView {
   static Widget _source(String source, TextStyle style) =>
       Text(source, style: style);
 
-  /// Inline math as spans that the paragraph can wrap between, at the
-  /// break points TeX itself allows (after relations and binary operators).
+  /// Inline math as spans that the paragraph can wrap between, after the
+  /// relations (=, <, …) where TeX allows a break.
   static List<InlineSpan> inline(
     String tex,
     TextStyle style, {
@@ -37,16 +38,50 @@ abstract final class MathView {
         textStyle: style,
         onErrorFallback: (_) => _source(source, style),
       );
+      final pieces = _relationPieces(math);
+      // A piece ends after a relation, whose trailing space TeX drops at a
+      // break; the text space between pieces puts it back and is where the
+      // line may wrap.
       return [
-        for (final part in math.texBreak().parts)
+        for (final (i, piece) in pieces.indexed) ...[
+          if (i > 0) const TextSpan(text: ' '),
           WidgetSpan(
             alignment: PlaceholderAlignment.baseline,
             baseline: TextBaseline.alphabetic,
-            child: part,
+            child: piece,
           ),
+        ],
       ];
     });
     return parts;
+  }
+
+  static const _binOpPenalty = 700;
+
+  /// [math] cut after each relation (=, <, …), the points where TeX
+  /// allows a break that keeps spacing intact. TeX also allows breaks after
+  /// binary operators, but a piece ending in one loses the operator's
+  /// spacing on both sides, so those pieces are joined back up. Malformed
+  /// TeX stays one piece, which shows its fallback.
+  static List<Math> _relationPieces(Math math) {
+    if (math.ast == null) return [math];
+    final broken = math.texBreak(binOpPenalty: _binOpPenalty);
+    final pieces = <Math>[];
+    var children = <GreenNode>[];
+    for (final (i, part) in broken.parts.indexed) {
+      children.addAll(part.ast!.greenRoot.children);
+      if (broken.penalties[i] == _binOpPenalty) continue;
+      pieces.add(
+        Math(
+          ast: SyntaxTree(greenRoot: EquationRowNode(children: children)),
+          mathStyle: math.mathStyle,
+          textStyle: math.textStyle,
+          onErrorFallback: math.onErrorFallback,
+        ),
+      );
+      children = [];
+    }
+    return pieces;
   }
 
   /// A display equation: centred when it fits, scrolling sideways when it

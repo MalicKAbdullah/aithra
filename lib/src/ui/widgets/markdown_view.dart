@@ -175,7 +175,8 @@ class _InlineText extends StatelessWidget {
           display: s.style == InlineStyle.displayMath,
         );
         children.addAll(spans);
-        // Each widget span stands for one placeholder character.
+        // Widget spans stand for one placeholder character each, and the
+        // spans between them are single spaces.
         offset += spans.length;
         continue;
       }
