@@ -220,7 +220,9 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
                 ),
                 SizedBox(
                   height: math.max(0, half - bar),
-                  child: _Transcript(heard: _heard, reply: _reply),
+                  child: _s.settings.voiceTranscript
+                      ? _Transcript(heard: _heard, reply: _reply)
+                      : null,
                 ),
                 GestureDetector(
                   onTap: _interrupt,

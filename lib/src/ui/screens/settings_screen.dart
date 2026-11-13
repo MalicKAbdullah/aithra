@@ -77,6 +77,24 @@ class SettingsScreen extends StatelessWidget {
             separatorIndent: _indent,
             children: [
               const _VoiceStatus(),
+              ListenableBuilder(
+                listenable: s.settings,
+                builder: (context, _) => SettingsTile(
+                  icon: Icons.subtitles_outlined,
+                  title: 'Show transcript in voice mode',
+                  subtitle: s.settings.voiceTranscript
+                      ? 'Your words and the reply appear above the orb'
+                      : 'Only the orb; replies are spoken',
+                  onTap: () => s.settings.update(
+                    (x) => x.voiceTranscript = !x.voiceTranscript,
+                  ),
+                  trailing: Switch(
+                    value: s.settings.voiceTranscript,
+                    onChanged: (v) =>
+                        s.settings.update((x) => x.voiceTranscript = v),
+                  ),
+                ),
+              ),
               AppearanceSetting(controller: s.appearance),
             ],
           ),
