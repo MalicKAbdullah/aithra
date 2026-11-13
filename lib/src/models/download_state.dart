@@ -93,6 +93,13 @@ class DownloadFailed extends ModelAvailability {
   final String message;
 }
 
+/// The phone cannot run this model's runtime.
+class Unsupported extends ModelAvailability {
+  const Unsupported(this.reason);
+
+  final String reason;
+}
+
 class Ready extends ModelAvailability {
   const Ready(this.path);
 
@@ -147,6 +154,7 @@ String failureReason(int reason) => switch (reason) {
   1007 => 'No storage available',
   1008 => 'Download cannot resume',
   1009 => 'File already exists',
+  2001 => 'The downloaded file was damaged; try again',
   >= 400 && < 600 => 'Server error (HTTP $reason)',
   _ => 'Download failed',
 };

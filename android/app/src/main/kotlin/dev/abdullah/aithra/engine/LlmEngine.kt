@@ -24,7 +24,14 @@ data class GenerateStats(
     val decodeMs: Double?,
     val contextTokens: Int?,
     val note: String?,
+    /** Stopped by [LlmEngine.cancel] before the reply was complete. */
+    val cancelled: Boolean,
 ) {
+    companion object {
+        /** A request cancelled before the engine started on it. */
+        val cancelledBeforeStart = GenerateStats(null, null, null, null, null, null, null, cancelled = true)
+    }
+
     fun toMap(): Map<String, Any?> = mapOf(
         "promptTokens" to promptTokens,
         "prefillMs" to prefillMs,
@@ -33,6 +40,7 @@ data class GenerateStats(
         "decodeMs" to decodeMs,
         "contextTokens" to contextTokens,
         "note" to note,
+        "cancelled" to cancelled,
     )
 }
 
@@ -46,8 +54,14 @@ interface LlmEngine : AutoCloseable {
      */
     fun generate(request: GenerateRequest, onText: (String) -> Boolean): GenerateStats
 
-    /** Interrupts a running [generate] from another thread. */
+    /**
+     * Stops the running [generate] from another thread, or the next one if
+     * it has not started yet, until [resetCancel].
+     */
     fun cancel()
+
+    /** Called on the engine thread before each request. */
+    fun resetCancel()
 
     /**
      * Exact tokens each turn adds to a prompt, template markup included, or

@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognitionSupport
@@ -22,26 +24,38 @@ import java.util.concurrent.Executors
  * until [stop] is called. All calls must be made on the main thread.
  */
 class SpeechBridge(private val context: Context) {
+    private val main = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
     private var continuous = false
     private var active = false
     private var onDevice = false
 
+    // triggerModelDownload hands the request to the recognizer's service;
+    // destroying that recognizer drops the request, so it lives as long
+    // as this bridge.
+    private var downloader: SpeechRecognizer? = null
+
+    /**
+     * The language recognition runs in: the phone's own tag until the
+     * on-device recognizer reports what it has, then the closest tag it
+     * has (see [pickLanguage]). Status and recognition use the same value.
+     */
+    private var language: String = Locale.getDefault().toLanguageTag()
+
     private fun intent(): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
     }
 
     fun status(callback: (Map<String, Any?>) -> Unit) {
         val base = mapOf(
             "available" to SpeechRecognizer.isRecognitionAvailable(context),
             "onDevice" to SpeechRecognizer.isOnDeviceRecognitionAvailable(context),
-            "language" to Locale.getDefault().toLanguageTag(),
         )
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || !(base["onDevice"] as Boolean)) {
-            callback(base + ("languageInstalled" to null))
+            callback(base + mapOf("language" to language, "languageInstalled" to null))
             return
         }
         val probe = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
@@ -50,20 +64,33 @@ class SpeechBridge(private val context: Context) {
             Executors.newSingleThreadExecutor(),
             object : RecognitionSupportCallback {
                 override fun onSupportResult(support: RecognitionSupport) {
-                    val tag = Locale.getDefault().toLanguageTag()
-                    val lang = Locale.getDefault().language
-                    val installed = support.installedOnDeviceLanguages.any { it == tag || it.startsWith(lang) }
-                    Events.send(mapOf("type" to "speechStatus") + base + ("languageInstalled" to installed))
-                    android.os.Handler(context.mainLooper).post { probe.destroy() }
+                    main.post {
+                        val (tag, installed) = pickLanguage(
+                            Locale.getDefault(),
+                            support.installedOnDeviceLanguages,
+                            support.supportedOnDeviceLanguages,
+                        )
+                        language = tag
+                        Events.send(
+                            mapOf("type" to "speechStatus") + base +
+                                mapOf("language" to tag, "languageInstalled" to installed),
+                        )
+                        probe.destroy()
+                    }
                 }
 
                 override fun onError(error: Int) {
-                    Events.send(mapOf("type" to "speechStatus") + base + ("languageInstalled" to null))
-                    android.os.Handler(context.mainLooper).post { probe.destroy() }
+                    main.post {
+                        Events.send(
+                            mapOf("type" to "speechStatus") + base +
+                                mapOf("language" to language, "languageInstalled" to null),
+                        )
+                        probe.destroy()
+                    }
                 }
             },
         )
-        callback(base + ("languageInstalled" to "checking"))
+        callback(base + mapOf("language" to language, "languageInstalled" to "checking"))
     }
 
     /**
@@ -81,11 +108,19 @@ class SpeechBridge(private val context: Context) {
     }
 
     fun start(continuous: Boolean) {
-        prewarm()
         recognizer?.cancel()
         this.continuous = continuous
         active = true
-        recognizer?.startListening(intent())
+        // The service is still winding down the cancelled session within
+        // this call; starting in the same turn of the loop answers
+        // ERROR_RECOGNIZER_BUSY.
+        main.post { listen() }
+    }
+
+    private fun listen() {
+        if (!active) return
+        prewarm()
+        recognizer!!.startListening(intent())
     }
 
     /** Stops listening; the recognizer still delivers the final result. */
@@ -104,14 +139,22 @@ class SpeechBridge(private val context: Context) {
         cancel()
         recognizer?.destroy()
         recognizer = null
+        downloader?.destroy()
+        downloader = null
     }
 
-    /** Asks the system to download the on-device model for the current language. */
+    /**
+     * Asks the system to download the on-device model for [language].
+     * False when this phone has no on-device recognizer to ask.
+     */
     fun downloadModel(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return false
-        val r = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            !SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+        ) {
+            return false
+        }
+        val r = downloader ?: SpeechRecognizer.createOnDeviceSpeechRecognizer(context).also { downloader = it }
         r.triggerModelDownload(intent())
-        r.destroy()
         return true
     }
 
@@ -128,7 +171,9 @@ class SpeechBridge(private val context: Context) {
 
     private fun restartOrFinish() {
         if (active && continuous) {
-            recognizer?.startListening(intent())
+            // Starting again inside the recognizer's own callback answers
+            // ERROR_RECOGNIZER_BUSY; the next loop turn is free.
+            main.post { listen() }
         } else {
             active = false
             emit("idle")
@@ -150,6 +195,12 @@ class SpeechBridge(private val context: Context) {
                 restartOrFinish()
             } else {
                 active = false
+                // After a client, server or busy error the recognizer's
+                // service connection is unusable; the next start builds a
+                // new one.
+                val broken = recognizer
+                recognizer = null
+                main.post { broken?.destroy() }
                 emit("error", mapOf("code" to error))
             }
         }
@@ -167,4 +218,19 @@ class SpeechBridge(private val context: Context) {
 
         override fun onEvent(eventType: Int, params: Bundle?) {}
     }
+}
+
+/**
+ * The tag to recognize [wanted] in, and whether its on-device model is
+ * installed: the exact tag when the recognizer has it, else another region
+ * of the same language (en-US for en-PK), installed models first.
+ */
+fun pickLanguage(wanted: Locale, installed: List<String>, supported: List<String>): Pair<String, Boolean> {
+    val tag = wanted.toLanguageTag()
+    fun sameLanguage(t: String) = Locale.forLanguageTag(t).language == wanted.language
+    installed.firstOrNull { it.equals(tag, ignoreCase = true) }?.let { return it to true }
+    installed.firstOrNull(::sameLanguage)?.let { return it to true }
+    supported.firstOrNull { it.equals(tag, ignoreCase = true) }?.let { return it to false }
+    supported.firstOrNull(::sameLanguage)?.let { return it to false }
+    return tag to false
 }

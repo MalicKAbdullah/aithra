@@ -127,6 +127,10 @@ String? pickBackend(List<BackendResult> results) {
 /// Progress callback: (backends finished, backends total, current label).
 typedef CalibrationProgress = void Function(int done, int total, String label);
 
+/// Android took the model's memory back during a calibration step, so the
+/// step's outcome says nothing about the backend.
+class _Interrupted implements Exception {}
+
 /// Tries every candidate backend of a model: load, answer the probes with
 /// greedy decoding, then a fixed-size speed run.
 class CalibrationRunner {
@@ -134,7 +138,9 @@ class CalibrationRunner {
 
   final EngineService _engine;
 
-  Future<Calibration> run(
+  /// The calibration, or null when Android interrupted it; an interrupted
+  /// run is not a verdict and is run again later.
+  Future<Calibration?> run(
     ModelSpec spec,
     String path,
     int fileSize, {
@@ -143,7 +149,14 @@ class CalibrationRunner {
     final results = <BackendResult>[];
     for (final backend in spec.backends) {
       onProgress(results.length, spec.backends.length, backend.label);
-      results.add(await _tryBackend(spec, path, backend));
+      final releases = _engine.releases;
+      try {
+        final result = await _tryBackend(spec, path, backend);
+        if (_engine.releases != releases) return null;
+        results.add(result);
+      } on _Interrupted {
+        return null;
+      }
     }
     onProgress(results.length, spec.backends.length, '');
     return Calibration(
@@ -174,6 +187,7 @@ class CalibrationRunner {
         );
         final text = await g.text.join();
         await g.done;
+        if (g.cancelled) throw _Interrupted();
         answers.add(text);
       }
       final speedRun = _engine.generate(
@@ -184,6 +198,7 @@ class CalibrationRunner {
       );
       await speedRun.text.drain<void>();
       final speed = await speedRun.done;
+      if (speedRun.cancelled) throw _Interrupted();
       return BackendResult(
         backendId: backend.id,
         loadMs: load?.loadMs,
@@ -191,6 +206,8 @@ class CalibrationRunner {
         speed: speed,
         answers: answers,
       );
+    } on _Interrupted {
+      rethrow;
     } catch (e) {
       return BackendResult(
         backendId: backend.id,

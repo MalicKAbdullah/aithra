@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:aithra/src/engine/engine_service.dart';
 import 'package:aithra/src/memory/recall_index.dart';
 import 'package:aithra/src/models/catalog.dart';
+import 'package:aithra/src/models/download_state.dart';
 import 'package:aithra/src/models/model_manager.dart';
 import 'package:aithra/src/platform/native.dart';
 import 'package:flutter/services.dart';
@@ -86,9 +87,26 @@ void main() {
 
   setUp(() {
     native = FakeNative();
-    models = ModelManager(native);
+    models = ModelManager(native, runsLlama: true);
     engine = EngineService(native);
     index = RecallIndex(native: native, engine: engine, models: models);
+  });
+
+  test('on a CPU without llama.cpp support, GGUF models are unavailable '
+      'even when on disk, and recall stays off', () async {
+    native.embedderOnPhone = true;
+    final gated = ModelManager(native, runsLlama: false);
+    final gatedIndex = RecallIndex(
+      native: native,
+      engine: engine,
+      models: gated,
+    );
+    await gated.refresh();
+    expect(gated.availability(embeddingModel), isA<Unsupported>());
+    expect(gated.readyModels, isEmpty);
+    expect(await gatedIndex.recall('my trip to Oslo', 'c1'), isA<RecallOff>());
+    final litert = catalog.firstWhere((m) => m.runtime == Runtime.litertlm);
+    expect(gated.availability(litert), isA<NotDownloaded>());
   });
 
   test('recall is off without the embedding model', () async {

@@ -15,6 +15,11 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+// Aithra ships for arm64 phones only. CI also builds an x86_64 APK
+// (ORG_GRADLE_PROJECT_aithraAbi=x86_64) to launch-test on an emulator,
+// since GitHub's runners cannot run an arm64 one.
+val appAbi = providers.gradleProperty("aithraAbi").orElse("arm64-v8a").get()
+
 android {
     namespace = "dev.abdullah.aithra"
     compileSdk = flutter.compileSdkVersion
@@ -35,14 +40,14 @@ android {
         versionName = flutter.versionName
 
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += listOf(appAbi)
         }
         externalNativeBuild {
             cmake {
                 arguments += listOf("-DANDROID_STL=c++_shared", "-DCMAKE_BUILD_TYPE=Release")
                 // Flutter's Gradle plugin adds every Flutter ABI to the
-                // filters; llama.cpp is built for arm64 only.
-                abiFilters += listOf("arm64-v8a")
+                // filters; llama.cpp is built for the one shipped ABI.
+                abiFilters += listOf(appAbi)
             }
         }
     }
@@ -59,9 +64,10 @@ android {
             // LiteRT-LM's NPU backend dlopens the dispatch library from
             // nativeLibraryDir, so native libraries must be extracted on install.
             useLegacyPackaging = true
-            // Aithra ships for arm64 phones only; dependencies also carry
-            // x86_64 and armeabi-v7a copies of their native libraries.
-            excludes += listOf("lib/x86_64/**", "lib/armeabi-v7a/**", "lib/x86/**")
+            // Dependencies carry native libraries for every ABI.
+            excludes += listOf("arm64-v8a", "x86_64", "armeabi-v7a", "x86")
+                .filter { it != appAbi }
+                .map { "lib/$it/**" }
         }
     }
 

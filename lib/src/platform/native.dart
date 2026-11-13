@@ -95,7 +95,9 @@ class NativeBridge {
     );
   }
 
-  Future<void> cancel() => _channel.invokeMethod('engine.cancel');
+  /// Cancels generation [requestId], queued or running.
+  Future<void> cancel(int requestId) =>
+      _channel.invokeMethod('engine.cancel', {'requestId': requestId});
 
   Future<void> unload() => _channel.invokeMethod('engine.unload');
 
@@ -189,10 +191,17 @@ class NativeBridge {
         'model': model,
       });
 
-  Future<void> dbTruncate(String convId, int fromSeq) => _channel.invokeMethod(
-    'db.truncate',
-    {'convId': convId, 'fromSeq': fromSeq},
-  );
+  /// Deletes messages from [fromSeq] on, and their images except
+  /// [keepImages].
+  Future<void> dbTruncate(
+    String convId,
+    int fromSeq, {
+    List<String> keepImages = const [],
+  }) => _channel.invokeMethod('db.truncate', {
+    'convId': convId,
+    'fromSeq': fromSeq,
+    'keepImages': keepImages,
+  });
 
   Future<void> dbPutImage(String id, Uint8List jpeg) =>
       _channel.invokeMethod('db.putImage', {'id': id, 'jpeg': jpeg});
@@ -247,7 +256,31 @@ class NativeBridge {
 
   Future<Map<String, Object?>> deviceInfo() => _map('device.info');
 
+  /// Models folder and free space on shared storage.
   Future<Map<String, Object?>> storageInfo() => _map('storage.info');
+
+  /// Internal app storage for the encrypted settings and memories.
+  Future<String> dataDir() => _call<String>('storage.dataDir');
+
+  /// Whether encrypted chats, settings or memories exist on the phone.
+  Future<bool> hasData() => _call<bool>('storage.hasData');
+
+  /// Deletes every encrypted chat, setting and memory; models stay.
+  Future<void> eraseData() => _channel.invokeMethod('storage.erase');
+
+  /// Whether the CPU has the instructions llama.cpp is built for; without
+  /// them GGUF models and cross-chat memory cannot run.
+  Future<bool> runsLlama() => _call<bool>('device.runsLlama');
+
+  // -- Crash report ---------------------------------------------------------
+
+  /// What went wrong since the report was last cleared, or null.
+  Future<String?> crashRead() => _channel.invokeMethod<String>('crash.read');
+
+  Future<void> crashRecord(String title, String detail) =>
+      _channel.invokeMethod('crash.record', {'title': title, 'detail': detail});
+
+  Future<void> crashClear() => _channel.invokeMethod('crash.clear');
 
   Future<List<Map<String, Object?>>> listModelFiles() async => [
     for (final e in await _call<List<Object?>>('file.list'))
@@ -257,12 +290,21 @@ class NativeBridge {
   Future<void> deleteFile(String path) =>
       _channel.invokeMethod('file.delete', {'path': path});
 
-  Future<int> startDownload(String url, String fileName, String title) =>
-      _call<int>('download.start', {
-        'url': url,
-        'fileName': fileName,
-        'title': title,
-      });
+  /// Starts (or returns the running) download of [fileName]; it resumes
+  /// after connection drops and is checked against [sha256].
+  Future<int> startDownload({
+    required String url,
+    required String fileName,
+    required String title,
+    required int size,
+    required String sha256,
+  }) => _call<int>('download.start', {
+    'url': url,
+    'fileName': fileName,
+    'title': title,
+    'size': size,
+    'sha256': sha256,
+  });
 
   Future<List<Map<String, Object?>>> queryDownloads() async => [
     for (final e in await _call<List<Object?>>('download.query'))
@@ -292,7 +334,12 @@ class NativeBridge {
 
   // -- Speech ---------------------------------------------------------------
 
-  Future<bool> requestMicrophone() => _call<bool>('permission.microphone');
+  /// `granted`, `denied`, or `blocked` when only Settings can grant it.
+  Future<String> requestMicrophone() => _call<String>('permission.microphone');
+
+  /// Aithra's page in system Settings, where permissions are granted.
+  Future<void> openAppSettings() =>
+      _channel.invokeMethod('permission.openSettings');
 
   Future<Map<String, Object?>> speechStatus() => _map('speech.status');
 

@@ -12,13 +12,23 @@ enum EngineStatus { idle, loading, ready, failed }
 /// A streaming reply. [text] emits chunks as the engine produces them;
 /// [done] completes with the run's metrics once the engine stops.
 class Generation {
-  Generation(this.text, this.done, this._cancel);
+  Generation._(this.text, this._native, this._id);
 
   final Stream<String> text;
-  final Future<RunMetrics> done;
-  final Future<void> Function() _cancel;
+  late final Future<RunMetrics> done;
+  final NativeBridge _native;
+  final int _id;
+  bool _cancelRequested = false;
 
-  Future<void> cancel() => _cancel();
+  /// Whether the reply stopped before it was complete: [cancel], or Android
+  /// reclaiming the model's memory. Set when [done] completes.
+  bool cancelled = false;
+
+  /// Stops this reply whether it is still queued, in prefill or decoding.
+  Future<void> cancel() {
+    _cancelRequested = true;
+    return _native.cancel(_id);
+  }
 }
 
 class LoadResult {
@@ -36,6 +46,7 @@ class EngineService extends ChangeNotifier {
   EngineService(this._native) {
     _native.eventsOf('engine').listen((e) {
       if (e['kind'] == 'released') {
+        releases++;
         _loadedKey = null;
         _status = EngineStatus.idle;
         notifyListeners();
@@ -46,11 +57,15 @@ class EngineService extends ChangeNotifier {
   final NativeBridge _native;
   Future<void> _queue = Future.value();
   int _nextRequest = 0;
+  int? _backgroundRequest;
+
+  /// Times Android made the engine release its model; work that spans a
+  /// release (calibration) did not run to completion.
+  int releases = 0;
 
   /// Bumped whenever foreground work arrives; background generations
   /// queued under an older epoch are skipped and a running one is cancelled.
   int _epoch = 0;
-  bool _backgroundRunning = false;
 
   String? _loadedKey;
   EngineStatus _status = EngineStatus.idle;
@@ -132,8 +147,15 @@ class EngineService extends ChangeNotifier {
         .eventsOf('token')
         .where((e) => e['requestId'] == id)
         .listen((e) => controller.add(e['text']! as String));
-    final done = _exclusive(() async {
+    final generation = Generation._(controller.stream, _native, id);
+    generation.done = _exclusive(() async {
       try {
+        // Native code only learns of the request when it is sent; a cancel
+        // while it waited in this queue is honoured here.
+        if (generation._cancelRequested) {
+          generation.cancelled = true;
+          return const RunMetrics();
+        }
         final m = await _native.generate(
           requestId: id,
           turns: turns,
@@ -141,6 +163,7 @@ class EngineService extends ChangeNotifier {
           temperature: temperature,
           ignoreEos: ignoreEos,
         );
+        generation.cancelled = m['cancelled']! as bool;
         return lastRun.value = RunMetrics.fromMap(m);
       } finally {
         // Token events are posted before the method result on the same
@@ -149,7 +172,7 @@ class EngineService extends ChangeNotifier {
         await controller.close();
       }
     });
-    return Generation(controller.stream, done, _native.cancel);
+    return generation;
   }
 
   /// Exact per-turn token counts from the loaded model's tokenizer (see
@@ -163,7 +186,7 @@ class EngineService extends ChangeNotifier {
   /// one.
   void preemptBackground() {
     _epoch++;
-    if (_backgroundRunning) unawaited(_native.cancel());
+    if (_backgroundRequest case final id?) unawaited(_native.cancel(id));
   }
 
   /// Starts a run of background work (titles, memory suggestions,
@@ -220,7 +243,7 @@ class BackgroundRun {
     return e
         ._background(_epoch, () async {
           if (e._loadedKey == null) return null;
-          e._backgroundRunning = true;
+          e._backgroundRequest = id;
           try {
             await e._native.generate(
               requestId: id,
@@ -231,7 +254,7 @@ class BackgroundRun {
             );
             return preempted ? null : out.toString();
           } finally {
-            e._backgroundRunning = false;
+            e._backgroundRequest = null;
           }
         })
         .whenComplete(sub.cancel);

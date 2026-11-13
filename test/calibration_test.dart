@@ -1,7 +1,13 @@
 import 'package:aithra/src/calibration/calibration.dart';
 import 'package:aithra/src/calibration/correctness.dart';
 import 'package:aithra/src/calibration/report.dart';
+import 'dart:async';
+
+import 'package:aithra/src/engine/engine_service.dart';
 import 'package:aithra/src/engine/run_metrics.dart';
+import 'package:aithra/src/models/catalog.dart';
+import 'package:aithra/src/platform/native.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 BackendResult result(
@@ -26,6 +32,39 @@ BackendResult result(
           peakRssMb: 2100,
         ),
 );
+
+/// Loads instantly; every generation reports [cancelled].
+class CancellingEngine extends NativeBridge {
+  CancellingEngine()
+    : super(
+        channel: const MethodChannel('fake'),
+        events: StreamController<Object?>.broadcast().stream,
+      );
+
+  bool cancelled = true;
+
+  @override
+  Future<Map<String, Object?>> load({
+    required String runtime,
+    required String path,
+    required String backend,
+    required int? threads,
+    required bool vision,
+    required int? maxTokens,
+  }) async => {'contextSize': 4096, 'loadMs': 1.0, 'peakRssMb': 1.0};
+
+  @override
+  Future<Map<String, Object?>> generate({
+    required int requestId,
+    required List<EngineTurn> turns,
+    required int maxTokens,
+    required double temperature,
+    required bool ignoreEos,
+  }) async => {'cancelled': cancelled, 'promptTokens': 10};
+
+  @override
+  Future<void> unload() async {}
+}
 
 const right = ['42', 'Paris.', 'The answer is 72'];
 const wrong = ['<pad><pad>', 'Paris', '7 2'];
@@ -155,5 +194,27 @@ void main() {
     expect(report, contains('- Gemma 4 E2B / NPU: no NPU'));
     expect(report, contains('42 → "<pad><pad>"'));
     expect(report, contains('search 3.4 ms'));
+  });
+
+  group('calibration run', () {
+    test('an interrupted run gives no verdict', () async {
+      final runner = CalibrationRunner(EngineService(CancellingEngine()));
+      final result = await runner.run(
+        catalog.first,
+        '/m',
+        1,
+        onProgress: (_, _, _) {},
+      );
+      expect(result, isNull);
+    });
+
+    test('a run that completes gives one result per backend', () async {
+      final engine = CancellingEngine()..cancelled = false;
+      final spec = catalog.first;
+      final result = await CalibrationRunner(
+        EngineService(engine),
+      ).run(spec, '/m', 1, onProgress: (_, _, _) {});
+      expect(result!.results, hasLength(spec.backends.length));
+    });
   });
 }

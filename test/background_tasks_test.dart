@@ -9,7 +9,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// An engine whose generations stream [reply] and finish when [finish] is
-/// called; cancel ends the running one, as the native engine does.
+/// called; cancelling the running request ends it, as the native engine
+/// does.
 class FakeEngine extends NativeBridge {
   FakeEngine._(this._events)
     : super(channel: const MethodChannel('fake'), events: _events.stream);
@@ -44,15 +45,22 @@ class FakeEngine extends NativeBridge {
     return (_running = Completer()).future;
   }
 
-  void finish() => _running?.complete(const {});
+  void finish({bool cancelled = false}) =>
+      _running?.complete({'cancelled': cancelled});
 
   @override
   Future<void> unload() async {}
 
+  final List<int> cancelledIds = [];
+
   @override
-  Future<void> cancel() async {
+  Future<void> cancel(int requestId) async {
     cancels++;
-    finish();
+    cancelledIds.add(requestId);
+    // Like EngineHost: only the request named, and only once it is running.
+    if (started.isNotEmpty && started.last == requestId) {
+      finish(cancelled: true);
+    }
   }
 }
 
@@ -185,6 +193,49 @@ void main() {
       expect(await run.generate(const [], maxTokens: 8), isNull);
       expect(await run.step(() async => 1), isNull);
       expect(native.started, hasLength(2));
+    });
+  });
+  group('stopping a reply', () {
+    late FakeEngine native;
+    late EngineService engine;
+
+    setUp(() async {
+      native = FakeEngine()..reply = 'hi';
+      engine = EngineService(native);
+      await engine.ensureLoaded(_spec, '/m', _cpu);
+    });
+
+    test('a reply stopped while queued never reaches the engine', () async {
+      final first = engine.generate(const [], maxTokens: 8);
+      first.text.listen((_) {});
+      final second = engine.generate(const [], maxTokens: 8);
+      second.text.listen((_) {});
+      await pumpEventQueue();
+      await second.cancel();
+      native.finish();
+      await first.done;
+      await second.done;
+      expect(second.cancelled, isTrue);
+      expect(native.started, hasLength(1));
+    });
+
+    test('the stop names the request it is for', () async {
+      final reply = engine.generate(const [], maxTokens: 8);
+      reply.text.listen((_) {});
+      await pumpEventQueue();
+      await reply.cancel();
+      await reply.done;
+      expect(native.cancelledIds, [native.started.single]);
+      expect(reply.cancelled, isTrue);
+    });
+
+    test('a reply that ran to the end is not cancelled', () async {
+      final reply = engine.generate(const [], maxTokens: 8);
+      reply.text.listen((_) {});
+      await pumpEventQueue();
+      native.finish();
+      await reply.done;
+      expect(reply.cancelled, isFalse);
     });
   });
 }

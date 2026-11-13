@@ -1,6 +1,7 @@
 import 'package:core_theme/core_theme.dart';
 import 'package:core_ui/core_ui.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../models/catalog.dart';
 import '../../models/download_state.dart';
@@ -108,9 +109,9 @@ class ModelTile extends StatelessWidget {
                 style: caption,
               ),
               action: (prominent ? FilledButton.icon : FilledButton.tonalIcon)(
-                onPressed: spec.url.isEmpty
+                onPressed: spec.url.isEmpty || s.models.starting(spec)
                     ? null
-                    : () => s.models.download(spec),
+                    : () => _download(context, spec),
                 style: _compact,
                 icon: const Icon(Icons.download_rounded, size: 18),
                 label: const Text('Download'),
@@ -157,10 +158,18 @@ class ModelTile extends StatelessWidget {
                   ),
                 ],
               ),
+            Unsupported(:final reason) => _ActionRow(
+              status: Text(reason, style: caption.copyWith(color: c.warning)),
+              action: s.models.onDisk(spec)
+                  ? _deleteButton(context, spec)
+                  : null,
+            ),
             DownloadFailed(:final message) => _ActionRow(
               status: Text(message, style: caption.copyWith(color: c.negative)),
               action: TextButton(
-                onPressed: () => s.models.download(spec),
+                onPressed: s.models.starting(spec)
+                    ? null
+                    : () => _download(context, spec),
                 style: _trailingText,
                 child: const Text('Try again'),
               ),
@@ -186,6 +195,24 @@ class ModelTile extends StatelessWidget {
                     )
                   : spec.kind == ModelKind.embedding
                   ? _RecallStatus(onDelete: () => _confirmDelete(context, spec))
+                  : s.assistant.loadFailure(spec) != null
+                  ? _ActionRow(
+                      status: Text(
+                        "Can't run on this phone: ${s.assistant.loadFailure(spec)}",
+                        style: caption.copyWith(color: c.negative),
+                      ),
+                      action: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextButton(
+                            onPressed: () => s.assistant.calibrate(spec),
+                            style: _trailingText,
+                            child: const Text('Tune again'),
+                          ),
+                          _deleteButton(context, spec),
+                        ],
+                      ),
+                    )
                   : _ActionRow(
                       status: active
                           ? Row(
@@ -245,6 +272,25 @@ class ModelTile extends StatelessWidget {
     minimumSize: const Size(48, 40),
     alignment: Alignment.centerRight,
   );
+
+  Widget _deleteButton(BuildContext context, ModelSpec spec) => IconButton(
+    tooltip: 'Delete',
+    iconSize: 22,
+    icon: Icon(
+      Icons.delete_outline_rounded,
+      color: SuiteColors.of(context).textSecondary,
+    ),
+    onPressed: () => _confirmDelete(context, spec),
+  );
+
+  Future<void> _download(BuildContext context, ModelSpec spec) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await context.services.models.download(spec);
+    } on PlatformException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message ?? e.code)));
+    }
+  }
 
   String _backendLine(BuildContext context, ModelSpec spec) {
     final b = context.services.assistant.backendFor(spec);

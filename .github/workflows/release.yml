@@ -9,8 +9,12 @@ permissions:
   contents: write
 
 jobs:
+  device:
+    uses: ./.github/workflows/device-test.yml
+
   release:
     name: Build and publish signed APK
+    needs: device
     runs-on: ubuntu-latest
     env:
       HAS_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 != '' }}
@@ -48,7 +52,9 @@ jobs:
           flutter build apk --release --target-platform android-arm64
           version=$(grep '^version:' pubspec.yaml | sed 's/version: //; s/+.*//')
           cp build/app/outputs/flutter-apk/app-release.apk "aithra-${version}-arm64-v8a.apk"
+          cp build/app/outputs/mapping/release/mapping.txt "aithra-${version}-mapping.txt"
           echo "APK=aithra-${version}-arm64-v8a.apk" >> "$GITHUB_ENV"
+          echo "MAPPING=aithra-${version}-mapping.txt" >> "$GITHUB_ENV"
 
       - name: Clean up signing material
         if: always()
@@ -59,4 +65,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: ${{ env.APK }}
+          files: |
+            ${{ env.APK }}
+            ${{ env.MAPPING }}

@@ -1,0 +1,58 @@
+name: Device test
+
+# Launch smoke and integration test on an emulator. GitHub's runners cannot
+# run an arm64 emulator (the arm64 Linux runners have no KVM, the macOS ones
+# cannot nest virtualization), so this builds the same app for x86_64; the
+# crashes it guards against are in Dart and Kotlin, not in the ABI.
+on:
+  workflow_call:
+
+jobs:
+  device:
+    name: Launch smoke and integration test (x86_64 emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      ORG_GRADLE_PROJECT_aithraAbi: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/share/swift /opt/hostedtoolcache/CodeQL
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.41.3
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Build x86_64 release APK
+        run: flutter build apk --release --target-platform android-x64
+      - name: Launch smoke and integration test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            .github/scripts/launch_smoke.sh build/app/outputs/flutter-apk/app-release.apk
+            adb uninstall dev.abdullah.aithra
+            flutter test integration_test -d emulator-5554 --timeout 20m
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: device-test
+          path: |
+            launch-logcat.txt
+            launch-screen.png
+          if-no-files-found: ignore

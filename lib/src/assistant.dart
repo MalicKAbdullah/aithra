@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
 
 import 'calibration/calibration.dart';
+import 'calibration/correctness.dart';
+import 'chat/context_builder.dart';
 import 'data/settings_store.dart';
 import 'engine/engine_service.dart';
 import 'models/catalog.dart';
@@ -58,6 +61,27 @@ class Assistant extends ChangeNotifier with WidgetsBindingObserver {
     return c != null && c.fileSize == models.sizeOf(spec) ? c : null;
   }
 
+  /// Prompt tokens per UTF-8 byte for [spec] on a runtime without a
+  /// tokenizer: the highest ratio seen in calibration's speed run or in any
+  /// chat turn since, or the byte bound before anything was measured.
+  double tokensPerByte(ModelSpec spec) {
+    final seen = [
+      ?settings.tokensPerByte[spec.id],
+      for (final r in [...?calibrationFor(spec)?.results])
+        if (r.speed?.promptTokens case final tokens?)
+          tokens / utf8.encode(speedPrompt).length,
+    ];
+    return seen.isEmpty
+        ? byteBoundTokensPerByte
+        : seen.reduce((a, b) => a > b ? a : b);
+  }
+
+  /// Records the ratio a chat turn showed when it is the highest so far.
+  Future<void> observeTokensPerByte(ModelSpec spec, double ratio) =>
+      ratio > tokensPerByte(spec)
+      ? settings.putTokensPerByte(spec.id, ratio)
+      : Future.value();
+
   BackendOption? backendFor(ModelSpec spec) {
     final id = calibrationFor(spec)?.chosenBackend;
     return id == null ? null : BackendOption.byId(id);
@@ -89,7 +113,7 @@ class Assistant extends ChangeNotifier with WidgetsBindingObserver {
             notifyListeners();
           },
         );
-        await settings.putCalibration(result);
+        if (result != null) await settings.putCalibration(result);
       } finally {
         calibrating = null;
         _calibration = null;
@@ -100,18 +124,35 @@ class Assistant extends ChangeNotifier with WidgetsBindingObserver {
     return run;
   }
 
-  /// Loads the active model on its chosen backend. Waits for a running
-  /// calibration first; returns null when there is no usable model.
+  /// Why no backend of [spec] could run it on this phone, from its stored
+  /// calibration; null when one could or it has not been tuned.
+  String? loadFailure(ModelSpec spec) {
+    final c = calibrationFor(spec);
+    if (c == null || c.chosenBackend != null) return null;
+    // No chosen backend means every backend tried reported an error.
+    return c.results.map((r) => r.error).nonNulls.first;
+  }
+
+  /// Loads the active model on its chosen backend, tuning it first when it
+  /// has not been tuned. Returns null when there is no model on the phone;
+  /// throws when the model cannot run here.
   Future<(ModelSpec, BackendOption)?> prepare() async {
     if (_calibration != null) await _calibration;
     final spec = activeModel;
     if (spec == null) return null;
     final path = models.pathOf(spec)!;
-    var backend = backendFor(spec);
+    if (calibrationFor(spec) == null) await calibrate(spec);
+    if (calibrationFor(spec) == null) {
+      throw StateError(
+        'Tuning ${spec.name} for this phone was interrupted. Try again.',
+      );
+    }
+    final backend = backendFor(spec);
     if (backend == null) {
-      await calibrate(spec);
-      backend = backendFor(spec);
-      if (backend == null) return null;
+      throw StateError(
+        '${spec.name} cannot run on this phone: ${loadFailure(spec)}. '
+        'You can tune it again in Models.',
+      );
     }
     await engine.ensureLoaded(spec, path, backend);
     return (spec, backend);
@@ -147,6 +188,10 @@ class Assistant extends ChangeNotifier with WidgetsBindingObserver {
     } else if (state == AppLifecycleState.resumed) {
       _releaseTimer?.cancel();
       unawaited(models.refresh());
+      // A frozen process runs its overdue release timer on thaw, possibly
+      // just before this event; loading again now has the model back
+      // before the user's next message.
+      warmUp();
     }
   }
 

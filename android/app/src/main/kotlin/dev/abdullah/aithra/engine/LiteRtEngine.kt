@@ -35,6 +35,7 @@ class LiteRtEngine(
 ) : LlmEngine {
     private val engine: Engine
     @Volatile private var active: Conversation? = null
+    private val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
 
     override val contextSize: Int
 
@@ -76,6 +77,12 @@ class LiteRtEngine(
             ConversationConfig(initialMessages = history, samplerConfig = sampler),
         )
         active = conversation
+        // A cancel that arrived before [active] was set only raised the flag.
+        if (cancelled.get()) {
+            active = null
+            conversation.close()
+            return GenerateStats.cancelledBeforeStart
+        }
         val start = System.nanoTime()
         var firstTokenNs = 0L
         var failure: Throwable? = null
@@ -115,9 +122,10 @@ class LiteRtEngine(
                     decodeMs = msFor(info.lastDecodeTokenCount, info.lastDecodeTokensPerSecond),
                     contextTokens = conversation.getTokenCount(),
                     note = null,
+                    cancelled = cancelled.get(),
                 )
             } catch (e: Exception) {
-                GenerateStats(null, null, ttftMs, null, null, null, "benchmark info: ${e.message}")
+                GenerateStats(null, null, ttftMs, null, null, null, "benchmark info: ${e.message}", cancelled.get())
             }
         } finally {
             active = null
@@ -126,8 +134,11 @@ class LiteRtEngine(
     }
 
     override fun cancel() {
+        cancelled.set(true)
         active?.cancelProcess()
     }
+
+    override fun resetCancel() = cancelled.set(false)
 
     // LiteRT-LM 0.19.1 has no tokenizer API; usage comes from each
     // conversation's reported token count instead.
