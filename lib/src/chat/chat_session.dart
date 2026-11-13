@@ -41,6 +41,24 @@ class StreamingText extends ValueNotifier<String> {
 
 enum ReplyPhase { idle, preparing, streaming }
 
+/// Something that did not work for a reply; the reply itself is fine.
+class ReplyNotice {
+  const ReplyNotice(this.title, this.details, {this.recall = false});
+
+  const ReplyNotice.recall(String message)
+    : title = 'Memory across chats unavailable',
+      details =
+          'Aithra answered without looking at your other chats because '
+          'recall failed: $message',
+      recall = true;
+
+  final String title;
+  final String details;
+
+  /// A recall failure, which the user can retry.
+  final bool recall;
+}
+
 /// An image attached in the composer, before it is stored.
 class PendingImage {
   PendingImage(this.jpeg);
@@ -93,6 +111,10 @@ class ChatSession extends ChangeNotifier {
   /// Full text of the most recent reply, including the tail that may not
   /// have been published to [streaming] before the reply ended.
   String lastReply = '';
+
+  /// Problems that affected a reply, keyed by the reply's seq, shown under
+  /// it for this session.
+  final Map<int, ReplyNotice> notices = {};
 
   /// Facts the model found in the user's last message, offered as
   /// suggestions; they arrive after the reply, when the engine is free.
@@ -218,7 +240,11 @@ class ChatSession extends ChangeNotifier {
         ))
           ChatMessage.fromMap(r),
       ];
-      final recalled = await _recallIndex.recall(recallQuery, conv.id);
+      final recall = await _recallIndex.recall(recallQuery, conv.id);
+      final recalled = switch (recall) {
+        Recalled(:final snippets) => snippets,
+        RecallOff() || RecallFailed() => const <String>[],
+      };
       final system = buildSystemPrompt(
         now: DateTime.now(),
         memories: [for (final m in _memories.items.take(40)) m.text],
@@ -294,19 +320,30 @@ class ChatSession extends ChangeNotifier {
       );
       unawaited(HapticFeedback.selectionClick());
       unawaited(_store.upsert(conv.id));
+      final replySeq = saved['seq']! as int;
+      if (recall case RecallFailed(:final message)) {
+        notices[replySeq] = ReplyNotice.recall(message);
+      }
       final used = metrics.contextTokens ?? plan.promptTokens;
       if (used == null) {
-        throw StateError('The engine reported no context usage for this turn.');
-      }
-      if (shouldSummarize(
+        notices[replySeq] = const ReplyNotice(
+          'Context size not reported',
+          'The engine did not report how much of the context this turn '
+              'used, so Aithra cannot tell when to summarize older messages. '
+              'A long chat may stop fitting; starting a new chat avoids it.',
+        );
+      } else if (shouldSummarize(
         usedTokens: used,
         contextTokens: contextSize,
         replyTokens: replyTokens,
       )) {
-        unawaited(_summarize());
+        _reportFailures(replySeq, _summarize());
       }
       final asked = history.lastWhere((m) => m.role == Role.user);
-      unawaited(_afterReply(conv.id, history, asked.content, text));
+      _reportFailures(
+        replySeq,
+        _afterReply(conv.id, history, asked.content, text),
+      );
     } catch (e) {
       error = e is PlatformException ? (e.message ?? e.code) : '$e';
     } finally {
@@ -317,6 +354,23 @@ class ChatSession extends ChangeNotifier {
       streaming._buffer.clear();
       notifyListeners();
     }
+  }
+
+  /// Shows a failure of [work], which runs after the reply, under it.
+  void _reportFailures(int replySeq, Future<void> work) {
+    unawaited(
+      work.catchError((Object e) {
+        if (e is! PlatformException) throw e;
+        if (_disposed) return;
+        notices[replySeq] = ReplyNotice(
+          'Background task failed',
+          'After this reply Aithra could not finish its housekeeping '
+              '(naming the chat, memory suggestions or summarizing): '
+              '${e.message ?? e.code}',
+        );
+        notifyListeners();
+      }),
+    );
   }
 
   /// Housekeeping once the reply is in and the engine is free: naming a new

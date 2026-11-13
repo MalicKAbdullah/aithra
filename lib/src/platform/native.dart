@@ -217,6 +217,22 @@ class NativeBridge {
     'limit': limit,
   });
 
+  /// Messages closest in meaning to [query], one per conversation.
+  Future<List<Map<String, Object?>>> dbSearchMessages(
+    String modelPath,
+    String query,
+    int limit,
+  ) => _rows('db.searchMessages', {
+    'modelPath': modelPath,
+    'query': query,
+    'limit': limit,
+  });
+
+  Future<({int indexed, int total})> dbVectorStatus() async {
+    final m = await _map('db.vectorStatus');
+    return (indexed: m['indexed']! as int, total: m['total']! as int);
+  }
+
   /// Embeds up to [limit] unindexed messages; returns how many (0 when done).
   Future<int> dbIndexVectors(String modelPath, int limit) async =>
       (await _channel.invokeMethod<int>('db.indexVectors', {

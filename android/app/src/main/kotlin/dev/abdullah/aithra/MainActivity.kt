@@ -248,6 +248,15 @@ class MainActivity : FlutterFragmentActivity() {
                     call.argument<Int>("limit")!!,
                 )
             }
+            "db.searchMessages" -> onEmbed(result) {
+                db.searchMessages(
+                    embedder,
+                    call.argument<String>("modelPath")!!,
+                    call.argument<String>("query")!!,
+                    call.argument<Int>("limit")!!,
+                )
+            }
+            "db.vectorStatus" -> onDb(result) { db.vectorStatus() }
             "db.indexVectors" -> onEmbed(result) {
                 db.indexVectors(embedder, call.argument<String>("modelPath")!!, call.argument<Int>("limit")!!)
             }

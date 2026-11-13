@@ -51,14 +51,15 @@ Future<void> main() async {
 
   final engine = EngineService(native);
   final models = ModelManager(native);
+  final recall = RecallIndex(native: native, engine: engine, models: models);
   final services = Services(
     native: native,
     engine: engine,
     models: models,
     settings: settings,
     memories: MemoryStore(vault),
-    recall: RecallIndex(native: native, engine: engine, models: models),
-    chats: ChatStore(native),
+    recall: recall,
+    chats: ChatStore(native, searchMessages: recall.search),
     assistant: Assistant(engine: engine, models: models, settings: settings),
     lock: LockController(
       deviceAuth: LocalAuthDeviceAuth(),

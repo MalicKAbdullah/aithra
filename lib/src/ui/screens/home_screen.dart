@@ -142,6 +142,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   itemBuilder: (context, i) => _ConversationRow(
                     key: ValueKey(items[i].id),
                     info: items[i],
+                    match: s.chats.snippets[items[i].id],
                     onTap: () => _open(items[i]),
                   ),
                 );
@@ -155,9 +156,17 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class _ConversationRow extends StatelessWidget {
-  const _ConversationRow({required this.info, required this.onTap, super.key});
+  const _ConversationRow({
+    required this.info,
+    required this.onTap,
+    this.match,
+    super.key,
+  });
 
   final ConversationInfo info;
+
+  /// While searching, the message that matched (rather than the title).
+  final String? match;
   final VoidCallback onTap;
 
   @override
@@ -213,7 +222,26 @@ class _ConversationRow extends StatelessWidget {
                       children: [
                         Expanded(
                           child: Text.rich(
-                            draft != null
+                            match != null
+                                ? TextSpan(
+                                    children: [
+                                      WidgetSpan(
+                                        alignment: PlaceholderAlignment.middle,
+                                        child: Padding(
+                                          padding: const EdgeInsets.only(
+                                            right: 4,
+                                          ),
+                                          child: Icon(
+                                            Icons.search_rounded,
+                                            size: 14,
+                                            color: c.accent,
+                                          ),
+                                        ),
+                                      ),
+                                      TextSpan(text: match),
+                                    ],
+                                  )
+                                : draft != null
                                 ? TextSpan(
                                     children: [
                                       TextSpan(

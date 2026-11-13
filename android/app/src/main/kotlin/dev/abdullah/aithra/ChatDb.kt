@@ -36,6 +36,9 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         /** Cosine similarity below which a past message is not recalled. */
         const val RECALL_THRESHOLD = 0.45f
 
+        /** Similarity a message needs to show up in search. */
+        const val SEARCH_THRESHOLD = 0.4f
+
         /** Characters of a message that are embedded. */
         const val EMBED_CHARS = 1500
     }
@@ -434,6 +437,23 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         if (query.isBlank()) return emptyList()
         val q = embedder.embed(modelPath, listOf(Embedder.query(query.trim().take(EMBED_CHARS)))).single()
         return rankAndLoad(q, excludeConv, limit, RECALL_THRESHOLD)
+    }
+
+    /** Messages whose meaning matches [query], best first, one per conversation. */
+    fun searchMessages(embedder: Embedder, modelPath: String, query: String, limit: Int): List<Map<String, Any?>> {
+        if (query.isBlank()) return emptyList()
+        val q = embedder.embed(modelPath, listOf(Embedder.query(query.trim().take(EMBED_CHARS)))).single()
+        return rankAndLoad(q, null, limit * 4, SEARCH_THRESHOLD)
+            .distinctBy { it["convId"] }
+            .take(limit)
+    }
+
+    /** How many messages have a vector, of all messages. */
+    fun vectorStatus(): Map<String, Any?> = readableDatabase.rawQuery(
+        "SELECT (SELECT COUNT(*) FROM vectors), (SELECT COUNT(*) FROM messages)", null,
+    ).use { c ->
+        c.moveToFirst()
+        mapOf("indexed" to c.getInt(0), "total" to c.getInt(1))
     }
 
     private fun rankAndLoad(q: FloatArray, excludeConv: String?, limit: Int, threshold: Float): List<Map<String, Any?>> {

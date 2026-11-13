@@ -3,12 +3,20 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../platform/native.dart';
+import '../memory/recall_index.dart';
 import 'chat_models.dart';
 
+/// Finds messages by meaning (see RecallIndex.search).
+typedef MessageSearch = Future<List<SearchHit>> Function(String query);
+
 /// The conversation list: paged from the encrypted store, newest first with
-/// pinned chats on top, plus search over titles and message words.
+/// pinned chats on top, plus search: title word prefixes always, and message
+/// text by meaning when the embedding model is on the phone.
 class ChatStore extends ChangeNotifier {
-  ChatStore(this._native);
+  ChatStore(this._native, {required MessageSearch searchMessages})
+    : _searchMessages = searchMessages;
+
+  final MessageSearch _searchMessages;
 
   static const int pageSize = 40;
 
@@ -21,6 +29,10 @@ class ChatStore extends ChangeNotifier {
   String _query = '';
   List<ConversationInfo>? _results;
   Timer? _debounce;
+
+  /// While searching: the matching message of each chat found by its
+  /// messages rather than its title.
+  Map<String, String> snippets = const {};
 
   List<ConversationInfo> get items => _results ?? _items;
   bool get searching => _query.isNotEmpty;
@@ -51,6 +63,7 @@ class ChatStore extends ChangeNotifier {
     _debounce?.cancel();
     if (_query.isEmpty) {
       _results = null;
+      snippets = const {};
       notifyListeners();
       return;
     }
@@ -58,7 +71,25 @@ class ChatStore extends ChangeNotifier {
       final q = _query;
       final rows = await _native.dbSearch(q, 50);
       if (q != _query) return;
-      _results = rows.map(ConversationInfo.fromMap).toList();
+      final byTitle = rows.map(ConversationInfo.fromMap).toList();
+      _results = byTitle;
+      snippets = const {};
+      notifyListeners();
+      // Message matches need the embedding model and arrive after titles.
+      final hits = await _searchMessages(q);
+      if (q != _query || hits.isEmpty) return;
+      final found = <ConversationInfo>[];
+      final found2 = <String, String>{};
+      for (final h in hits) {
+        if (byTitle.any((c) => c.id == h.convId)) continue;
+        final row = await _native.dbConversation(h.convId);
+        if (row == null) continue;
+        found.add(ConversationInfo.fromMap(row));
+        found2[h.convId] = h.snippet;
+      }
+      if (q != _query) return;
+      _results = [...byTitle, ...found];
+      snippets = found2;
       notifyListeners();
     });
   }

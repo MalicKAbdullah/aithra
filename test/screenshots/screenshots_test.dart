@@ -248,6 +248,25 @@ class FakeNative extends NativeBridge {
   Future<int> dbIndexVectors(String modelPath, int limit) async => 0;
 
   @override
+  Future<List<Map<String, Object?>>> dbSearchMessages(
+    String modelPath,
+    String query,
+    int limit,
+  ) async => [];
+
+  @override
+  Future<({int indexed, int total})> dbVectorStatus() async =>
+      (indexed: 0, total: 0);
+
+  @override
+  Future<({List<int>? counts, int? overhead})> countTokens(
+    List<EngineTurn> turns,
+  ) async => (counts: null, overhead: null);
+
+  @override
+  Future<void> dbSetTokens(Map<int, int> counts, String model) async {}
+
+  @override
   Future<Map<String, Object?>> deviceInfo() async => {
     'manufacturer': 'Google',
     'model': 'Pixel 8',
@@ -751,14 +770,15 @@ Future<Harness> _build(
 
   final engine = EngineService(native);
   final models = ModelManager(native);
+  final recall = RecallIndex(native: native, engine: engine, models: models);
   final services = Services(
     native: native,
     engine: engine,
     models: models,
     settings: settings,
     memories: memories,
-    recall: RecallIndex(native: native, engine: engine, models: models),
-    chats: ChatStore(native),
+    recall: recall,
+    chats: ChatStore(native, searchMessages: recall.search),
     assistant: Assistant(engine: engine, models: models, settings: settings),
     lock: LockController(
       deviceAuth: const UnavailableDeviceAuth(),

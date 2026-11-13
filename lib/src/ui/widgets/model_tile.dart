@@ -184,8 +184,10 @@ class ModelTile extends StatelessWidget {
                         ),
                       ],
                     )
+                  : spec.kind == ModelKind.embedding
+                  ? _RecallStatus(onDelete: () => _confirmDelete(context, spec))
                   : _ActionRow(
-                      status: active || spec.kind == ModelKind.embedding
+                      status: active
                           ? Row(
                               children: [
                                 Icon(
@@ -196,9 +198,7 @@ class ModelTile extends StatelessWidget {
                                 const SizedBox(width: 6),
                                 Flexible(
                                   child: Text(
-                                    spec.kind == ModelKind.embedding
-                                        ? 'On · runs when Aithra is idle'
-                                        : _backendLine(context, spec),
+                                    _backendLine(context, spec),
                                     style: caption,
                                   ),
                                 ),
@@ -301,4 +301,67 @@ class _ActionRow extends StatelessWidget {
       ],
     ),
   );
+}
+
+/// The embedding model's state: how much is indexed, or why recall is not
+/// working, with a way to try again.
+class _RecallStatus extends StatelessWidget {
+  const _RecallStatus({required this.onDelete});
+
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    final recall = context.services.recall;
+    final caption = AithraType.caption.copyWith(color: c.textSecondary);
+    return ListenableBuilder(
+      listenable: recall,
+      builder: (context, _) {
+        final failure = recall.failure;
+        if (failure != null) {
+          return _ActionRow(
+            status: Text(
+              'Not working: $failure',
+              style: caption.copyWith(color: c.negative),
+            ),
+            action: TextButton(
+              onPressed: recall.retry,
+              style: ModelTile._trailingText,
+              child: const Text('Try again'),
+            ),
+          );
+        }
+        final indexed = recall.indexed;
+        final total = recall.total;
+        return _ActionRow(
+          status: Row(
+            children: [
+              Icon(Icons.check_circle_rounded, size: 16, color: c.positive),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  indexed == null || total == null
+                      ? 'On'
+                      : indexed >= total
+                      ? 'On · all $total messages indexed'
+                      : 'On · $indexed of $total messages indexed',
+                  style: caption,
+                ),
+              ),
+            ],
+          ),
+          action: IconButton(
+            tooltip: 'Delete',
+            constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+            padding: EdgeInsets.zero,
+            style: IconButton.styleFrom(alignment: Alignment.centerRight),
+            iconSize: 22,
+            icon: Icon(Icons.delete_outline_rounded, color: c.textSecondary),
+            onPressed: onDelete,
+          ),
+        );
+      },
+    );
+  }
 }

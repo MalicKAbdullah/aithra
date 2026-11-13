@@ -174,14 +174,7 @@ class EngineService extends ChangeNotifier {
   Future<T?> _background<T extends Object>(
     int epoch,
     Future<T?> Function() task,
-  ) => _exclusive(() async {
-    if (epoch != _epoch) return null;
-    try {
-      return await task();
-    } on PlatformException {
-      return null;
-    }
-  });
+  ) => _exclusive(() async => epoch == _epoch ? await task() : null);
 
   /// Frees the model's memory (app backgrounded for long).
   Future<void> release() => _exclusive(() async {
@@ -195,7 +188,8 @@ class EngineService extends ChangeNotifier {
 
 /// Background steps that each wait for the engine to be free and are all
 /// skipped once foreground work has arrived since the run began; a running
-/// generation step is cancelled, so the user never waits on one.
+/// generation step is cancelled, so the user never waits on one. A step
+/// that fails throws, for the caller to report.
 class BackgroundRun {
   BackgroundRun._(this._engine, this._epoch);
 
