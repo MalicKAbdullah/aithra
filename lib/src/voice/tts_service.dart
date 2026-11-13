@@ -10,6 +10,10 @@ class TtsService extends ChangeNotifier {
   TtsService(this._native) {
     _native.eventsOf('tts').listen((e) {
       final kind = e['kind']! as String;
+      if (kind == 'word') {
+        words.value++;
+        return;
+      }
       if (kind == 'done' || kind == 'error' || kind == 'stopped') {
         _pending.remove(e['id']);
         if (_pending.isEmpty) _settle();
@@ -23,6 +27,10 @@ class TtsService extends ChangeNotifier {
   int _next = 0;
 
   bool get speaking => _pending.isNotEmpty;
+
+  /// Counts words as the engine starts speaking them (`onRangeStart`), so
+  /// the voice orb can pulse with the speech.
+  final ValueNotifier<int> words = ValueNotifier(0);
 
   Future<void> say(String sentence) async {
     final id = 'u${_next++}';

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:core_theme/core_theme.dart';
 import 'package:flutter/material.dart';
@@ -8,6 +9,9 @@ import '../../chat/chat_session.dart';
 import '../../services.dart';
 import '../../voice/sentence_splitter.dart';
 import '../../voice/speech_service.dart';
+import '../aithra_type.dart';
+import '../widgets/voice_orb.dart';
+import 'chat_screen.dart';
 
 enum VoicePhase { listening, thinking, speaking, paused }
 
@@ -21,14 +25,9 @@ class VoiceModeScreen extends StatefulWidget {
   State<VoiceModeScreen> createState() => _VoiceModeScreenState();
 }
 
-class _VoiceModeScreenState extends State<VoiceModeScreen>
-    with SingleTickerProviderStateMixin {
+class _VoiceModeScreenState extends State<VoiceModeScreen> {
   late final Services _s;
   late final ChatSession _session;
-  late final AnimationController _pulse = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1400),
-  )..repeat(reverse: true);
   StreamSubscription<String>? _finals;
   VoicePhase _phase = VoicePhase.paused;
   String _heard = '';
@@ -63,7 +62,6 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
     _s.speech.cancel();
     _s.tts.stop();
     _session.dispose();
-    _pulse.dispose();
     super.dispose();
   }
 
@@ -153,6 +151,15 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
     }
   }
 
+  void _typeInstead() {
+    final conversation = _session.conversation;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) => ChatScreen(conversation: conversation),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = SuiteColors.of(context);
@@ -160,119 +167,187 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
     final label = switch (_phase) {
       VoicePhase.listening => 'Listening',
       VoicePhase.thinking => 'Thinking',
-      VoicePhase.speaking => 'Speaking · tap to interrupt',
+      VoicePhase.speaking => 'Speaking · tap to stop',
       VoicePhase.paused => 'Tap to talk',
     };
+    final mood = switch (_phase) {
+      VoicePhase.listening => OrbMood.listening,
+      VoicePhase.thinking => OrbMood.thinking,
+      VoicePhase.speaking => OrbMood.speaking,
+      VoicePhase.paused => OrbMood.idle,
+    };
+    final notice = speech.languageMissing
+        ? 'The on-device speech model for your language is not installed.'
+        : speech.errorCode != null && _phase == VoicePhase.paused
+        ? speechErrorMessage(speech.errorCode!)
+        : null;
     return Scaffold(
-      appBar: AppBar(title: const Text('Voice mode')),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(AppSpacing.gutter),
-          child: Column(
-            children: [
-              Expanded(
-                child: SingleChildScrollView(
-                  reverse: true,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: LayoutBuilder(
+          builder: (context, box) {
+            const bar = 56.0;
+            final orb = math.min(260.0, box.maxWidth * 0.66);
+            // The orb's centre sits on the screen's vertical middle; the
+            // transcript fills the space above it and never reaches it.
+            final half = (box.maxHeight - orb) / 2;
+            return Column(
+              children: [
+                SizedBox(
+                  height: bar,
+                  child: Row(
                     children: [
-                      if (_heard.isNotEmpty)
-                        Text(
-                          _heard,
-                          style: AppTextStyles.h3.copyWith(
-                            color: c.textSecondary,
-                          ),
-                        ),
-                      const SizedBox(height: AppSpacing.lg),
-                      if (_reply.isNotEmpty)
-                        Text(
-                          speakable(_reply),
-                          style: AppTextStyles.body.copyWith(
-                            color: c.textPrimary,
-                            height: 1.5,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-              if (speech.languageMissing)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                  child: Column(
-                    children: [
-                      Text(
-                        'The on-device speech model for your language is not installed.',
-                        textAlign: TextAlign.center,
-                        style: AppTextStyles.bodySmall.copyWith(
-                          color: c.textSecondary,
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: speech.downloadLanguage,
-                        child: const Text('Download it'),
+                      const SizedBox(width: AppSpacing.xs),
+                      IconButton(
+                        tooltip: 'Close voice mode',
+                        icon: const Icon(Icons.close_rounded),
+                        onPressed: () => Navigator.of(context).maybePop(),
                       ),
                     ],
                   ),
-                )
-              else if (speech.errorCode != null && _phase == VoicePhase.paused)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                  child: Text(
-                    speechErrorMessage(speech.errorCode!),
-                    style: AppTextStyles.bodySmall.copyWith(color: c.negative),
+                ),
+                SizedBox(
+                  height: math.max(0, half - bar),
+                  child: _Transcript(heard: _heard, reply: _reply),
+                ),
+                GestureDetector(
+                  onTap: _interrupt,
+                  child: Semantics(
+                    button: true,
+                    label: label,
+                    child: VoiceOrb(
+                      mood: mood,
+                      level: speech.level,
+                      words: _s.tts.words,
+                      size: orb,
+                    ),
                   ),
                 ),
-              GestureDetector(
-                onTap: _interrupt,
-                child: AnimatedBuilder(
-                  animation: _pulse,
-                  builder: (context, _) {
-                    final level = _phase == VoicePhase.listening
-                        ? ((speech.level + 2) / 12).clamp(0.0, 1.0)
-                        : _phase == VoicePhase.paused
-                        ? 0.0
-                        : _pulse.value;
-                    return Container(
-                      width: 140 + 40 * level,
-                      height: 140 + 40 * level,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: RadialGradient(
-                          colors: [
-                            c.accent,
-                            c.accent.withValues(
-                              alpha: _phase == VoicePhase.paused ? 0.25 : 0.55,
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: AppSpacing.gutter,
+                    ),
+                    child: Column(
+                      children: [
+                        const SizedBox(height: AppSpacing.xs),
+                        AnimatedSwitcher(
+                          duration: AppMotion.fast,
+                          child: Text(
+                            label,
+                            key: ValueKey(label),
+                            style: AithraType.label.copyWith(
+                              color: c.textSecondary,
                             ),
-                          ],
+                          ),
                         ),
-                      ),
-                      child: Icon(
-                        switch (_phase) {
-                          VoicePhase.listening => Icons.mic_rounded,
-                          VoicePhase.thinking => Icons.more_horiz_rounded,
-                          VoicePhase.speaking => Icons.graphic_eq_rounded,
-                          VoicePhase.paused => Icons.mic_none_rounded,
-                        },
-                        size: 52,
-                        color: c.onAccent,
-                      ),
-                    );
-                  },
+                        if (notice != null) ...[
+                          const SizedBox(height: AppSpacing.sm),
+                          Text(
+                            notice,
+                            textAlign: TextAlign.center,
+                            style: AithraType.bodySmall.copyWith(
+                              color: speech.languageMissing
+                                  ? c.textSecondary
+                                  : c.negative,
+                            ),
+                          ),
+                          if (speech.languageMissing)
+                            TextButton(
+                              onPressed: speech.downloadLanguage,
+                              child: const Text('Download it'),
+                            ),
+                        ],
+                        const Spacer(),
+                        TextButton.icon(
+                          onPressed: _typeInstead,
+                          icon: const Icon(Icons.keyboard_rounded, size: 18),
+                          label: const Text('Type instead'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: c.textSecondary,
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-              const SizedBox(height: AppSpacing.md),
-              Text(
-                label,
-                style: AppTextStyles.labelStrong.copyWith(
-                  color: c.textSecondary,
-                ),
-              ),
-              const SizedBox(height: AppSpacing.lg),
-            ],
-          ),
+              ],
+            );
+          },
         ),
       ),
+    );
+  }
+}
+
+/// What was heard and the reply so far, newest at the bottom, fading out at
+/// the top edge as it scrolls.
+class _Transcript extends StatelessWidget {
+  const _Transcript({required this.heard, required this.reply});
+
+  final String heard;
+  final String reply;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: SingleChildScrollView(
+            reverse: true,
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.gutter,
+              AppSpacing.lg,
+              AppSpacing.gutter,
+              AppSpacing.lg,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (heard.isNotEmpty)
+                  Text(
+                    heard,
+                    textAlign: TextAlign.center,
+                    style: AithraType.title.copyWith(
+                      color: c.textSecondary,
+                      fontSize: 16,
+                    ),
+                  ),
+                if (heard.isNotEmpty && reply.isNotEmpty)
+                  const SizedBox(height: AppSpacing.md),
+                if (reply.isNotEmpty)
+                  Text(
+                    speakable(reply),
+                    textAlign: TextAlign.center,
+                    style: AithraType.body.copyWith(
+                      color: c.textPrimary,
+                      fontSize: 17,
+                      height: 1.5,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        Positioned(
+          left: 0,
+          right: 0,
+          top: 0,
+          height: AppSpacing.xxl,
+          child: IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [c.background, c.background.withValues(alpha: 0)],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

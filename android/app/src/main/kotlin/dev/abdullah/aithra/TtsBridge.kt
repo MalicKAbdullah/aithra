@@ -25,6 +25,9 @@ class TtsBridge(context: Context) {
             override fun onStart(utteranceId: String) =
                 Events.send(mapOf("type" to "tts", "kind" to "start", "id" to utteranceId))
 
+            override fun onRangeStart(utteranceId: String, start: Int, end: Int, frame: Int) =
+                Events.send(mapOf("type" to "tts", "kind" to "word", "id" to utteranceId))
+
             override fun onDone(utteranceId: String) =
                 Events.send(mapOf("type" to "tts", "kind" to "done", "id" to utteranceId))
 
