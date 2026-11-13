@@ -16,14 +16,27 @@ class DataKeyStore {
 
   final ISecureStorage _storage;
 
-  Future<Uint8List> obtainKey() async {
+  /// The stored key, or a new one on first launch. [dataExists] tells a
+  /// first launch from a key the Keystore lost: data encrypted with the old
+  /// key is unreadable with a new one, so that throws [DataKeyLost] instead
+  /// of quietly starting a store that can never open.
+  Future<Uint8List> obtainKey({
+    required Future<bool> Function() dataExists,
+  }) async {
     final existing = await _storage.read(key: storageKey);
     if (existing != null) return base64Decode(existing);
+    if (await dataExists()) throw const DataKeyLost();
     final rng = Random.secure();
     final key = Uint8List.fromList(List.generate(32, (_) => rng.nextInt(256)));
     await _storage.write(key: storageKey, value: base64Encode(key));
     return key;
   }
+}
+
+/// The data key is gone while data encrypted with it is still on the phone
+/// (the Keystore was reset). That data can never be read again.
+class DataKeyLost implements Exception {
+  const DataKeyLost();
 }
 
 /// Small JSON documents (settings, memories, calibration results), each

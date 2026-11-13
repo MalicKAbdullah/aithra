@@ -124,7 +124,7 @@ class FakeNative extends NativeBridge {
   }
 
   @override
-  Future<void> cancel() async {}
+  Future<void> cancel(int requestId) async {}
   @override
   Future<void> unload() async {}
 
@@ -227,7 +227,11 @@ class FakeNative extends NativeBridge {
   @override
   Future<void> dbUpdateMessage(int id, String content, String? stats) async {}
   @override
-  Future<void> dbTruncate(String convId, int fromSeq) async {}
+  Future<void> dbTruncate(
+    String convId,
+    int fromSeq, {
+    List<String> keepImages = const [],
+  }) async {}
   @override
   Future<void> dbPutImage(String id, Uint8List jpeg) async => images[id] = jpeg;
   @override
@@ -292,7 +296,7 @@ class FakeNative extends NativeBridge {
       downloads.map(Map.of).toList();
 
   @override
-  Future<bool> requestMicrophone() async => true;
+  Future<String> requestMicrophone() async => 'granted';
   @override
   Future<Map<String, Object?>> speechStatus() async => {
     'onDevice': true,

@@ -76,7 +76,9 @@ void main() {
       final storage = await CachedSecureStorage.load(
         const SecureStorageImpl(FlutterSecureStorage()),
       );
-      await native.dbOpen(await DataKeyStore(storage).obtainKey());
+      await native.dbOpen(
+        await DataKeyStore(storage).obtainKey(dataExists: native.hasData),
+      );
     });
 
     test('conversation and message writes round-trip', () async {
@@ -140,7 +142,8 @@ void main() {
     });
 
     test('engine calls with no model loaded', () async {
-      await native.cancel();
+      // Cancelling a request the engine never received is a no-op.
+      await native.cancel(1 << 30);
       await native.unload();
       await expectLater(
         native.countTokens(const [EngineTurn('user', 'hi')]),

@@ -17,6 +17,7 @@ object LlamaNative {
     external fun nativeSystemInfo(): String
     external fun nativeLoad(path: String, threads: Int, nCtx: Int): Long
     external fun nativeFree(handle: Long)
+    external fun nativeSetAbort(handle: Long, abort: Boolean)
     external fun nativeContextSize(handle: Long): Int
     external fun nativeCountTokens(handle: Long, text: String): Int
     external fun nativeGenerate(
@@ -45,7 +46,6 @@ class LlamaEngine(path: String, threads: Int, nCtx: Int) : LlmEngine {
     override val contextSize: Int = LlamaNative.nativeContextSize(handle)
 
     override fun generate(request: GenerateRequest, onText: (String) -> Boolean): GenerateStats {
-        cancelled.set(false)
         val roles = request.turns.map { it.role }.toTypedArray()
         val contents = request.turns.map { it.text }.toTypedArray()
         val r = LlamaNative.nativeGenerate(
@@ -59,6 +59,7 @@ class LlamaEngine(path: String, threads: Int, nCtx: Int) : LlmEngine {
             decodeMs = r[4],
             contextTokens = r[0].toInt() + r[3].toInt(),
             note = null,
+            cancelled = r[5] != 0.0,
         )
     }
 
@@ -70,7 +71,15 @@ class LlamaEngine(path: String, threads: Int, nCtx: Int) : LlmEngine {
 
     override val promptOverhead: Int by lazy { LlamaNative.nativePromptOverhead(handle) }
 
-    override fun cancel() = cancelled.set(true)
+    override fun cancel() {
+        cancelled.set(true)
+        LlamaNative.nativeSetAbort(handle, true)
+    }
+
+    override fun resetCancel() {
+        cancelled.set(false)
+        LlamaNative.nativeSetAbort(handle, false)
+    }
 
     override fun close() = LlamaNative.nativeFree(handle)
 }

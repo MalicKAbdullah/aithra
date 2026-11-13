@@ -52,9 +52,25 @@ Future<void> main() async {
     await native.crashClear();
   }
 
+  await _launch(native, startup);
+}
+
+Future<void> _launch(NativeBridge native, Stopwatch startup) async {
   final Services services;
   try {
     services = await start(native);
+  } on DataKeyLost {
+    runApp(
+      ReportApp(
+        home: DataLostScreen(
+          onErase: () async {
+            await native.eraseData();
+            await _launch(native, startup);
+          },
+        ),
+      ),
+    );
+    return;
   } catch (error, stack) {
     runApp(
       ReportApp(
@@ -111,7 +127,7 @@ Future<Services> start(NativeBridge native) async {
     LockController.readEnabled(storage, lockKey),
     LockController.readBiometricEnabled(storage, lockKey),
     AppearanceController.load(),
-    DataKeyStore(storage).obtainKey(),
+    DataKeyStore(storage).obtainKey(dataExists: native.hasData),
     native.dataDir(),
     native.runsLlama(),
   ]);

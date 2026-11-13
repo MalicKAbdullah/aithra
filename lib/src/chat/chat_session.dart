@@ -108,6 +108,7 @@ class ChatSession extends ChangeNotifier {
   ReplyPhase phase = ReplyPhase.idle;
   final StreamingText streaming = StreamingText();
   Generation? _generation;
+  bool _stopRequested = false;
   String? error;
 
   /// Full text of the most recent reply, including the tail that may not
@@ -156,8 +157,17 @@ class ChatSession extends ChangeNotifier {
     await _native.dbUpdateConversation(conv.id, {'scroll': offset});
   }
 
-  Future<void> send(String text, List<PendingImage> images) async {
-    if (busy || (text.trim().isEmpty && images.isEmpty)) return;
+  /// Sends a user message with new [images] and [keepImageIds], images
+  /// already stored (an edited message keeps its photos).
+  Future<void> send(
+    String text,
+    List<PendingImage> images, {
+    List<String> keepImageIds = const [],
+  }) async {
+    if (busy ||
+        (text.trim().isEmpty && images.isEmpty && keepImageIds.isEmpty)) {
+      return;
+    }
     _assistant.engine.preemptBackground();
     unawaited(HapticFeedback.lightImpact());
     error = null;
@@ -169,7 +179,7 @@ class ChatSession extends ChangeNotifier {
       seq: _localSeq--,
       role: Role.user,
       content: text.trim(),
-      imageIds: const [],
+      imageIds: keepImageIds,
       created: now,
     );
     _messages.insert(0, optimistic);
@@ -177,31 +187,40 @@ class ChatSession extends ChangeNotifier {
     streaming.value = '';
     notifyListeners();
 
-    final convId = await _ensureConversation(text);
-    final imageIds = <String>[];
-    for (final img in images) {
-      final id = '${now.microsecondsSinceEpoch}-${imageIds.length}';
-      await _native.dbPutImage(id, img.jpeg);
-      imageIds.add(id);
+    try {
+      final convId = await _ensureConversation(text);
+      final imageIds = [...keepImageIds];
+      for (final img in images) {
+        final id = '${now.microsecondsSinceEpoch}-${imageIds.length}';
+        await _native.dbPutImage(id, img.jpeg);
+        imageIds.add(id);
+      }
+      final saved = await _native.dbAddMessage(
+        convId: convId,
+        role: 'user',
+        content: text.trim(),
+        images: imageIds,
+        stats: null,
+        now: now.millisecondsSinceEpoch,
+      );
+      _messages[_messages.indexOf(optimistic)] = ChatMessage(
+        id: saved['id']! as int,
+        seq: saved['seq']! as int,
+        role: Role.user,
+        content: text.trim(),
+        imageIds: imageIds,
+        created: now,
+      );
+      notifyListeners();
+      unawaited(_store.upsert(convId));
+    } catch (e) {
+      // Nothing was saved, so the message leaves the list with the error.
+      _messages.remove(optimistic);
+      error = e is PlatformException ? (e.message ?? e.code) : '$e';
+      phase = ReplyPhase.idle;
+      notifyListeners();
+      return;
     }
-    final saved = await _native.dbAddMessage(
-      convId: convId,
-      role: 'user',
-      content: text.trim(),
-      images: imageIds,
-      stats: null,
-      now: now.millisecondsSinceEpoch,
-    );
-    _messages[_messages.indexOf(optimistic)] = ChatMessage(
-      id: saved['id']! as int,
-      seq: saved['seq']! as int,
-      role: Role.user,
-      content: text.trim(),
-      imageIds: imageIds,
-      created: now,
-    );
-    notifyListeners();
-    unawaited(_store.upsert(convId));
     await _reply(recallQuery: text);
   }
 
@@ -222,6 +241,7 @@ class ChatSession extends ChangeNotifier {
     final conv = _conversation!;
     phase = ReplyPhase.preparing;
     lastReply = '';
+    _stopRequested = false;
     notifyListeners();
     try {
       final prepared = await _assistant.prepare();
@@ -292,6 +312,8 @@ class ChatSession extends ChangeNotifier {
         turns.add(EngineTurn(p.isUser ? 'user' : 'model', p.text, images));
       }
 
+      // Stop pressed while the model loaded or the prompt was assembled.
+      if (_stopRequested) return;
       final generation = _assistant.engine.generate(
         turns,
         maxTokens: replyTokens,
@@ -312,8 +334,16 @@ class ChatSession extends ChangeNotifier {
           unawaited(_assistant.observeTokensPerByte(spec, tokens / bytes));
         }
       }
+      final interrupted = generation.cancelled && !_stopRequested;
       final text = streaming.full.trim();
-      if (text.isEmpty) return;
+      if (text.isEmpty) {
+        if (interrupted) {
+          error =
+              'Android needed memory back before Aithra could answer. '
+              'Try again.';
+        }
+        return;
+      }
       final saved = await _native.dbAddMessage(
         convId: conv.id,
         role: 'model',
@@ -339,6 +369,13 @@ class ChatSession extends ChangeNotifier {
       final replySeq = saved['seq']! as int;
       if (recall case RecallFailed(:final message)) {
         notices[replySeq] = ReplyNotice.recall(message);
+      }
+      if (interrupted) {
+        notices[replySeq] = const ReplyNotice(
+          'Reply cut short',
+          'Android needed memory back while Aithra was answering, so this '
+              'reply stopped early. Regenerate it for a full answer.',
+        );
       }
       if (!identical(newest, latest)) {
         notices[replySeq] = ReplyNotice(
@@ -548,8 +585,11 @@ class ChatSession extends ChangeNotifier {
     });
   }
 
+  /// Stops the reply in any phase: while the model loads, while it waits
+  /// for the engine, or while it streams.
   Future<void> stop() async {
     unawaited(HapticFeedback.mediumImpact());
+    _stopRequested = true;
     await _generation?.cancel();
   }
 
@@ -571,8 +611,12 @@ class ChatSession extends ChangeNotifier {
     final lastUser = _messages.where((m) => m.role == Role.user).firstOrNull;
     if (lastUser == null) return;
     _messages.removeWhere((m) => m.seq >= lastUser.seq);
-    await _native.dbTruncate(_conversation!.id, lastUser.seq);
-    await send(text, const []);
+    await _native.dbTruncate(
+      _conversation!.id,
+      lastUser.seq,
+      keepImages: lastUser.imageIds,
+    );
+    await send(text, const [], keepImageIds: lastUser.imageIds);
   }
 
   /// Answers again after an error.

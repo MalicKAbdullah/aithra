@@ -172,3 +172,74 @@ class ReportScreen extends StatelessWidget {
     );
   }
 }
+
+/// Shown when the Keystore lost the key to the data on the phone: the data
+/// cannot be decrypted, and the only way forward is to erase it.
+class DataLostScreen extends StatelessWidget {
+  const DataLostScreen({required this.onErase, super.key});
+
+  final Future<void> Function() onErase;
+
+  Future<void> _confirm(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Erase chats and memories?'),
+        content: const Text(
+          'They cannot be unlocked any more. Downloaded models stay.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Erase'),
+          ),
+        ],
+      ),
+    );
+    if (ok ?? false) await onErase();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.gutter,
+            AppSpacing.xl,
+            AppSpacing.gutter,
+            AppSpacing.lg,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Spacer(),
+              Text(
+                "Aithra can't unlock your data",
+                style: AithraType.display.copyWith(color: c.textPrimary),
+              ),
+              const SizedBox(height: AppSpacing.smd),
+              Text(
+                "The phone's secure key store no longer has the key that "
+                'encrypts your chats and memories, so they cannot be read. '
+                'This can happen after a reset of the phone\'s security '
+                'settings. Erase them to start over.',
+                style: AithraType.body.copyWith(color: c.textSecondary),
+              ),
+              const Spacer(),
+              FilledButton(
+                onPressed: () => _confirm(context),
+                child: const Text('Erase and start over'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

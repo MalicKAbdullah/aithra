@@ -27,23 +27,22 @@ import java.util.concurrent.Executors
 // FlutterFragmentActivity (not FlutterActivity) is required by local_auth
 // (core_lock) and by the activity-result launchers below.
 class MainActivity : FlutterFragmentActivity() {
-    private lateinit var engineHost: EngineHost
+    private val app get() = application as AithraApplication
+    private val engineHost get() = app.engineHost
+    private val db get() = app.db
+    private val embedder get() = app.embedder
+    private val io get() = app.io
+
     private lateinit var speech: SpeechBridge
     private lateinit var tts: TtsBridge
-    private lateinit var db: ChatDb
-    private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "aithra-io") }
-    private val dbExec = Executors.newSingleThreadExecutor { r -> Thread(r, "aithra-db") }
-
-    // Embedding runs off the db thread so chat-list and message reads never
-    // wait behind it; SQLite (WAL) handles the two threads.
-    private val embedExec = Executors.newSingleThreadExecutor { r -> Thread(r, "aithra-embed") }
-    private val embedder = Embedder()
 
     private lateinit var pickImage: ActivityResultLauncher<PickVisualMediaRequest>
     private lateinit var takePicture: ActivityResultLauncher<Uri>
     private lateinit var pickModel: ActivityResultLauncher<Array<String>>
     private lateinit var askPermission: ActivityResultLauncher<String>
 
+    // One request of each kind can be open at a time: each launcher has one
+    // result slot.
     private var pendingImage: MethodChannel.Result? = null
     private var pendingModel: MethodChannel.Result? = null
     private var pendingPermission: MethodChannel.Result? = null
@@ -52,9 +51,7 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         // Created before super.onCreate, which attaches the Flutter engine
         // (configureFlutterEngine), so every callback that uses them, such
-        // as onTrimMemory and onDestroy, finds them set.
-        engineHost = EngineHost(applicationContext)
-        db = ChatDb(applicationContext)
+        // as onDestroy, finds them set.
         speech = SpeechBridge(this)
         tts = TtsBridge(this)
         super.onCreate(savedInstanceState)
@@ -72,15 +69,10 @@ class MainActivity : FlutterFragmentActivity() {
                 result.success(null)
                 return@registerForActivityResult
             }
-            io.execute {
-                val outcome = runCatching { Media.importModel(this, uri) }
-                runOnUiThread {
-                    outcome.fold({ result.success(it) }, { result.error("import", it.message, null) })
-                }
-            }
+            onIo(result) { Media.importModel(this, uri) }
         }
         askPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            pendingPermission?.success(granted)
+            pendingPermission?.success(microphoneState(granted))
             pendingPermission = null
         }
     }
@@ -92,21 +84,37 @@ class MainActivity : FlutterFragmentActivity() {
         MethodChannel(messenger, "aithra/native").setMethodCallHandler(::onCall)
     }
 
-    /** Frees the model's memory when Android asks; Dart reloads it on next use. */
-    override fun onTrimMemory(level: Int) {
-        super.onTrimMemory(level)
-        if (level >= TRIM_MEMORY_BACKGROUND) {
-            engineHost.cancel()
-            engineHost.submit({ engineHost.unload() }) {
-                Events.send(mapOf("type" to "engine", "kind" to "released"))
-            }
-        }
+    // From onResume, when the activity is visible: Android lets a visible
+    // app start the download's foreground service.
+    override fun onResume() {
+        super.onResume()
+        app.io.execute { ModelDownloads.resume(this) }
     }
 
     override fun onDestroy() {
         speech.destroy()
         tts.shutdown()
         super.onDestroy()
+    }
+
+    /**
+     * After a denial Android shows the rationale flag only while asking
+     * again can still show the dialog; without it the denial is permanent
+     * and only Settings can grant the microphone.
+     */
+    private fun microphoneState(granted: Boolean) = when {
+        granted -> "granted"
+        shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) -> "denied"
+        else -> "blocked"
+    }
+
+    /** Claims [slot] for [result], or answers `busy` when it is taken. */
+    private inline fun claim(slot: MethodChannel.Result?, result: MethodChannel.Result, launch: () -> Unit) {
+        if (slot != null) {
+            result.error("busy", "Another request of this kind is still open", null)
+        } else {
+            launch()
+        }
     }
 
     private fun deliverImage(uri: Uri?) {
@@ -116,12 +124,13 @@ class MainActivity : FlutterFragmentActivity() {
             result.success(null)
             return
         }
-        io.execute {
-            val outcome = runCatching { Media.normalizeImage(this, uri) }
-            captureFile?.delete()
-            captureFile = null
-            runOnUiThread {
-                outcome.fold({ result.success(it) }, { result.error("image", it.message, null) })
+        val capture = captureFile
+        captureFile = null
+        runOn(io, "image", result) {
+            try {
+                Media.normalizeImage(this, uri)
+            } finally {
+                capture?.delete()
             }
         }
     }
@@ -129,11 +138,15 @@ class MainActivity : FlutterFragmentActivity() {
     private fun <T> onEngine(result: MethodChannel.Result, block: () -> T) =
         engineHost.submit(block) { reply(result, "engine", it) }
 
+    /** Engine work that keeps the process in the foreground while it runs. */
+    private fun <T> onEngineHeld(result: MethodChannel.Result, block: () -> T) =
+        engineHost.submitHeld(block) { reply(result, "engine", it) }
+
     private fun <T> onIo(result: MethodChannel.Result, block: () -> T) = runOn(io, "io", result, block)
 
-    private fun <T> onDb(result: MethodChannel.Result, block: () -> T) = runOn(dbExec, "db", result, block)
+    private fun <T> onDb(result: MethodChannel.Result, block: () -> T) = runOn(app.dbExec, "db", result, block)
 
-    private fun <T> onEmbed(result: MethodChannel.Result, block: () -> T) = runOn(embedExec, "embed", result, block)
+    private fun <T> onEmbed(result: MethodChannel.Result, block: () -> T) = runOn(app.embedExec, "embed", result, block)
 
     private fun <T> runOn(executor: Executor, code: String, result: MethodChannel.Result, block: () -> T) =
         executor.execute { reply(result, code, runCatching(block)) }
@@ -154,7 +167,7 @@ class MainActivity : FlutterFragmentActivity() {
     @Suppress("UNCHECKED_CAST")
     private fun onCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
-            "engine.load" -> onEngine(result) { engineHost.load(call.arguments as Map<String, Any?>) }
+            "engine.load" -> onEngineHeld(result) { engineHost.load(call.arguments as Map<String, Any?>) }
             "engine.generate" -> {
                 val requestId = call.argument<Int>("requestId")!!
                 val turns = (call.argument<List<Map<String, Any?>>>("turns")!!).map {
@@ -170,8 +183,9 @@ class MainActivity : FlutterFragmentActivity() {
                     temperature = call.argument<Double>("temperature")!!.toFloat(),
                     ignoreEos = call.argument<Boolean>("ignoreEos")!!,
                 )
-                onEngine(result) {
-                    engineHost.generate(request) { text ->
+                engineHost.enqueue(requestId)
+                onEngineHeld(result) {
+                    engineHost.generate(requestId, request) { text ->
                         Events.send(mapOf("type" to "token", "requestId" to requestId, "text" to text))
                         true
                     }
@@ -184,7 +198,7 @@ class MainActivity : FlutterFragmentActivity() {
                 onEngine(result) { engineHost.countTokens(turns) }
             }
             "engine.cancel" -> {
-                engineHost.cancel()
+                engineHost.cancel(call.argument<Int>("requestId")!!)
                 result.success(null)
             }
             "engine.unload" -> onEngine(result) { engineHost.unload() }
@@ -224,7 +238,13 @@ class MainActivity : FlutterFragmentActivity() {
                 val counts = (call.argument<Map<String, Int>>("counts")!!).mapKeys { it.key.toLong() }
                 db.setTokens(counts, call.argument<String>("model")!!)
             }
-            "db.truncate" -> onDb(result) { db.truncate(call.argument<String>("convId")!!, call.argument<Int>("fromSeq")!!) }
+            "db.truncate" -> onDb(result) {
+                db.truncate(
+                    call.argument<String>("convId")!!,
+                    call.argument<Int>("fromSeq")!!,
+                    call.argument<List<String>>("keepImages")!!.toSet(),
+                )
+            }
             "db.putImage" -> onDb(result) {
                 val jpeg = call.argument<ByteArray>("jpeg")!!
                 db.putImage(call.argument<String>("id")!!, jpeg, Media.thumbnail(jpeg))
@@ -267,33 +287,46 @@ class MainActivity : FlutterFragmentActivity() {
             // shared storage being mounted.
             "storage.dataDir" -> result.success(filesDir.path)
             "storage.info" -> onIo(result) { Storage.info(this) }
+            "storage.hasData" -> onIo(result) { Storage.hasData(this) }
+            "storage.erase" -> onIo(result) { Storage.erase(this) }
 
             "download.start" -> onIo(result) {
-                Downloads.start(
+                ModelDownloads.start(
                     this,
                     call.argument<String>("url")!!,
                     call.argument<String>("fileName")!!,
                     call.argument<String>("title")!!,
+                    call.argument<Number>("size")!!.toLong(),
+                    call.argument<String>("sha256")!!,
                 )
             }
-            "download.query" -> onIo(result) { Downloads.query(this) }
-            "download.remove" -> onIo(result) { Downloads.remove(this, (call.argument<Number>("id")!!).toLong()) }
+            "download.query" -> onIo(result) { ModelDownloads.query(this) }
+            "download.remove" -> onIo(result) { ModelDownloads.remove(this, (call.argument<Number>("id")!!).toLong()) }
             "file.delete" -> onIo(result) { File(call.argument<String>("path")!!).delete() }
+            // Complete files only, named relative to the models folder
+            // ("imported/x.gguf" for imports).
             "file.list" -> onIo(result) {
-                modelsDir(this).listFiles()!!.filter { it.isFile }.map {
-                    mapOf("path" to it.path, "name" to it.name, "size" to it.length())
-                }
+                val root = modelsDir(this)
+                root.walk()
+                    .filter {
+                        it.isFile && !it.name.endsWith(Media.PARTIAL_SUFFIX) &&
+                            !it.name.endsWith(ModelDownloads.PART_SUFFIX)
+                    }
+                    .map { mapOf("path" to it.path, "name" to it.relativeTo(root).path, "size" to it.length()) }
+                    .toList()
             }
 
-            "import.model" -> {
+            // Model files have no registered MIME type; Media.importModel
+            // checks the extension.
+            "import.model" -> claim(pendingModel, result) {
                 pendingModel = result
                 pickModel.launch(arrayOf("*/*"))
             }
-            "media.pickImage" -> {
+            "media.pickImage" -> claim(pendingImage, result) {
                 pendingImage = result
                 pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
             }
-            "media.capture" -> {
+            "media.capture" -> claim(pendingImage, result) {
                 pendingImage = result
                 val file = File(cacheDir, "capture/photo.jpg").apply { parentFile!!.mkdirs() }
                 captureFile = file
@@ -310,11 +343,19 @@ class MainActivity : FlutterFragmentActivity() {
 
             "permission.microphone" -> {
                 if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    result.success(true)
+                    result.success("granted")
                 } else {
-                    pendingPermission = result
-                    askPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    claim(pendingPermission, result) {
+                        pendingPermission = result
+                        askPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    }
                 }
+            }
+            "permission.openSettings" -> {
+                startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)),
+                )
+                result.success(null)
             }
             "speech.status" -> {
                 if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {

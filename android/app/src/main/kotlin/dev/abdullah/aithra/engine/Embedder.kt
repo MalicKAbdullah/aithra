@@ -2,21 +2,29 @@ package dev.abdullah.aithra.engine
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import java.util.concurrent.Executor
 
 /**
  * Sentence embeddings from EmbeddingGemma through llama.cpp, for cross-chat
  * recall. The model loads on first use and is freed after a minute without
- * work, so it only holds memory while recall or indexing runs. Calls must
- * come from one thread (the caller's executor).
+ * work, so it only holds memory while recall or indexing runs. Every call,
+ * the idle release included, runs on [executor], so none of them waits on
+ * another thread (least of all the main thread).
  */
-class Embedder {
+class Embedder(private val executor: Executor) {
     private var handle = 0L
     private var path: String? = null
     private val main = Handler(Looper.getMainLooper())
-    private val freeIdle = Runnable { synchronized(this) { release() } }
+    private var lastUse = 0L
 
-    /** Unit vectors of [DIMS] floats, one per text. */
-    @Synchronized
+    // The timer can fire while an embed runs; the check on the executor
+    // keeps a model that was just used.
+    private val freeIdle = Runnable {
+        executor.execute { if (SystemClock.uptimeMillis() - lastUse >= IDLE_MS) release() }
+    }
+
+    /** Unit vectors of [DIMS] floats, one per text. Call on [executor]. */
     fun embed(modelPath: String, texts: List<String>): List<FloatArray> {
         main.removeCallbacks(freeIdle)
         if (path != modelPath) {
@@ -25,6 +33,7 @@ class Embedder {
             path = modelPath
         }
         val out = texts.map { truncate(LlamaNative.nativeEmbed(handle, it)) }
+        lastUse = SystemClock.uptimeMillis()
         main.postDelayed(freeIdle, IDLE_MS)
         return out
     }

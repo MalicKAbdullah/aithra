@@ -113,7 +113,7 @@ class Assistant extends ChangeNotifier with WidgetsBindingObserver {
             notifyListeners();
           },
         );
-        await settings.putCalibration(result);
+        if (result != null) await settings.putCalibration(result);
       } finally {
         calibrating = null;
         _calibration = null;
@@ -124,18 +124,35 @@ class Assistant extends ChangeNotifier with WidgetsBindingObserver {
     return run;
   }
 
-  /// Loads the active model on its chosen backend. Waits for a running
-  /// calibration first; returns null when there is no usable model.
+  /// Why no backend of [spec] could run it on this phone, from its stored
+  /// calibration; null when one could or it has not been tuned.
+  String? loadFailure(ModelSpec spec) {
+    final c = calibrationFor(spec);
+    if (c == null || c.chosenBackend != null) return null;
+    // No chosen backend means every backend tried reported an error.
+    return c.results.map((r) => r.error).nonNulls.first;
+  }
+
+  /// Loads the active model on its chosen backend, tuning it first when it
+  /// has not been tuned. Returns null when there is no model on the phone;
+  /// throws when the model cannot run here.
   Future<(ModelSpec, BackendOption)?> prepare() async {
     if (_calibration != null) await _calibration;
     final spec = activeModel;
     if (spec == null) return null;
     final path = models.pathOf(spec)!;
-    var backend = backendFor(spec);
+    if (calibrationFor(spec) == null) await calibrate(spec);
+    if (calibrationFor(spec) == null) {
+      throw StateError(
+        'Tuning ${spec.name} for this phone was interrupted. Try again.',
+      );
+    }
+    final backend = backendFor(spec);
     if (backend == null) {
-      await calibrate(spec);
-      backend = backendFor(spec);
-      if (backend == null) return null;
+      throw StateError(
+        '${spec.name} cannot run on this phone: ${loadFailure(spec)}. '
+        'You can tune it again in Models.',
+      );
     }
     await engine.ensureLoaded(spec, path, backend);
     return (spec, backend);
@@ -171,6 +188,10 @@ class Assistant extends ChangeNotifier with WidgetsBindingObserver {
     } else if (state == AppLifecycleState.resumed) {
       _releaseTimer?.cancel();
       unawaited(models.refresh());
+      // A frozen process runs its overdue release timer on thaw, possibly
+      // just before this event; loading again now has the model back
+      // before the user's next message.
+      warmUp();
     }
   }
 

@@ -8,6 +8,7 @@
 #include <android/log.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -28,6 +29,9 @@ struct Session {
     int n_batch = 0;
     bool template_thinks = false;
     std::string tmpl;
+    // Set from any thread to stop the running generation. ggml polls it
+    // inside llama_decode, so a long prefill stops too.
+    std::atomic<bool> abort{false};
 };
 
 void throw_java(JNIEnv *env, const std::string &msg) {
@@ -177,6 +181,9 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeLoad(JNIEnv *env, jobject, jst
     auto *s = new Session();
     s->model = model;
     s->ctx = ctx;
+    llama_set_abort_callback(ctx, [](void *data) {
+        return static_cast<Session *>(data)->abort.load();
+    }, s);
     s->n_ctx = n_ctx;
     s->n_batch = 512;
     const char *t = llama_model_chat_template(model, nullptr);
@@ -241,9 +248,9 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeGenerate(
     llama_memory_clear(llama_get_memory(s->ctx), true);
     auto t0 = std::chrono::steady_clock::now();
 
-    for (size_t i = 0; i < tokens.size(); i += s->n_batch) {
+    for (size_t i = 0; i < tokens.size() && !s->abort; i += s->n_batch) {
         int n = (int) std::min((size_t) s->n_batch, tokens.size() - i);
-        if (llama_decode(s->ctx, llama_batch_get_one(tokens.data() + i, n)) != 0) {
+        if (llama_decode(s->ctx, llama_batch_get_one(tokens.data() + i, n)) != 0 && !s->abort) {
             llama_sampler_free(smpl);
             throw_java(env, "llama_decode failed during prefill");
             return nullptr;
@@ -256,7 +263,7 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeGenerate(
     std::string pending;
     bool stop = false;
 
-    while (decoded < max_tokens && !stop) {
+    while (decoded < max_tokens && !stop && !s->abort) {
         llama_token tok = llama_sampler_sample(smpl, s->ctx, -1);
         if (decoded == 0) {
             ttft_ms = ms_since(t0);
@@ -282,9 +289,10 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeGenerate(
     double decode_ms = ms_since(t_decode);
     llama_sampler_free(smpl);
 
-    double out[5] = {(double) tokens.size(), prefill_ms, ttft_ms, (double) decoded, decode_ms};
-    jdoubleArray result = env->NewDoubleArray(5);
-    env->SetDoubleArrayRegion(result, 0, 5, out);
+    double out[6] = {(double) tokens.size(), prefill_ms, ttft_ms, (double) decoded, decode_ms,
+                     s->abort ? 1.0 : 0.0};
+    jdoubleArray result = env->NewDoubleArray(6);
+    env->SetDoubleArrayRegion(result, 0, 6, out);
     return result;
 }
 
@@ -436,4 +444,9 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativePromptOverhead(JNIEnv *, jobje
     int open = count_rendered(s, {user}, true) - count_rendered(s, {user}, false);
     int bos = llama_vocab_get_add_bos(llama_model_get_vocab(s->model)) ? 1 : 0;
     return open + bos;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_abdullah_aithra_engine_LlamaNative_nativeSetAbort(JNIEnv *, jobject, jlong handle, jboolean abort) {
+    reinterpret_cast<Session *>(handle)->abort = abort;
 }

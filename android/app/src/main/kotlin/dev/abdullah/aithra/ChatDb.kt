@@ -304,14 +304,19 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         }
     }
 
-    /** Deletes every message with seq >= [fromSeq] (edit and regenerate). */
-    fun truncate(convId: String, fromSeq: Int) {
+    /**
+     * Deletes every message with seq >= [fromSeq] (edit and regenerate) and
+     * their images, except [keepImages], which an edited message carries
+     * over.
+     */
+    fun truncate(convId: String, fromSeq: Int, keepImages: Set<String>) {
         writableDatabase.transaction {
             val ids = rawQuery("SELECT id, images FROM messages WHERE conv_id = ? AND seq >= ?", arrayOf(convId, fromSeq.toString()))
                 .use { c -> buildList { while (c.moveToNext()) add(c.getLong(0) to c.getString(1)) } }
             for ((id, images) in ids) {
                 delete("vectors", "msg_id = ?", arrayOf(id.toString()))
-                images.split(',').filter { it.isNotEmpty() }.forEach { delete("media", "id = ?", arrayOf(it)) }
+                images.split(',').filter { it.isNotEmpty() && it !in keepImages }
+                    .forEach { delete("media", "id = ?", arrayOf(it)) }
             }
             delete("messages", "conv_id = ? AND seq >= ?", arrayOf(convId, fromSeq.toString()))
             execSQL(
