@@ -10,6 +10,7 @@ import '../../services.dart';
 import '../../voice/sentence_splitter.dart';
 import '../../voice/speech_service.dart';
 import '../aithra_type.dart';
+import '../widgets/speech_notice.dart';
 import '../widgets/voice_orb.dart';
 import 'chat_screen.dart';
 
@@ -35,6 +36,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
   SentenceSplitter? _splitter;
   int _spokenUpTo = 0;
   bool _closing = false;
+  bool _modelInstalled = false;
 
   @override
   void initState() {
@@ -80,6 +82,14 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
 
   void _onSpeech() {
     if (!mounted) return;
+    final installed = _s.speech.download.phase == DownloadPhase.done;
+    if (installed && !_modelInstalled && _phase == VoicePhase.paused) {
+      // The model the user asked for just arrived: carry on listening.
+      _modelInstalled = installed;
+      unawaited(_listen());
+      return;
+    }
+    _modelInstalled = installed;
     if (_phase == VoicePhase.listening) {
       if (_s.speech.partial.isNotEmpty) _heard = _s.speech.partial;
       if (!_s.speech.listening && _s.speech.errorCode != null) {
@@ -178,8 +188,9 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
       VoicePhase.speaking => OrbMood.speaking,
       VoicePhase.paused => OrbMood.idle,
     };
-    final notice = speech.languageMissing
-        ? 'The on-device speech model for your language is not installed.'
+    final modelNotice = speech.modelNotice;
+    final notice = modelNotice != null
+        ? null
         : speech.errorCode != null && _phase == VoicePhase.paused
         ? speechErrorMessage(speech.errorCode!)
         : null;
@@ -209,7 +220,9 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
                 ),
                 SizedBox(
                   height: math.max(0, half - bar),
-                  child: _Transcript(heard: _heard, reply: _reply),
+                  child: _s.settings.voiceTranscript
+                      ? _Transcript(heard: _heard, reply: _reply)
+                      : null,
                 ),
                 GestureDetector(
                   onTap: _interrupt,
@@ -242,23 +255,19 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
                             ),
                           ),
                         ),
-                        if (notice != null) ...[
+                        if (modelNotice != null) ...[
+                          const SizedBox(height: AppSpacing.sm),
+                          SpeechNoticeView(speech: speech, notice: modelNotice),
+                        ] else if (notice != null) ...[
                           const SizedBox(height: AppSpacing.sm),
                           Text(
                             notice,
                             textAlign: TextAlign.center,
                             style: AithraType.bodySmall.copyWith(
-                              color: speech.languageMissing
-                                  ? c.textSecondary
-                                  : c.negative,
+                              color: c.negative,
                             ),
                           ),
-                          if (speech.languageMissing)
-                            TextButton(
-                              onPressed: speech.downloadLanguage,
-                              child: const Text('Download it'),
-                            )
-                          else if (speech.micBlocked)
+                          if (speech.micBlocked)
                             TextButton(
                               onPressed: speech.openAppSettings,
                               child: const Text('Open Settings'),

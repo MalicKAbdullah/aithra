@@ -13,6 +13,9 @@ class SettingsStore extends ChangeNotifier {
   String? selectedModelId;
   bool speakReplies = false;
   bool perfOverlay = false;
+
+  /// Voice mode shows what was heard and the reply; off, only the orb.
+  bool voiceTranscript = true;
   final Map<String, Calibration> calibrations = {};
 
   /// Highest prompt tokens per UTF-8 byte each model (by id) has shown in a
@@ -26,6 +29,7 @@ class SettingsStore extends ChangeNotifier {
     selectedModelId = j['selectedModel'] as String?;
     speakReplies = j['speakReplies'] as bool? ?? false;
     perfOverlay = j['perfOverlay'] as bool? ?? false;
+    voiceTranscript = j['voiceTranscript'] as bool? ?? true;
     for (final c in (j['calibrations'] as List? ?? const [])) {
       final cal = Calibration.fromJson(Map<String, Object?>.from(c as Map));
       calibrations[cal.modelId] = cal;
@@ -43,6 +47,7 @@ class SettingsStore extends ChangeNotifier {
       'selectedModel': selectedModelId,
       'speakReplies': speakReplies,
       'perfOverlay': perfOverlay,
+      'voiceTranscript': voiceTranscript,
       'calibrations': [for (final c in calibrations.values) c.toJson()],
       'tokensPerByte': tokensPerByte,
     });
