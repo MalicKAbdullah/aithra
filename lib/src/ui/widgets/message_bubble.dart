@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
 import '../../services.dart';
+import '../aithra_type.dart';
 import 'markdown_view.dart';
 
 /// Decrypted image thumbnails, kept for the session so scrolling back does
@@ -100,8 +101,8 @@ class MessageBubble extends StatelessWidget {
           user
               ? Container(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.md,
-                    vertical: AppSpacing.smd,
+                    horizontal: AppSpacing.smd + 2,
+                    vertical: AppSpacing.sm + 1,
                   ),
                   decoration: BoxDecoration(
                     color: c.accentContainer,
@@ -109,10 +110,7 @@ class MessageBubble extends StatelessWidget {
                   ),
                   child: Text(
                     message.content,
-                    style: AppTextStyles.body.copyWith(
-                      color: c.textPrimary,
-                      height: 1.45,
-                    ),
+                    style: AithraType.body.copyWith(color: c.textPrimary),
                   ),
                 )
               : MarkdownView(message.content),
@@ -124,9 +122,9 @@ class MessageBubble extends StatelessWidget {
       child: Padding(
         padding: EdgeInsets.fromLTRB(
           user ? 56 : AppSpacing.gutter,
-          AppSpacing.sm,
-          user ? AppSpacing.gutter : 32,
-          AppSpacing.sm,
+          AppSpacing.sm - 2,
+          AppSpacing.gutter,
+          AppSpacing.sm - 2,
         ),
         child: Align(
           alignment: user ? Alignment.centerRight : Alignment.centerLeft,
@@ -137,28 +135,61 @@ class MessageBubble extends StatelessWidget {
   }
 }
 
-/// The reply being generated. Only this widget rebuilds while tokens stream.
-class StreamingBubble extends StatelessWidget {
+/// The reply being generated. Only this widget rebuilds while tokens stream;
+/// it owns the caret animation so the caret keeps its rhythm across those
+/// rebuilds without touching finished messages.
+class StreamingBubble extends StatefulWidget {
   const StreamingBubble({required this.session, super.key});
 
   final ChatSession session;
 
   @override
+  State<StreamingBubble> createState() => _StreamingBubbleState();
+}
+
+class _StreamingBubbleState extends State<StreamingBubble>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _caret = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+    lowerBound: 0.25,
+  );
+  late final Animation<double> _breath = CurvedAnimation(
+    parent: _caret,
+    curve: Curves.easeInOut,
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _caret.value = 1;
+    } else if (!_caret.isAnimating) {
+      _caret.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _caret.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return RepaintBoundary(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(
-          AppSpacing.gutter,
-          AppSpacing.sm,
-          32,
-          AppSpacing.sm,
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.gutter,
+          vertical: AppSpacing.sm - 2,
         ),
         child: Align(
           alignment: Alignment.centerLeft,
           child: ValueListenableBuilder<String>(
-            valueListenable: session.streaming,
-            builder: (context, text, _) =>
-                text.isEmpty ? const TypingDots() : MarkdownView(text),
+            valueListenable: widget.session.streaming,
+            builder: (context, text, _) => text.isEmpty
+                ? const TypingDots()
+                : MarkdownView(text, caret: _breath),
           ),
         ),
       ),
