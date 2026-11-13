@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../../chat/highlight.dart';
 import '../../chat/markdown.dart';
 import '../aithra_type.dart';
+import 'math_view.dart';
 
 /// Renders a reply's Markdown. Parsed blocks are cached per text, so a
 /// finished message is parsed once; a streaming one re-parses only when its
@@ -134,6 +135,10 @@ class MarkdownView extends StatelessWidget {
       language: language,
       code: code,
     ),
+    MdMath(:final tex) => MathView.block(
+      tex,
+      base.copyWith(fontSize: (base.fontSize ?? 15) + 1),
+    ),
   };
 }
 
@@ -163,6 +168,17 @@ class _InlineText extends StatelessWidget {
     var offset = 0;
     final children = <InlineSpan>[];
     for (final s in parseInline(text)) {
+      if (s.style == InlineStyle.math || s.style == InlineStyle.displayMath) {
+        final spans = MathView.inline(
+          s.text,
+          base,
+          display: s.style == InlineStyle.displayMath,
+        );
+        children.addAll(spans);
+        // Each widget span stands for one placeholder character.
+        offset += spans.length;
+        continue;
+      }
       if (s.style == InlineStyle.code) {
         final t = '$_pad${s.text}$_pad';
         chips.add(TextRange(start: offset, end: offset + t.length));
@@ -182,7 +198,10 @@ class _InlineText extends StatelessWidget {
         TextSpan(
           text: s.text,
           style: switch (s.style) {
-            InlineStyle.plain || InlineStyle.code => null,
+            InlineStyle.plain ||
+            InlineStyle.code ||
+            InlineStyle.math ||
+            InlineStyle.displayMath => null,
             InlineStyle.bold => const TextStyle(fontWeight: FontWeight.w600),
             InlineStyle.italic => const TextStyle(fontStyle: FontStyle.italic),
             InlineStyle.boldItalic => const TextStyle(

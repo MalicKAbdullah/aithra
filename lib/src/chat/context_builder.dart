@@ -52,7 +52,9 @@ String buildSystemPrompt({
   final b = StringBuffer()
     ..writeln(
       'You are Aithra, a helpful assistant that runs entirely on the '
-      "user's phone. Be concise and friendly. Use Markdown when it helps.",
+      "user's phone. Be concise and friendly. Use Markdown when it helps. "
+      r'Write mathematics in LaTeX: $…$ inline, and $$…$$ on lines of its '
+      'own for display equations.',
     )
     ..writeln('Today is ${now.year}-${_two(now.month)}-${_two(now.day)}.');
   if (memories.isNotEmpty) {

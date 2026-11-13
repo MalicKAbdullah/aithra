@@ -14,6 +14,10 @@ dependencies:
   # Only used to construct core_storage's SecureStorageImpl.
   flutter_secure_storage: ^9.2.2
 
+  # Typesets LaTeX in replies; pure Dart with bundled KaTeX fonts, so math
+  # renders offline like everything else.
+  flutter_math_fork: ^0.7.4
+
   # Shared Offlyne packages
   core_crypto:
     git:
