@@ -93,6 +93,13 @@ class DownloadFailed extends ModelAvailability {
   final String message;
 }
 
+/// The phone cannot run this model's runtime.
+class Unsupported extends ModelAvailability {
+  const Unsupported(this.reason);
+
+  final String reason;
+}
+
 class Ready extends ModelAvailability {
   const Ready(this.path);
 

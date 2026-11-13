@@ -32,3 +32,7 @@ FetchContent_MakeAvailable(llama)
 
 add_library(aithra_llama SHARED aithra_llama.cpp)
 target_link_libraries(aithra_llama llama ggml android log)
+
+# Built without the llama.cpp architecture flags so it loads on every arm64
+# phone; it decides whether aithra_llama may be loaded at all.
+add_library(aithra_cpu SHARED aithra_cpu.cpp)

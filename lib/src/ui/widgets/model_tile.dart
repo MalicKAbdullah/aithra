@@ -157,6 +157,9 @@ class ModelTile extends StatelessWidget {
                   ),
                 ],
               ),
+            Unsupported(:final reason) => _ActionRow(
+              status: Text(reason, style: caption.copyWith(color: c.warning)),
+            ),
             DownloadFailed(:final message) => _ActionRow(
               status: Text(message, style: caption.copyWith(color: c.negative)),
               action: TextButton(

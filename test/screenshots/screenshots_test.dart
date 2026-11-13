@@ -281,7 +281,6 @@ class FakeNative extends NativeBridge {
 
   @override
   Future<Map<String, Object?>> storageInfo() async => {
-    'dataDir': '/data/user/0/app.aithra/files',
     'freeBytes': 41200000000,
   };
 
@@ -769,7 +768,7 @@ Future<Harness> _build(
   await memories.load();
 
   final engine = EngineService(native);
-  final models = ModelManager(native);
+  final models = ModelManager(native, runsLlama: true);
   final recall = RecallIndex(native: native, engine: engine, models: models);
   final services = Services(
     native: native,

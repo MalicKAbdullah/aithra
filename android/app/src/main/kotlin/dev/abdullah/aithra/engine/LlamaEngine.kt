@@ -4,6 +4,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 object LlamaNative {
     init {
+        check(CpuFeatures.runsLlama) { "This phone's CPU lacks the instructions llama.cpp is built for" }
         System.loadLibrary("aithra_llama")
         nativeInit()
     }

@@ -10,7 +10,7 @@ import 'download_state.dart';
 /// DownloadManager, so they continue with the app closed; this class only
 /// polls their progress while one is active.
 class ModelManager extends ChangeNotifier {
-  ModelManager(this._native) {
+  ModelManager(this._native, {required this.runsLlama}) {
     _native.eventsOf('import').listen((e) {
       final total = e['total']! as int;
       importProgress = total > 0 ? (e['copied']! as int) / total : null;
@@ -19,6 +19,9 @@ class ModelManager extends ChangeNotifier {
   }
 
   final NativeBridge _native;
+
+  /// False on CPUs without the Arm instructions llama.cpp is built for.
+  final bool runsLlama;
   List<LocalFile> _files = const [];
   List<DownloadRecord> _downloads = const [];
   Timer? _poll;
@@ -30,7 +33,11 @@ class ModelManager extends ChangeNotifier {
   bool importing = false;
 
   ModelAvailability availability(ModelSpec spec) =>
-      availabilityOf(spec, _files, _downloads);
+      spec.runtime == Runtime.llamacpp && !runsLlama
+      ? const Unsupported(
+          "This phone's processor lacks the instructions llama.cpp needs",
+        )
+      : availabilityOf(spec, _files, _downloads);
 
   /// Imported files that are not catalog models.
   List<ModelSpec> get importedModels => [
