@@ -5,50 +5,86 @@ import 'package:aithra/src/voice/sentence_splitter.dart';
 import 'package:aithra/src/voice/speech_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-PromptMessage msg(int seq, String text, {bool user = true, int images = 0}) =>
-    PromptMessage(seq: seq, isUser: user, text: text, imageCount: images);
+PromptMessage msg(int seq, String text, {bool user = true, int? tokens}) =>
+    PromptMessage(seq: seq, isUser: user, text: text, tokens: tokens);
 
 void main() {
   group('prompt planning', () {
     test('keeps everything when it fits', () {
       final plan = planPrompt(
         system: 'sys',
-        history: [msg(0, 'hi'), msg(1, 'hello', user: false), msg(2, 'how?')],
+        history: [
+          msg(0, 'hi', tokens: 5),
+          msg(1, 'hello', user: false, tokens: 6),
+          msg(2, 'how?', tokens: 6),
+        ],
         contextTokens: 4096,
         replyTokens: 1024,
+        systemTokens: 40,
+        overheadTokens: 3,
       );
       expect(plan.messages.map((m) => m.seq), [0, 1, 2]);
+      expect(plan.promptTokens, 40 + 3 + 5 + 6 + 6);
     });
 
-    test('drops the oldest messages first when over budget', () {
-      final long = 'x' * 3200; // ~1000 tokens
+    test('drops the oldest messages first, on exact counts', () {
       final plan = planPrompt(
         system: 'sys',
-        history: [msg(0, long), msg(1, long), msg(2, long), msg(3, 'newest')],
+        history: [
+          msg(0, 'a', tokens: 1000),
+          msg(1, 'b', tokens: 1100),
+          msg(2, 'c', tokens: 900),
+          msg(3, 'newest', tokens: 10),
+        ],
         contextTokens: 3000,
         replyTokens: 1024,
+        systemTokens: 60,
+        overheadTokens: 4,
       );
       expect(plan.messages.map((m) => m.seq), [2, 3]);
-      expect(plan.estimatedTokens, lessThanOrEqualTo(3000 - 1024));
+      expect(plan.promptTokens, 60 + 4 + 900 + 10);
     });
 
     test('always keeps the newest message', () {
       final plan = planPrompt(
         system: 'sys',
-        history: [msg(0, 'y' * 20000)],
+        history: [msg(0, 'long', tokens: 9000)],
         contextTokens: 2048,
         replyTokens: 1024,
+        systemTokens: 10,
+        overheadTokens: 2,
       );
       expect(plan.messages.single.seq, 0);
     });
 
-    test('images count toward the budget', () {
-      expect(estimateTokens('', images: 2), 6 + 2 * imageTokens);
+    test('without a tokenizer nothing is guessed: all kept, size unknown', () {
+      final plan = planPrompt(
+        system: 'sys',
+        history: [msg(0, 'a'), msg(1, 'b', user: false)],
+        contextTokens: 4096,
+        replyTokens: 1024,
+      );
+      expect(plan.messages, hasLength(2));
+      expect(plan.promptTokens, isNull);
     });
 
-    test('summarize when the context is 70% full', () {
-      expect(shouldSummarize(usedTokens: 2900, contextTokens: 4096), isTrue);
-      expect(shouldSummarize(usedTokens: 2800, contextTokens: 4096), isFalse);
+    test('summarize once another turn would pass 80% of the context', () {
+      expect(
+        shouldSummarize(
+          usedTokens: 2300,
+          contextTokens: 4096,
+          replyTokens: 1024,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldSummarize(
+          usedTokens: 2200,
+          contextTokens: 4096,
+          replyTokens: 1024,
+        ),
+        isFalse,
+      );
     });
 
     test('summary folds everything but the recent turns', () {

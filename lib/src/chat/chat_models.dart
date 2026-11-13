@@ -90,6 +90,8 @@ class ChatMessage {
     required this.imageIds,
     required this.created,
     this.stats,
+    this.tokens,
+    this.tokensModel,
   });
 
   factory ChatMessage.fromMap(Map<String, Object?> m) => ChatMessage(
@@ -104,6 +106,8 @@ class ChatMessage {
         : RunMetrics.fromMap(
             Map<String, Object?>.from(jsonDecode(m['stats']! as String) as Map),
           ),
+    tokens: m['tokens'] as int?,
+    tokensModel: m['tokensModel'] as String?,
   );
 
   final int id;
@@ -113,6 +117,11 @@ class ChatMessage {
   final List<String> imageIds;
   final DateTime created;
   final RunMetrics? stats;
+
+  /// Exact prompt tokens of this message under [tokensModel]'s tokenizer,
+  /// cached in the database; null until counted.
+  final int? tokens;
+  final String? tokensModel;
 }
 
 /// Title for a new chat: the first line of its first message, shortened.

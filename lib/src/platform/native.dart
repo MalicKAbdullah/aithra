@@ -77,6 +77,24 @@ class NativeBridge {
     'ignoreEos': ignoreEos,
   });
 
+  /// Exact tokens each turn adds to a prompt and the prompt's remaining
+  /// overhead, from the loaded model's tokenizer; both null when its
+  /// runtime has none.
+  Future<({List<int>? counts, int? overhead})> countTokens(
+    List<EngineTurn> turns,
+  ) async {
+    final m = await _map('engine.countTokens', {
+      'turns': [
+        for (final t in turns) {'role': t.role, 'text': t.text},
+      ],
+    });
+    final counts = m['counts'] as List?;
+    return (
+      counts: counts == null ? null : [for (final c in counts) c as int],
+      overhead: m['overhead'] as int?,
+    );
+  }
+
   Future<void> cancel() => _channel.invokeMethod('engine.cancel');
 
   Future<void> unload() => _channel.invokeMethod('engine.unload');
@@ -162,6 +180,13 @@ class NativeBridge {
         'id': id,
         'content': content,
         'stats': stats,
+      });
+
+  /// Caches token counts (message id → count) made by [model]'s tokenizer.
+  Future<void> dbSetTokens(Map<int, int> counts, String model) =>
+      _channel.invokeMethod('db.setTokens', {
+        'counts': {for (final e in counts.entries) '${e.key}': e.value},
+        'model': model,
       });
 
   Future<void> dbTruncate(String convId, int fromSeq) => _channel.invokeMethod(

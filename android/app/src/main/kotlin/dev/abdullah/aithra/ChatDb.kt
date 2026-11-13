@@ -28,7 +28,7 @@ import javax.crypto.spec.SecretKeySpec
  * compared by cosine similarity at query time (see [indexVectors] and
  * [recall]); without the embedding model, recall is off.
  */
-class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 2) {
+class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3) {
     private companion object {
         /** Enough for two lines of preview after Markdown is stripped. */
         const val PREVIEW_CHARS = 240
@@ -56,7 +56,8 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 2)
             """CREATE TABLE messages(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, conv_id TEXT NOT NULL, seq INTEGER NOT NULL,
                 role TEXT NOT NULL, content BLOB NOT NULL, images TEXT NOT NULL DEFAULT '',
-                created INTEGER NOT NULL, stats TEXT, length INTEGER NOT NULL DEFAULT 0)""",
+                created INTEGER NOT NULL, stats TEXT, length INTEGER NOT NULL DEFAULT 0,
+                tokens INTEGER, tokens_model TEXT)""",
         )
         db.execSQL("CREATE UNIQUE INDEX messages_conv_seq ON messages(conv_id, seq)")
         db.execSQL("CREATE TABLE media(id TEXT PRIMARY KEY, data BLOB NOT NULL, thumb BLOB NOT NULL)")
@@ -73,6 +74,12 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 2)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 3) {
+            // The token count of each message under the model that counted
+            // it, so prompts are planned on exact counts without recounting.
+            db.execSQL("ALTER TABLE messages ADD COLUMN tokens INTEGER")
+            db.execSQL("ALTER TABLE messages ADD COLUMN tokens_model TEXT")
+        }
         if (oldVersion < 2) {
             // Version 1 kept a keyword index of message words; recall is now
             // semantic and the title index has its own table.
@@ -225,19 +232,21 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 2)
         "images" to c.getString(4).split(',').filter { it.isNotEmpty() },
         "created" to c.getLong(5),
         "stats" to c.getString(6),
+        "tokens" to if (c.isNull(7)) null else c.getInt(7),
+        "tokensModel" to c.getString(8),
     )
 
     /** The newest [limit] messages with seq < [beforeSeq], newest first. */
     fun messages(convId: String, beforeSeq: Int, limit: Int): List<Map<String, Any?>> =
         readableDatabase.rawQuery(
-            "SELECT id, seq, role, content, images, created, stats FROM messages WHERE conv_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
+            "SELECT id, seq, role, content, images, created, stats, tokens, tokens_model FROM messages WHERE conv_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
             arrayOf(convId, beforeSeq.toString(), limit.toString()),
         ).use { c -> buildList { while (c.moveToNext()) add(messageRow(c)) } }
 
     /** Messages with seq in [fromSeq, toSeq), oldest first. */
     fun messageRange(convId: String, fromSeq: Int, toSeq: Int): List<Map<String, Any?>> =
         readableDatabase.rawQuery(
-            "SELECT id, seq, role, content, images, created, stats FROM messages WHERE conv_id = ? AND seq >= ? AND seq < ? ORDER BY seq ASC",
+            "SELECT id, seq, role, content, images, created, stats, tokens, tokens_model FROM messages WHERE conv_id = ? AND seq >= ? AND seq < ? ORDER BY seq ASC",
             arrayOf(convId, fromSeq.toString(), toSeq.toString()),
         ).use { c -> buildList { while (c.moveToNext()) add(messageRow(c)) } }
 
@@ -272,9 +281,24 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 2)
             update("messages", ContentValues().apply {
                 put("content", sealText(content))
                 put("stats", stats)
+                putNull("tokens")
+                putNull("tokens_model")
             }, "id = ?", arrayOf(id.toString()))
         }
         dropVectorCache()
+    }
+
+    /** Stores token counts (message id → count) made by [model]'s tokenizer. */
+    fun setTokens(counts: Map<Long, Int>, model: String) {
+        writableDatabase.transaction {
+            val stmt = compileStatement("UPDATE messages SET tokens = ?, tokens_model = ? WHERE id = ?")
+            for ((id, n) in counts) {
+                stmt.bindLong(1, n.toLong())
+                stmt.bindString(2, model)
+                stmt.bindLong(3, id)
+                stmt.executeUpdateDelete()
+            }
+        }
     }
 
     /** Deletes every message with seq >= [fromSeq] (edit and regenerate). */

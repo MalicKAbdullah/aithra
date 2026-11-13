@@ -126,6 +126,21 @@ std::string format_chat(Session *s, JNIEnv *env, jobjectArray roles, jobjectArra
     return prompt;
 }
 
+// Tokens of [msgs] rendered with the model's chat template, without BOS.
+int count_rendered(Session *s, const std::vector<llama_chat_message> &msgs, bool add_assistant) {
+    const char *tmpl = s->tmpl.empty() ? nullptr : s->tmpl.c_str();
+    std::vector<char> buf(8192);
+    int len = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), add_assistant, buf.data(), (int32_t) buf.size());
+    if (len < 0) return -1;
+    if (len > (int) buf.size()) {
+        buf.resize(len);
+        len = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), add_assistant, buf.data(), (int32_t) buf.size());
+    }
+    std::string text(buf.data(), len);
+    if (add_assistant && s->template_thinks) text += "<think>\n\n</think>\n\n";
+    return (int) tokenize(llama_model_get_vocab(s->model), text, false).size();
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT void JNICALL
@@ -372,4 +387,53 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeEmbed(JNIEnv *env, jobject, jl
     jfloatArray arr = env->NewFloatArray(e->n_embd);
     env->SetFloatArrayRegion(arr, 0, e->n_embd, out.data());
     return arr;
+}
+
+// -- Token counts ---------------------------------------------------------------
+//
+// Per-turn counts let the app cache one number per message and plan the
+// prompt exactly: a prompt costs promptOverhead + the sum of its turns.
+
+// The tokens each turn adds to a prompt, template markup included. Some
+// templates (Gemma) fold the system turn into the first user turn, so a
+// system turn is measured as the difference it makes in front of one.
+extern "C" JNIEXPORT jintArray JNICALL
+Java_dev_abdullah_aithra_engine_LlamaNative_nativeCountTurns(
+        JNIEnv *env, jobject, jlong handle, jobjectArray roles, jobjectArray contents) {
+    auto *s = reinterpret_cast<Session *>(handle);
+    jsize n = env->GetArrayLength(roles);
+    std::vector<jint> out(n);
+    const llama_chat_message empty_user = {"user", ""};
+    int empty_user_tokens = count_rendered(s, {empty_user}, false);
+    for (jsize i = 0; i < n; ++i) {
+        auto r = (jstring) env->GetObjectArrayElement(roles, i);
+        auto c = (jstring) env->GetObjectArrayElement(contents, i);
+        std::string role = to_string(env, r);
+        std::string content = to_utf8(env, c);
+        env->DeleteLocalRef(r);
+        env->DeleteLocalRef(c);
+        llama_chat_message m = {role.c_str(), content.c_str()};
+        int count = role == "system"
+                ? count_rendered(s, {m, empty_user}, false) - empty_user_tokens
+                : count_rendered(s, {m}, false);
+        if (count < 0) {
+            throw_java(env, "This model's chat template is not supported by llama.cpp");
+            return nullptr;
+        }
+        out[i] = count;
+    }
+    jintArray arr = env->NewIntArray(n);
+    env->SetIntArrayRegion(arr, 0, n, out.data());
+    return arr;
+}
+
+// Tokens a prompt costs beyond its turns: BOS and the opening of the
+// assistant's reply.
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_abdullah_aithra_engine_LlamaNative_nativePromptOverhead(JNIEnv *, jobject, jlong handle) {
+    auto *s = reinterpret_cast<Session *>(handle);
+    const llama_chat_message user = {"user", "x"};
+    int open = count_rendered(s, {user}, true) - count_rendered(s, {user}, false);
+    int bos = llama_vocab_get_add_bos(llama_model_get_vocab(s->model)) ? 1 : 0;
+    return open + bos;
 }

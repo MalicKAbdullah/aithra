@@ -48,4 +48,14 @@ interface LlmEngine : AutoCloseable {
 
     /** Interrupts a running [generate] from another thread. */
     fun cancel()
+
+    /**
+     * Exact tokens each turn adds to a prompt, template markup included, or
+     * null when the runtime exposes no tokenizer; callers then track the
+     * context from the counts each [generate] reports.
+     */
+    fun countTurns(turns: List<ChatTurn>): IntArray?
+
+    /** Tokens a prompt costs beyond its turns; null when [countTurns] is. */
+    val promptOverhead: Int?
 }

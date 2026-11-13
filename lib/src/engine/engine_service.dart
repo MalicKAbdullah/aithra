@@ -152,6 +152,12 @@ class EngineService extends ChangeNotifier {
     return Generation(controller.stream, done, _native.cancel);
   }
 
+  /// Exact per-turn token counts from the loaded model's tokenizer (see
+  /// [NativeBridge.countTokens]); queued like any other engine call.
+  Future<({List<int>? counts, int? overhead})> countTokens(
+    List<EngineTurn> turns,
+  ) => _exclusive(() => _native.countTokens(turns));
+
   /// Gives way to foreground work: queued background generations are
   /// dropped and a running one is cancelled, so the user never waits on
   /// one.

@@ -185,6 +185,12 @@ class MainActivity : FlutterFragmentActivity() {
                     }
                 }
             }
+            "engine.countTokens" -> {
+                val turns = (call.argument<List<Map<String, Any?>>>("turns")!!).map {
+                    ChatTurn(role = it["role"] as String, text = it["text"] as String, images = emptyList())
+                }
+                onEngine(result) { engineHost.countTokens(turns) }
+            }
             "engine.cancel" -> {
                 engineHost.cancel()
                 result.success(null)
@@ -221,6 +227,10 @@ class MainActivity : FlutterFragmentActivity() {
             }
             "db.updateMessage" -> onDb(result) {
                 db.updateMessage(call.argument<Number>("id")!!.toLong(), call.argument<String>("content")!!, call.argument<String>("stats"))
+            }
+            "db.setTokens" -> onDb(result) {
+                val counts = (call.argument<Map<String, Int>>("counts")!!).mapKeys { it.key.toLong() }
+                db.setTokens(counts, call.argument<String>("model")!!)
             }
             "db.truncate" -> onDb(result) { db.truncate(call.argument<String>("convId")!!, call.argument<Int>("fromSeq")!!) }
             "db.putImage" -> onDb(result) {

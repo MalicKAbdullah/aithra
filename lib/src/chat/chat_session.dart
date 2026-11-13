@@ -225,6 +225,7 @@ class ChatSession extends ChangeNotifier {
         recalled: recalled,
         summary: fresh.summary,
       );
+      final counted = await _countTokens(spec.id, system, history);
       final plan = planPrompt(
         system: system,
         history: [
@@ -234,10 +235,13 @@ class ChatSession extends ChangeNotifier {
               isUser: m.role == Role.user,
               text: m.content,
               imageCount: spec.vision ? _imagesSent(history, m) : 0,
+              tokens: counted.messages[m.id],
             ),
         ],
         contextTokens: contextSize,
         replyTokens: replyTokens,
+        systemTokens: counted.system,
+        overheadTokens: counted.overhead,
       );
       final turns = <EngineTurn>[EngineTurn('system', plan.system)];
       for (final p in plan.messages) {
@@ -290,8 +294,15 @@ class ChatSession extends ChangeNotifier {
       );
       unawaited(HapticFeedback.selectionClick());
       unawaited(_store.upsert(conv.id));
-      final used = metrics.contextTokens ?? plan.estimatedTokens;
-      if (shouldSummarize(usedTokens: used, contextTokens: contextSize)) {
+      final used = metrics.contextTokens ?? plan.promptTokens;
+      if (used == null) {
+        throw StateError('The engine reported no context usage for this turn.');
+      }
+      if (shouldSummarize(
+        usedTokens: used,
+        contextTokens: contextSize,
+        replyTokens: replyTokens,
+      )) {
         unawaited(_summarize());
       }
       final asked = history.lastWhere((m) => m.role == Role.user);
@@ -349,6 +360,42 @@ class ChatSession extends ChangeNotifier {
       }
     }
     if (!run.preempted) _recallIndex.indexInBackground();
+  }
+
+  /// Exact token counts for [history] and [system] under [modelId]'s
+  /// tokenizer. Messages keep their count in the database, so only those
+  /// new since the last turn (or counted by another model) are tokenized,
+  /// in one call with the system prompt. All null on a runtime without a
+  /// tokenizer.
+  Future<({Map<int, int> messages, int? system, int? overhead})> _countTokens(
+    String modelId,
+    String system,
+    List<ChatMessage> history,
+  ) async {
+    final cached = {
+      for (final m in history)
+        if (m.tokens != null && m.tokensModel == modelId) m.id: m.tokens!,
+    };
+    final missing = [
+      for (final m in history)
+        if (!cached.containsKey(m.id)) m,
+    ];
+    final r = await _assistant.engine.countTokens([
+      EngineTurn('system', system),
+      for (final m in missing)
+        EngineTurn(m.role == Role.user ? 'user' : 'model', m.content),
+    ]);
+    final counts = r.counts;
+    if (counts == null) return (messages: cached, system: null, overhead: null);
+    final fresh = {
+      for (var i = 0; i < missing.length; i++) missing[i].id: counts[i + 1],
+    };
+    if (fresh.isNotEmpty) await _native.dbSetTokens(fresh, modelId);
+    return (
+      messages: {...cached, ...fresh},
+      system: counts.first,
+      overhead: r.overhead,
+    );
   }
 
   /// Images are sent for the two most recent user messages that have any;

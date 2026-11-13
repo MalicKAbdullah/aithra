@@ -62,6 +62,15 @@ class EngineHost(private val context: Context) {
         return stats.toMap() + ("peakRssMb" to sampler.peakMb)
     }
 
+    /** Per-turn token counts and prompt overhead; both null without a tokenizer. */
+    fun countTokens(turns: List<ChatTurn>): Map<String, Any?> {
+        val current = engine ?: throw IllegalStateException("No model is loaded")
+        return mapOf(
+            "counts" to current.countTurns(turns)?.toList(),
+            "overhead" to current.promptOverhead,
+        )
+    }
+
     /** Safe from any thread: interrupts the running generation. */
     fun cancel() {
         engine?.cancel()

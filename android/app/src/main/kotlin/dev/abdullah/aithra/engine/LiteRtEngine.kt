@@ -129,6 +129,12 @@ class LiteRtEngine(
         active?.cancelProcess()
     }
 
+    // LiteRT-LM 0.19.1 has no tokenizer API; usage comes from each
+    // conversation's reported token count instead.
+    override fun countTurns(turns: List<ChatTurn>): IntArray? = null
+
+    override val promptOverhead: Int? = null
+
     override fun close() = engine.close()
 
     private fun msFor(tokens: Int, perSecond: Double): Double? =
