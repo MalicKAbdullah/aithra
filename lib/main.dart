@@ -15,6 +15,7 @@ import 'src/data/settings_store.dart';
 import 'src/data/vault.dart';
 import 'src/engine/engine_service.dart';
 import 'src/memory/memory_store.dart';
+import 'src/memory/recall_index.dart';
 import 'src/models/model_manager.dart';
 import 'src/platform/native.dart';
 import 'src/services.dart';
@@ -50,13 +51,15 @@ Future<void> main() async {
 
   final engine = EngineService(native);
   final models = ModelManager(native);
+  final recall = RecallIndex(native: native, engine: engine, models: models);
   final services = Services(
     native: native,
     engine: engine,
     models: models,
     settings: settings,
     memories: MemoryStore(vault),
-    chats: ChatStore(native),
+    recall: recall,
+    chats: ChatStore(native, searchMessages: recall.search),
     assistant: Assistant(engine: engine, models: models, settings: settings),
     lock: LockController(
       deviceAuth: LocalAuthDeviceAuth(),

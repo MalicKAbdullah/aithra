@@ -7,6 +7,7 @@ import 'chat/chat_store.dart';
 import 'data/settings_store.dart';
 import 'engine/engine_service.dart';
 import 'memory/memory_store.dart';
+import 'memory/recall_index.dart';
 import 'models/model_manager.dart';
 import 'platform/native.dart';
 import 'voice/speech_service.dart';
@@ -20,6 +21,7 @@ class Services {
     required this.models,
     required this.settings,
     required this.memories,
+    required this.recall,
     required this.chats,
     required this.assistant,
     required this.lock,
@@ -33,6 +35,7 @@ class Services {
   final ModelManager models;
   final SettingsStore settings;
   final MemoryStore memories;
+  final RecallIndex recall;
   final ChatStore chats;
   final Assistant assistant;
   final LockController lock;

@@ -1,11 +1,12 @@
 import 'package:core_theme/core_theme.dart';
-import 'package:core_ui/core_ui.dart';
 import 'package:flutter/material.dart';
 
 import '../../models/catalog.dart';
 import '../../models/download_state.dart';
 import '../../services.dart';
+import '../aithra_type.dart';
 import '../widgets/model_tile.dart';
+import '../widgets/section_label.dart';
 
 class ModelsScreen extends StatelessWidget {
   const ModelsScreen({super.key});
@@ -31,15 +32,18 @@ class ModelsScreen extends StatelessWidget {
               Text(
                 'Using ${formatBytes(s.models.usedBytes)} · '
                 '${formatBytes(s.models.freeBytes)} free',
-                style: AppTextStyles.bodySmall.copyWith(color: c.textSecondary),
+                style: AithraType.bodySmall.copyWith(color: c.textSecondary),
               ),
-              const SizedBox(height: AppSpacing.md),
+              const SizedBox(height: AppSpacing.smd),
               for (final m in catalog) ...[
                 ModelTile(spec: m),
-                const SizedBox(height: AppSpacing.smd),
+                const SizedBox(height: AppSpacing.sm + 2),
               ],
+              const SectionLabel('Optional'),
+              const ModelTile(spec: embeddingModel),
+              const SizedBox(height: AppSpacing.sm + 2),
               if (imported.isNotEmpty) ...[
-                const SectionHeader(title: 'Imported'),
+                const SectionLabel('Imported'),
                 for (final m in imported) ...[
                   ModelTile(spec: m),
                   const SizedBox(height: AppSpacing.smd),
@@ -69,9 +73,7 @@ class ModelsScreen extends StatelessWidget {
                     child: Text(
                       'Models download from Hugging Face. That is the only '
                       'network access Aithra has; your chats never leave the phone.',
-                      style: AppTextStyles.caption.copyWith(
-                        color: c.textTertiary,
-                      ),
+                      style: AithraType.caption.copyWith(color: c.textTertiary),
                     ),
                   ),
                 ],

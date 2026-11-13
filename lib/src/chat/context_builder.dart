@@ -1,11 +1,3 @@
-/// Rough token count without a tokenizer: English averages a little over
-/// three characters per token for these models; each message adds template
-/// tokens and each image its vision tokens.
-int estimateTokens(String text, {int images = 0}) =>
-    (text.length / 3.2).ceil() + 6 + images * imageTokens;
-
-const int imageTokens = 300;
-
 /// One message of history as the prompt builder sees it.
 class PromptMessage {
   const PromptMessage({
@@ -13,22 +5,29 @@ class PromptMessage {
     required this.isUser,
     required this.text,
     this.imageCount = 0,
+    this.tokens,
   });
 
   final int seq;
   final bool isUser;
   final String text;
   final int imageCount;
+
+  /// Exact tokens this message adds to a prompt under the loaded model's
+  /// tokenizer, template markup included; null when the runtime has none.
+  final int? tokens;
 }
 
 class PromptPlan {
-  const PromptPlan(this.system, this.messages, this.estimatedTokens);
+  const PromptPlan(this.system, this.messages, this.promptTokens);
 
   final String system;
 
   /// The suffix of the history that fits, oldest first.
   final List<PromptMessage> messages;
-  final int estimatedTokens;
+
+  /// Exact prompt size, or null when the runtime cannot count tokens.
+  final int? promptTokens;
 }
 
 /// The system message: who Aithra is, what it remembers about the user,
@@ -69,18 +68,31 @@ String buildSystemPrompt({
 String _two(int v) => v.toString().padLeft(2, '0');
 
 /// Keeps the newest messages that fit in [contextTokens] minus room for the
-/// reply. The newest message is always kept.
+/// reply, on exact counts: [systemTokens] for the system turn,
+/// [overheadTokens] for the rest of the prompt and each message's
+/// [PromptMessage.tokens]. The newest message is always kept.
+///
+/// Without counts (a runtime with no tokenizer) every message is kept: the
+/// window is then bounded by summarizing on the usage the engine reports
+/// after each turn (see [shouldSummarize]).
 PromptPlan planPrompt({
   required String system,
   required List<PromptMessage> history,
   required int contextTokens,
   required int replyTokens,
+  int? systemTokens,
+  int? overheadTokens,
 }) {
+  if (systemTokens == null ||
+      overheadTokens == null ||
+      history.any((m) => m.tokens == null)) {
+    return PromptPlan(system, history, null);
+  }
   final budget = contextTokens - replyTokens;
-  var used = estimateTokens(system);
+  var used = systemTokens + overheadTokens;
   final kept = <PromptMessage>[];
   for (final m in history.reversed) {
-    final cost = estimateTokens(m.text, images: m.imageCount);
+    final cost = m.tokens!;
     if (kept.isNotEmpty && used + cost > budget) break;
     kept.add(m);
     used += cost;
@@ -88,13 +100,16 @@ PromptPlan planPrompt({
   return PromptPlan(system, kept.reversed.toList(), used);
 }
 
-/// Whether the chat should summarize its older turns now: it fills more
-/// than [threshold] of the context.
+/// Whether the chat should fold its older turns into the summary now, from
+/// [usedTokens], the context the engine reported for the last turn: the
+/// next turn needs that much again plus a new message and [replyTokens],
+/// so summarizing starts once that would pass [threshold] of the context.
 bool shouldSummarize({
   required int usedTokens,
   required int contextTokens,
-  double threshold = 0.7,
-}) => usedTokens > contextTokens * threshold;
+  required int replyTokens,
+  double threshold = 0.8,
+}) => usedTokens + replyTokens > contextTokens * threshold;
 
 /// Which messages to fold into the summary: everything but the last
 /// [keepRecent], starting after what is already summarized.

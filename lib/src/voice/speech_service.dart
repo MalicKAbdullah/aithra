@@ -89,7 +89,11 @@ class SpeechService extends ChangeNotifier {
 
   /// Text of the utterance in progress.
   String partial = '';
-  double level = 0;
+
+  /// Microphone level in dB (`onRmsChanged`, roughly -2 to 10). Its own
+  /// notifier: it changes ~20 times a second and only the voice orb reads
+  /// it, so it does not rebuild [SpeechService] listeners.
+  final ValueNotifier<double> level = ValueNotifier(0);
   int? errorCode;
   bool? onDeviceAvailable;
   bool? languageInstalled;
@@ -150,9 +154,11 @@ class SpeechService extends ChangeNotifier {
     final kind = e['kind']! as String;
     _clock.onDevice = e['onDevice'] as bool? ?? false;
     _clock.on(kind, e['t']! as int);
+    if (kind == 'level') {
+      level.value = (e['rms']! as num).toDouble();
+      return;
+    }
     switch (kind) {
-      case 'level':
-        level = (e['rms']! as num).toDouble();
       case 'partial':
         partial = e['text']! as String;
       case 'final':

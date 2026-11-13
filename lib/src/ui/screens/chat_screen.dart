@@ -7,10 +7,13 @@ import 'package:flutter/services.dart';
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
 import '../../services.dart';
+import '../aithra_type.dart';
+import '../widgets/aithra_mark.dart';
 import '../widgets/composer.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/perf_hud.dart';
 import 'home_screen.dart' show renameDialog;
+import 'models_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({this.conversation, super.key});
@@ -37,6 +40,7 @@ class _ChatScreenState extends State<ChatScreen> {
       assistant: s.assistant,
       store: s.chats,
       memories: s.memories,
+      recall: s.recall,
       conversation: widget.conversation,
     );
     _composer.text.text = widget.conversation?.draft ?? '';
@@ -132,7 +136,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Text(
                   '${m.stats!.decodeTps!.toStringAsFixed(1)} tokens/s · '
                   'first word after ${((m.stats!.ttftMs ?? 0) / 1000).toStringAsFixed(1)} s',
-                  style: AppTextStyles.caption.copyWith(
+                  style: AithraType.caption.copyWith(
                     color: SuiteColors.of(context).textTertiary,
                   ),
                 ),
@@ -202,9 +206,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final c = SuiteColors.of(context);
     return Scaffold(
       appBar: AppBar(
+        titleSpacing: 0,
         title: ListenableBuilder(
           listenable: Listenable.merge([_session, s.chats, s.engine]),
           builder: (context, _) => Column(
+            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
@@ -216,10 +222,14 @@ class _ChatScreenState extends State<ChatScreen> {
                     'New chat',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
+                style: AithraType.chatTitle.copyWith(color: c.textPrimary),
               ),
+              const SizedBox(height: 1),
               Text(
                 _modelLine(context),
-                style: AppTextStyles.caption.copyWith(color: c.textTertiary),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AithraType.caption.copyWith(color: c.textTertiary),
               ),
             ],
           ),
@@ -296,16 +306,16 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.auto_awesome, size: 40, color: c.accent),
+              const AithraMark(size: 48),
               const SizedBox(height: AppSpacing.md),
               Text(
                 'How can I help?',
-                style: AppTextStyles.h3.copyWith(color: c.textPrimary),
+                style: AithraType.h1.copyWith(color: c.textPrimary),
               ),
               const SizedBox(height: AppSpacing.xs),
               Text(
                 'Everything stays on this phone.',
-                style: AppTextStyles.bodySmall.copyWith(color: c.textSecondary),
+                style: AithraType.bodySmall.copyWith(color: c.textSecondary),
               ),
             ],
           ),
@@ -327,10 +337,17 @@ class _ChatScreenState extends State<ChatScreen> {
           );
         }
         final m = messages[i - extra];
-        return MessageBubble(
+        final bubble = MessageBubble(
           key: ValueKey(m.seq),
           message: m,
           onLongPress: () => _messageActions(m),
+        );
+        final notice = _session.notices[m.seq];
+        if (notice == null) return bubble;
+        return Column(
+          key: ValueKey('notice-${m.seq}'),
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [bubble, _NoticeRow(notice)],
         );
       },
     );
@@ -350,7 +367,7 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: Text(
               _session.error!,
-              style: AppTextStyles.bodySmall.copyWith(color: c.negative),
+              style: AithraType.bodySmall.copyWith(color: c.negative),
             ),
           ),
           TextButton(onPressed: _session.retry, child: const Text('Retry')),
@@ -388,6 +405,106 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// A quiet line under a reply saying something did not work for it; tap
+/// for the details and what to do.
+class _NoticeRow extends StatelessWidget {
+  const _NoticeRow(this.notice);
+
+  final ReplyNotice notice;
+
+  Future<void> _details(BuildContext context) => showModalBottomSheet<void>(
+    context: context,
+    builder: (sheet) {
+      final c = SuiteColors.of(sheet);
+      final s = context.services;
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.gutter,
+            AppSpacing.lg,
+            AppSpacing.gutter,
+            AppSpacing.md,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                notice.title,
+                style: AithraType.h2.copyWith(color: c.textPrimary),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                notice.details,
+                style: AithraType.body.copyWith(color: c.textSecondary),
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  if (notice.recall) ...[
+                    TextButton(
+                      onPressed: () {
+                        Navigator.pop(sheet);
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const ModelsScreen(),
+                          ),
+                        );
+                      },
+                      child: const Text('Models'),
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    FilledButton(
+                      onPressed: () {
+                        s.recall.retry();
+                        Navigator.pop(sheet);
+                      },
+                      child: const Text('Try again'),
+                    ),
+                  ] else
+                    FilledButton(
+                      onPressed: () => Navigator.pop(sheet),
+                      child: const Text('OK'),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    return InkWell(
+      onTap: () => _details(context),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.gutter,
+          2,
+          AppSpacing.gutter,
+          AppSpacing.sm,
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.info_outline_rounded, size: 14, color: c.warning),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                '${notice.title} · tap for details',
+                style: AithraType.caption.copyWith(color: c.textSecondary),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

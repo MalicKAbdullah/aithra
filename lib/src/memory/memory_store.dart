@@ -55,11 +55,11 @@ class MemoryStore extends ChangeNotifier {
   /// Suggestions worth showing: not already saved, not dismissed.
   List<String> filterSuggestions(List<String> candidates) => [
     for (final c in candidates)
-      if (!knows(c) && !_dismissed.contains(c)) c,
+      if (!knows(c) && !_dismissed.contains(c.toLowerCase())) c,
   ];
 
   void dismiss(String suggestion) {
-    _dismissed.add(suggestion);
+    _dismissed.add(suggestion.toLowerCase());
     notifyListeners();
   }
 
@@ -87,8 +87,19 @@ class MemoryStore extends ChangeNotifier {
     return _save();
   }
 
-  Future<void> remove(String id) {
-    _items.removeWhere((m) => m.id == id);
+  /// Removes the memory and returns it with its position, for [restore].
+  Future<(Memory, int)?> remove(String id) async {
+    final i = _items.indexWhere((m) => m.id == id);
+    if (i < 0) return null;
+    final m = _items.removeAt(i);
+    await _save();
+    return (m, i);
+  }
+
+  /// Puts back a memory taken out by [remove], where it was.
+  Future<void> restore(Memory memory, int index) {
+    if (_items.any((m) => m.id == memory.id)) return Future.value();
+    _items.insert(index.clamp(0, _items.length), memory);
     return _save();
   }
 }

@@ -47,6 +47,11 @@ class EngineService extends ChangeNotifier {
   Future<void> _queue = Future.value();
   int _nextRequest = 0;
 
+  /// Bumped whenever foreground work arrives; background generations
+  /// queued under an older epoch are skipped and a running one is cancelled.
+  int _epoch = 0;
+  bool _backgroundRunning = false;
+
   String? _loadedKey;
   EngineStatus _status = EngineStatus.idle;
   String? _error;
@@ -77,38 +82,41 @@ class EngineService extends ChangeNotifier {
     ModelSpec spec,
     String path,
     BackendOption backend,
-  ) => _exclusive(() async {
-    final key = _key(spec, backend);
-    if (_loadedKey == key) return null;
-    _status = EngineStatus.loading;
-    _error = null;
-    notifyListeners();
-    try {
-      final r = await _native.load(
-        runtime: spec.runtime.name,
-        path: path,
-        backend: backend.nativeId,
-        threads: backend.threads,
-        vision: spec.vision,
-        maxTokens: spec.contextTokens,
-      );
-      _loadedKey = key;
-      _contextSize = r['contextSize']! as int;
-      _status = EngineStatus.ready;
+  ) {
+    preemptBackground();
+    return _exclusive(() async {
+      final key = _key(spec, backend);
+      if (_loadedKey == key) return null;
+      _status = EngineStatus.loading;
+      _error = null;
       notifyListeners();
-      return LoadResult(
-        (r['loadMs']! as num).toDouble(),
-        (r['peakRssMb']! as num).toDouble(),
-        _contextSize!,
-      );
-    } catch (e) {
-      _loadedKey = null;
-      _status = EngineStatus.failed;
-      _error = e is PlatformException ? e.message : '$e';
-      notifyListeners();
-      rethrow;
-    }
-  });
+      try {
+        final r = await _native.load(
+          runtime: spec.runtime.name,
+          path: path,
+          backend: backend.nativeId,
+          threads: backend.threads,
+          vision: spec.vision,
+          maxTokens: spec.contextTokens,
+        );
+        _loadedKey = key;
+        _contextSize = r['contextSize']! as int;
+        _status = EngineStatus.ready;
+        notifyListeners();
+        return LoadResult(
+          (r['loadMs']! as num).toDouble(),
+          (r['peakRssMb']! as num).toDouble(),
+          _contextSize!,
+        );
+      } catch (e) {
+        _loadedKey = null;
+        _status = EngineStatus.failed;
+        _error = e is PlatformException ? e.message : '$e';
+        notifyListeners();
+        rethrow;
+      }
+    });
+  }
 
   /// Streams a reply from the loaded model. Call [ensureLoaded] first.
   Generation generate(
@@ -117,6 +125,7 @@ class EngineService extends ChangeNotifier {
     double temperature = 0.7,
     bool ignoreEos = false,
   }) {
+    preemptBackground();
     final id = _nextRequest++;
     final controller = StreamController<String>();
     final sub = _native
@@ -143,6 +152,30 @@ class EngineService extends ChangeNotifier {
     return Generation(controller.stream, done, _native.cancel);
   }
 
+  /// Exact per-turn token counts from the loaded model's tokenizer (see
+  /// [NativeBridge.countTokens]); queued like any other engine call.
+  Future<({List<int>? counts, int? overhead})> countTokens(
+    List<EngineTurn> turns,
+  ) => _exclusive(() => _native.countTokens(turns));
+
+  /// Gives way to foreground work: queued background generations are
+  /// dropped and a running one is cancelled, so the user never waits on
+  /// one.
+  void preemptBackground() {
+    _epoch++;
+    if (_backgroundRunning) unawaited(_native.cancel());
+  }
+
+  /// Starts a run of background work (titles, memory suggestions,
+  /// embedding) that ends for good at the first foreground load or
+  /// generation after this call.
+  BackgroundRun backgroundRun() => BackgroundRun._(this, _epoch);
+
+  Future<T?> _background<T extends Object>(
+    int epoch,
+    Future<T?> Function() task,
+  ) => _exclusive(() async => epoch == _epoch ? await task() : null);
+
   /// Frees the model's memory (app backgrounded for long).
   Future<void> release() => _exclusive(() async {
     if (_loadedKey == null) return;
@@ -151,4 +184,56 @@ class EngineService extends ChangeNotifier {
     _status = EngineStatus.idle;
     notifyListeners();
   });
+}
+
+/// Background steps that each wait for the engine to be free and are all
+/// skipped once foreground work has arrived since the run began; a running
+/// generation step is cancelled, so the user never waits on one. A step
+/// that fails throws, for the caller to report.
+class BackgroundRun {
+  BackgroundRun._(this._engine, this._epoch);
+
+  final EngineService _engine;
+  final int _epoch;
+
+  bool get preempted => _epoch != _engine._epoch;
+
+  /// Runs [task] when the engine is free; null if preempted first. A running
+  /// task is not interrupted, so keep tasks short.
+  Future<T?> step<T extends Object>(Future<T> Function() task) =>
+      _engine._background(_epoch, task);
+
+  /// A short generation on the already loaded model; null if preempted
+  /// before or during it, or if no model is loaded (it never loads one).
+  Future<String?> generate(
+    List<EngineTurn> turns, {
+    required int maxTokens,
+    double temperature = 0.1,
+  }) {
+    final e = _engine;
+    final id = e._nextRequest++;
+    final out = StringBuffer();
+    final sub = e._native
+        .eventsOf('token')
+        .where((ev) => ev['requestId'] == id)
+        .listen((ev) => out.write(ev['text']! as String));
+    return e
+        ._background(_epoch, () async {
+          if (e._loadedKey == null) return null;
+          e._backgroundRunning = true;
+          try {
+            await e._native.generate(
+              requestId: id,
+              turns: turns,
+              maxTokens: maxTokens,
+              temperature: temperature,
+              ignoreEos: false,
+            );
+            return preempted ? null : out.toString();
+          } finally {
+            e._backgroundRunning = false;
+          }
+        })
+        .whenComplete(sub.cancel);
+  }
 }

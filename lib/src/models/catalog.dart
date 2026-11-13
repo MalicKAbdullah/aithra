@@ -38,6 +38,15 @@ class BackendOption {
   static BackendOption byId(String id) => all.firstWhere((b) => b.id == id);
 }
 
+/// What a model is for.
+enum ModelKind {
+  /// Answers in chats.
+  chat,
+
+  /// Turns text into vectors for recall across chats.
+  embedding,
+}
+
 /// A model Aithra knows how to download and run.
 class ModelSpec {
   const ModelSpec({
@@ -53,6 +62,7 @@ class ModelSpec {
     required this.contextTokens,
     this.recommended = false,
     this.experimental = false,
+    this.kind = ModelKind.chat,
   });
 
   final String id;
@@ -74,6 +84,7 @@ class ModelSpec {
   final int? contextTokens;
   final bool recommended;
   final bool experimental;
+  final ModelKind kind;
 
   /// A model the user imported from a file: run with the backends its
   /// runtime supports.
@@ -171,3 +182,22 @@ const List<ModelSpec> catalog = [
 ];
 
 ModelSpec get defaultModel => catalog.firstWhere((m) => m.recommended);
+
+/// The optional model behind "Memory across chats": EmbeddingGemma, run by
+/// llama.cpp in embedding mode. Without it, cross-chat recall is off.
+const ModelSpec embeddingModel = ModelSpec(
+  id: 'embeddinggemma-300m',
+  name: 'Memory across chats',
+  summary:
+      'Lets Aithra bring up related things from your other chats. '
+      'EmbeddingGemma, runs on this phone.',
+  url:
+      '$_hf/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf',
+  fileName: 'embeddinggemma-300M-Q8_0.gguf',
+  sizeBytes: 333590944,
+  runtime: Runtime.llamacpp,
+  backends: [BackendOption.cpu4],
+  vision: false,
+  contextTokens: 2048,
+  kind: ModelKind.embedding,
+);

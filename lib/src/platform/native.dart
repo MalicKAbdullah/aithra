@@ -77,6 +77,24 @@ class NativeBridge {
     'ignoreEos': ignoreEos,
   });
 
+  /// Exact tokens each turn adds to a prompt and the prompt's remaining
+  /// overhead, from the loaded model's tokenizer; both null when its
+  /// runtime has none.
+  Future<({List<int>? counts, int? overhead})> countTokens(
+    List<EngineTurn> turns,
+  ) async {
+    final m = await _map('engine.countTokens', {
+      'turns': [
+        for (final t in turns) {'role': t.role, 'text': t.text},
+      ],
+    });
+    final counts = m['counts'] as List?;
+    return (
+      counts: counts == null ? null : [for (final c in counts) c as int],
+      overhead: m['overhead'] as int?,
+    );
+  }
+
   Future<void> cancel() => _channel.invokeMethod('engine.cancel');
 
   Future<void> unload() => _channel.invokeMethod('engine.unload');
@@ -164,6 +182,13 @@ class NativeBridge {
         'stats': stats,
       });
 
+  /// Caches token counts (message id → count) made by [model]'s tokenizer.
+  Future<void> dbSetTokens(Map<int, int> counts, String model) =>
+      _channel.invokeMethod('db.setTokens', {
+        'counts': {for (final e in counts.entries) '${e.key}': e.value},
+        'model': model,
+      });
+
   Future<void> dbTruncate(String convId, int fromSeq) => _channel.invokeMethod(
     'db.truncate',
     {'convId': convId, 'fromSeq': fromSeq},
@@ -178,15 +203,42 @@ class NativeBridge {
   Future<List<Map<String, Object?>>> dbSearch(String query, int limit) =>
       _rows('db.search', {'query': query, 'limit': limit});
 
+  /// Past messages from other chats closest in meaning to [query], using
+  /// the embedding model at [modelPath].
   Future<List<Map<String, Object?>>> dbRecall(
+    String modelPath,
     String query,
     String? excludeConv,
     int limit,
   ) => _rows('db.recall', {
+    'modelPath': modelPath,
     'query': query,
     'excludeConv': excludeConv,
     'limit': limit,
   });
+
+  /// Messages closest in meaning to [query], one per conversation.
+  Future<List<Map<String, Object?>>> dbSearchMessages(
+    String modelPath,
+    String query,
+    int limit,
+  ) => _rows('db.searchMessages', {
+    'modelPath': modelPath,
+    'query': query,
+    'limit': limit,
+  });
+
+  Future<({int indexed, int total})> dbVectorStatus() async {
+    final m = await _map('db.vectorStatus');
+    return (indexed: m['indexed']! as int, total: m['total']! as int);
+  }
+
+  /// Embeds up to [limit] unindexed messages; returns how many (0 when done).
+  Future<int> dbIndexVectors(String modelPath, int limit) async =>
+      (await _channel.invokeMethod<int>('db.indexVectors', {
+        'modelPath': modelPath,
+        'limit': limit,
+      }))!;
 
   Future<Map<String, Object?>> dbSelfTest(int messages) =>
       _map('db.selfTest', {'messages': messages});

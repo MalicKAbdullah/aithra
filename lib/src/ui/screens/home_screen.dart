@@ -7,6 +7,7 @@ import '../../chat/chat_models.dart';
 import '../../models/catalog.dart';
 import '../../models/download_state.dart';
 import '../../services.dart';
+import '../aithra_type.dart';
 import '../widgets/aithra_mark.dart';
 import 'chat_screen.dart';
 import 'models_screen.dart';
@@ -52,7 +53,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Row(
           children: [
-            AithraMark(size: 28),
+            AithraMark(size: 30),
             SizedBox(width: AppSpacing.smd),
             Text('Aithra'),
           ],
@@ -94,7 +95,18 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             child: SearchBar(
               hintText: 'Search chats',
-              leading: Icon(Icons.search_rounded, color: c.textTertiary),
+              constraints: const BoxConstraints(minHeight: 46),
+              textStyle: WidgetStatePropertyAll(
+                AithraType.body.copyWith(color: c.textPrimary),
+              ),
+              hintStyle: WidgetStatePropertyAll(
+                AithraType.body.copyWith(color: c.textTertiary),
+              ),
+              leading: Icon(
+                Icons.search_rounded,
+                size: 20,
+                color: c.textTertiary,
+              ),
               onChanged: s.chats.search,
             ),
           ),
@@ -130,6 +142,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   itemBuilder: (context, i) => _ConversationRow(
                     key: ValueKey(items[i].id),
                     info: items[i],
+                    match: s.chats.snippets[items[i].id],
                     onTap: () => _open(items[i]),
                   ),
                 );
@@ -143,45 +156,135 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class _ConversationRow extends StatelessWidget {
-  const _ConversationRow({required this.info, required this.onTap, super.key});
+  const _ConversationRow({
+    required this.info,
+    required this.onTap,
+    this.match,
+    super.key,
+  });
 
   final ConversationInfo info;
+
+  /// While searching, the message that matched (rather than the title).
+  final String? match;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final c = SuiteColors.of(context);
-    return ListTile(
+    final draft = info.draft?.isNotEmpty == true ? info.draft : null;
+    final preview = info.preview;
+    final secondary = AithraType.bodySmall.copyWith(color: c.textSecondary);
+    return InkWell(
       onTap: onTap,
       onLongPress: () => _actions(context),
-      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.gutter),
-      title: Text(info.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(
-        info.draft?.isNotEmpty == true
-            ? 'Draft: ${info.draft}'
-            : _when(info.updated),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 68),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.gutter,
+            vertical: AppSpacing.smd - 2,
+          ),
+          child: Row(
+            children: [
+              _Monogram(info),
+              const SizedBox(width: AppSpacing.smd + 2),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.baseline,
+                      textBaseline: TextBaseline.alphabetic,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            info.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: AithraType.title.copyWith(
+                              color: c.textPrimary,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        Text(
+                          friendlyDate(info.updated, DateTime.now()),
+                          style: AithraType.caption.copyWith(
+                            color: c.textTertiary,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text.rich(
+                            match != null
+                                ? TextSpan(
+                                    children: [
+                                      WidgetSpan(
+                                        alignment: PlaceholderAlignment.middle,
+                                        child: Padding(
+                                          padding: const EdgeInsets.only(
+                                            right: 4,
+                                          ),
+                                          child: Icon(
+                                            Icons.search_rounded,
+                                            size: 14,
+                                            color: c.accent,
+                                          ),
+                                        ),
+                                      ),
+                                      TextSpan(text: match),
+                                    ],
+                                  )
+                                : draft != null
+                                ? TextSpan(
+                                    children: [
+                                      TextSpan(
+                                        text: 'Draft  ',
+                                        style: TextStyle(
+                                          color: c.accent,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      TextSpan(text: draft),
+                                    ],
+                                  )
+                                : TextSpan(
+                                    text: preview == null
+                                        ? 'No messages yet'
+                                        : info.previewFromUser
+                                        ? 'You: $preview'
+                                        : preview,
+                                  ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: secondary,
+                          ),
+                        ),
+                        if (info.pinned) ...[
+                          const SizedBox(width: AppSpacing.sm),
+                          Icon(
+                            Icons.push_pin_rounded,
+                            size: 14,
+                            color: c.textTertiary,
+                            semanticLabel: 'Pinned',
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
-      trailing: info.pinned
-          ? Icon(Icons.push_pin_rounded, size: 18, color: c.accent)
-          : null,
     );
-  }
-
-  static String _when(DateTime t) {
-    final now = DateTime.now();
-    final d = now.difference(t);
-    if (d.inMinutes < 1) return 'Just now';
-    if (d.inHours < 1) return '${d.inMinutes} min ago';
-    if (d.inDays < 1 && now.day == t.day) {
-      return '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
-    }
-    if (d.inDays < 7) {
-      return const ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][t.weekday -
-          1];
-    }
-    return '${t.day}/${t.month}/${t.year}';
   }
 
   Future<void> _actions(BuildContext context) async {
@@ -226,6 +329,39 @@ class _ConversationRow extends StatelessWidget {
       case 'delete':
         await chats.delete(info.id);
     }
+  }
+}
+
+/// A chat's leading tile: its first letter on a soft tint. The tint is
+/// picked from the id, so a chat keeps its colour as it moves in the list.
+class _Monogram extends StatelessWidget {
+  const _Monogram(this.info);
+
+  final ConversationInfo info;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    final tints = [c.accent, c.info, c.positive, c.warning, c.textSecondary];
+    final tint =
+        tints[info.id.codeUnits.fold(0, (a, b) => a + b) % tints.length];
+    final title = info.title.trim();
+    final letter = title.isEmpty
+        ? '·'
+        : String.fromCharCode(title.runes.first).toUpperCase();
+    return Container(
+      width: 40,
+      height: 40,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: tint.withValues(alpha: 0.14),
+        shape: BoxShape.circle,
+      ),
+      child: Text(
+        letter,
+        style: AithraType.labelStrong.copyWith(color: tint, fontSize: 15),
+      ),
+    );
   }
 }
 

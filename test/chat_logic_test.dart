@@ -1,55 +1,90 @@
 import 'package:aithra/src/chat/chat_models.dart';
 import 'package:aithra/src/chat/context_builder.dart';
 import 'package:aithra/src/chat/markdown.dart';
-import 'package:aithra/src/memory/fact_extractor.dart';
 import 'package:aithra/src/voice/sentence_splitter.dart';
 import 'package:aithra/src/voice/speech_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-PromptMessage msg(int seq, String text, {bool user = true, int images = 0}) =>
-    PromptMessage(seq: seq, isUser: user, text: text, imageCount: images);
+PromptMessage msg(int seq, String text, {bool user = true, int? tokens}) =>
+    PromptMessage(seq: seq, isUser: user, text: text, tokens: tokens);
 
 void main() {
   group('prompt planning', () {
     test('keeps everything when it fits', () {
       final plan = planPrompt(
         system: 'sys',
-        history: [msg(0, 'hi'), msg(1, 'hello', user: false), msg(2, 'how?')],
+        history: [
+          msg(0, 'hi', tokens: 5),
+          msg(1, 'hello', user: false, tokens: 6),
+          msg(2, 'how?', tokens: 6),
+        ],
         contextTokens: 4096,
         replyTokens: 1024,
+        systemTokens: 40,
+        overheadTokens: 3,
       );
       expect(plan.messages.map((m) => m.seq), [0, 1, 2]);
+      expect(plan.promptTokens, 40 + 3 + 5 + 6 + 6);
     });
 
-    test('drops the oldest messages first when over budget', () {
-      final long = 'x' * 3200; // ~1000 tokens
+    test('drops the oldest messages first, on exact counts', () {
       final plan = planPrompt(
         system: 'sys',
-        history: [msg(0, long), msg(1, long), msg(2, long), msg(3, 'newest')],
+        history: [
+          msg(0, 'a', tokens: 1000),
+          msg(1, 'b', tokens: 1100),
+          msg(2, 'c', tokens: 900),
+          msg(3, 'newest', tokens: 10),
+        ],
         contextTokens: 3000,
         replyTokens: 1024,
+        systemTokens: 60,
+        overheadTokens: 4,
       );
       expect(plan.messages.map((m) => m.seq), [2, 3]);
-      expect(plan.estimatedTokens, lessThanOrEqualTo(3000 - 1024));
+      expect(plan.promptTokens, 60 + 4 + 900 + 10);
     });
 
     test('always keeps the newest message', () {
       final plan = planPrompt(
         system: 'sys',
-        history: [msg(0, 'y' * 20000)],
+        history: [msg(0, 'long', tokens: 9000)],
         contextTokens: 2048,
         replyTokens: 1024,
+        systemTokens: 10,
+        overheadTokens: 2,
       );
       expect(plan.messages.single.seq, 0);
     });
 
-    test('images count toward the budget', () {
-      expect(estimateTokens('', images: 2), 6 + 2 * imageTokens);
+    test('without a tokenizer nothing is guessed: all kept, size unknown', () {
+      final plan = planPrompt(
+        system: 'sys',
+        history: [msg(0, 'a'), msg(1, 'b', user: false)],
+        contextTokens: 4096,
+        replyTokens: 1024,
+      );
+      expect(plan.messages, hasLength(2));
+      expect(plan.promptTokens, isNull);
     });
 
-    test('summarize when the context is 70% full', () {
-      expect(shouldSummarize(usedTokens: 2900, contextTokens: 4096), isTrue);
-      expect(shouldSummarize(usedTokens: 2800, contextTokens: 4096), isFalse);
+    test('summarize once another turn would pass 80% of the context', () {
+      expect(
+        shouldSummarize(
+          usedTokens: 2300,
+          contextTokens: 4096,
+          replyTokens: 1024,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldSummarize(
+          usedTokens: 2200,
+          contextTokens: 4096,
+          replyTokens: 1024,
+        ),
+        isFalse,
+      );
     });
 
     test('summary folds everything but the recent turns', () {
@@ -92,39 +127,6 @@ void main() {
     expect(titleFrom('  Plan my week\nwith details'), 'Plan my week');
     expect(titleFrom(''), 'Image');
     expect(titleFrom('a' * 60).length, 48);
-  });
-
-  group('fact suggestions', () {
-    test('recognise first-person facts', () {
-      expect(suggestFacts('Hi! My name is Sam Lee.'), [
-        "User's name is Sam Lee",
-      ]);
-      expect(suggestFacts('I live in Lahore'), ['User lives in Lahore']);
-      expect(suggestFacts("I'm allergic to peanuts."), [
-        'User is allergic to peanuts',
-      ]);
-      expect(suggestFacts('I really love hiking in the hills'), [
-        'User loves hiking in the hills',
-      ]);
-      expect(suggestFacts('Remember that my flight is on Friday'), [
-        'My flight is on Friday',
-      ]);
-      expect(suggestFacts("My dog's name is Biscuit"), [
-        "User's dog is Biscuit",
-      ]);
-      expect(suggestFacts('I work as a nurse.'), ['User works as a nurse']);
-    });
-
-    test('ignore ordinary questions', () {
-      expect(suggestFacts('What is the weather like on Mars?'), isEmpty);
-    });
-
-    test('one suggestion per sentence, deduplicated', () {
-      expect(suggestFacts('My name is Sam. I live in Oslo. My name is Sam.'), [
-        "User's name is Sam",
-        'User lives in Oslo',
-      ]);
-    });
   });
 
   group('markdown', () {
@@ -215,5 +217,23 @@ void main() {
   test('missing language pack errors are recognised', () {
     expect(languageMissingErrors.contains(13), isTrue);
     expect(speechErrorMessage(9), 'Microphone permission is needed');
+  });
+
+  group('chat list', () {
+    test('preview drops Markdown and collapses whitespace', () {
+      expect(
+        plainPreview('## Steps\n- Run `pip install x`\n\n```sh\nls -la\n```'),
+        'Steps Run pip install x ls -la',
+      );
+    });
+
+    test('dates read as time, Yesterday, weekday, day month, then year', () {
+      final now = DateTime(2026, 11, 13, 16); // a Friday
+      expect(friendlyDate(DateTime(2026, 11, 13, 9, 5), now), '09:05');
+      expect(friendlyDate(DateTime(2026, 11, 12, 23), now), 'Yesterday');
+      expect(friendlyDate(DateTime(2026, 11, 9, 8), now), 'Mon');
+      expect(friendlyDate(DateTime(2026, 11, 4), now), '4 Nov');
+      expect(friendlyDate(DateTime(2025, 12, 30), now), '30 Dec 2025');
+    });
   });
 }

@@ -4,12 +4,17 @@ import 'package:core_ui/core_ui.dart';
 import 'package:flutter/material.dart';
 
 import '../../services.dart';
+import '../aithra_type.dart';
+import '../widgets/section_label.dart';
 import 'memories_screen.dart';
 import 'models_screen.dart';
 import 'performance_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
+
+  /// Separators start at the row text: 16 padding + 36 badge + 14 gap.
+  static const double _indent = 66;
 
   void _push(BuildContext context, Widget screen) => Navigator.of(
     context,
@@ -29,42 +34,51 @@ class SettingsScreen extends StatelessWidget {
           AppSpacing.xxl,
         ),
         children: [
-          const SectionHeader(title: 'Assistant'),
-          ListenableBuilder(
-            listenable: s.assistant,
-            builder: (context, _) {
-              final m = s.assistant.activeModel;
-              final b = m == null ? null : s.assistant.backendFor(m);
-              return SettingsTile(
-                icon: Icons.memory_rounded,
-                title: 'Models',
-                subtitle: m == null
-                    ? 'No model downloaded'
-                    : '${m.name}${b == null ? '' : ' · ${b.label}'}',
-                onTap: () => _push(context, const ModelsScreen()),
-              );
-            },
+          const SectionLabel('Assistant', first: true),
+          RowGroup(
+            separatorIndent: _indent,
+            children: [
+              ListenableBuilder(
+                listenable: s.assistant,
+                builder: (context, _) {
+                  final m = s.assistant.activeModel;
+                  final b = m == null ? null : s.assistant.backendFor(m);
+                  return SettingsTile(
+                    icon: Icons.memory_rounded,
+                    title: 'Models',
+                    subtitle: m == null
+                        ? 'No model downloaded'
+                        : '${m.name}${b == null ? '' : ' · ${b.label}'}',
+                    onTap: () => _push(context, const ModelsScreen()),
+                  );
+                },
+              ),
+              ListenableBuilder(
+                listenable: s.memories,
+                builder: (context, _) => SettingsTile(
+                  icon: Icons.bookmark_outline_rounded,
+                  title: 'Memories',
+                  subtitle: '${s.memories.items.length} saved on this phone',
+                  onTap: () => _push(context, const MemoriesScreen()),
+                ),
+              ),
+              SettingsTile(
+                icon: Icons.speed_rounded,
+                title: 'Performance',
+                subtitle: 'Speed test results and diagnostics',
+                onTap: () => _push(context, const PerformanceScreen()),
+              ),
+            ],
           ),
-          ListenableBuilder(
-            listenable: s.memories,
-            builder: (context, _) => SettingsTile(
-              icon: Icons.bookmark_outline_rounded,
-              title: 'Memories',
-              subtitle: '${s.memories.items.length} saved on this phone',
-              onTap: () => _push(context, const MemoriesScreen()),
-            ),
+          const SectionLabel('Voice and display'),
+          RowGroup(
+            separatorIndent: _indent,
+            children: [
+              const _VoiceStatus(),
+              AppearanceSetting(controller: s.appearance),
+            ],
           ),
-          SettingsTile(
-            icon: Icons.speed_rounded,
-            title: 'Performance',
-            subtitle: 'Speed test results and diagnostics',
-            onTap: () => _push(context, const PerformanceScreen()),
-          ),
-          const SectionHeader(title: 'Voice'),
-          const _VoiceStatus(),
-          const SectionHeader(title: 'Appearance'),
-          AppearanceSetting(controller: s.appearance),
-          const SectionHeader(title: 'Privacy'),
+          const SectionLabel('Privacy'),
           AppLockSettings(controller: s.lock),
           const SizedBox(height: AppSpacing.md),
           Text(
@@ -72,10 +86,7 @@ class SettingsScreen extends StatelessWidget {
             'only to download model files from Hugging Face. Chats, photos '
             'and memories are encrypted with a key kept in Android Keystore, '
             'and are never backed up to the cloud.',
-            style: AppTextStyles.bodySmall.copyWith(
-              color: c.textSecondary,
-              height: 1.5,
-            ),
+            style: AithraType.bodySmall.copyWith(color: c.textTertiary),
           ),
         ],
       ),
@@ -116,7 +127,6 @@ class _VoiceStatusState extends State<_VoiceStatus> {
           icon: Icons.mic_none_rounded,
           title: 'Speech recognition',
           subtitle: subtitle,
-          showChevron: installed == false,
           onTap: installed == false
               ? speech.downloadLanguage
               : speech.openSettings,

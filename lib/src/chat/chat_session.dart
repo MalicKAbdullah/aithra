@@ -7,10 +7,12 @@ import 'package:flutter/services.dart';
 
 import '../assistant.dart';
 import '../engine/engine_service.dart';
-import '../memory/fact_extractor.dart';
+import '../memory/fact_suggester.dart';
 import '../memory/memory_store.dart';
+import '../memory/recall_index.dart';
 import '../platform/native.dart';
 import 'chat_models.dart';
+import 'chat_titler.dart';
 import 'chat_store.dart';
 import 'context_builder.dart';
 
@@ -39,6 +41,24 @@ class StreamingText extends ValueNotifier<String> {
 
 enum ReplyPhase { idle, preparing, streaming }
 
+/// Something that did not work for a reply; the reply itself is fine.
+class ReplyNotice {
+  const ReplyNotice(this.title, this.details, {this.recall = false});
+
+  const ReplyNotice.recall(String message)
+    : title = 'Memory across chats unavailable',
+      details =
+          'Aithra answered without looking at your other chats because '
+          'recall failed: $message',
+      recall = true;
+
+  final String title;
+  final String details;
+
+  /// A recall failure, which the user can retry.
+  final bool recall;
+}
+
 /// An image attached in the composer, before it is stored.
 class PendingImage {
   PendingImage(this.jpeg);
@@ -53,11 +73,14 @@ class ChatSession extends ChangeNotifier {
     required Assistant assistant,
     required ChatStore store,
     required MemoryStore memories,
+    required RecallIndex recall,
     ConversationInfo? conversation,
+    this.suggestFacts = true,
   }) : _native = native,
        _assistant = assistant,
        _store = store,
        _memories = memories,
+       _recallIndex = recall,
        _conversation = conversation;
 
   static const int pageSize = 30;
@@ -67,6 +90,12 @@ class ChatSession extends ChangeNotifier {
   final Assistant _assistant;
   final ChatStore _store;
   final MemoryStore _memories;
+  final RecallIndex _recallIndex;
+
+  /// Whether to ask the model for memory suggestions after each reply
+  /// (voice mode has nowhere to show them).
+  final bool suggestFacts;
+  bool _disposed = false;
 
   ConversationInfo? _conversation;
   final List<ChatMessage> _messages = [];
@@ -83,7 +112,12 @@ class ChatSession extends ChangeNotifier {
   /// have been published to [streaming] before the reply ended.
   String lastReply = '';
 
-  /// Fact suggestions from the user's last message.
+  /// Problems that affected a reply, keyed by the reply's seq, shown under
+  /// it for this session.
+  final Map<int, ReplyNotice> notices = {};
+
+  /// Facts the model found in the user's last message, offered as
+  /// suggestions; they arrive after the reply, when the engine is free.
   List<String> suggestions = const [];
 
   ConversationInfo? get conversation => _conversation;
@@ -122,8 +156,10 @@ class ChatSession extends ChangeNotifier {
 
   Future<void> send(String text, List<PendingImage> images) async {
     if (busy || (text.trim().isEmpty && images.isEmpty)) return;
+    _assistant.engine.preemptBackground();
     unawaited(HapticFeedback.lightImpact());
     error = null;
+    suggestions = const [];
     final now = DateTime.now();
     // Optimistic: the message shows before anything is written.
     final optimistic = ChatMessage(
@@ -162,7 +198,6 @@ class ChatSession extends ChangeNotifier {
       imageIds: imageIds,
       created: now,
     );
-    suggestions = _memories.filterSuggestions(suggestFacts(text));
     notifyListeners();
     unawaited(_store.upsert(convId));
     await _reply(recallQuery: text);
@@ -205,13 +240,18 @@ class ChatSession extends ChangeNotifier {
         ))
           ChatMessage.fromMap(r),
       ];
-      final recalled = await _recall(recallQuery, conv.id);
+      final recall = await _recallIndex.recall(recallQuery, conv.id);
+      final recalled = switch (recall) {
+        Recalled(:final snippets) => snippets,
+        RecallOff() || RecallFailed() => const <String>[],
+      };
       final system = buildSystemPrompt(
         now: DateTime.now(),
         memories: [for (final m in _memories.items.take(40)) m.text],
         recalled: recalled,
         summary: fresh.summary,
       );
+      final counted = await _countTokens(spec.id, system, history);
       final plan = planPrompt(
         system: system,
         history: [
@@ -221,10 +261,13 @@ class ChatSession extends ChangeNotifier {
               isUser: m.role == Role.user,
               text: m.content,
               imageCount: spec.vision ? _imagesSent(history, m) : 0,
+              tokens: counted.messages[m.id],
             ),
         ],
         contextTokens: contextSize,
         replyTokens: replyTokens,
+        systemTokens: counted.system,
+        overheadTokens: counted.overhead,
       );
       final turns = <EngineTurn>[EngineTurn('system', plan.system)];
       for (final p in plan.messages) {
@@ -277,10 +320,30 @@ class ChatSession extends ChangeNotifier {
       );
       unawaited(HapticFeedback.selectionClick());
       unawaited(_store.upsert(conv.id));
-      final used = metrics.contextTokens ?? plan.estimatedTokens;
-      if (shouldSummarize(usedTokens: used, contextTokens: contextSize)) {
-        unawaited(_summarize());
+      final replySeq = saved['seq']! as int;
+      if (recall case RecallFailed(:final message)) {
+        notices[replySeq] = ReplyNotice.recall(message);
       }
+      final used = metrics.contextTokens ?? plan.promptTokens;
+      if (used == null) {
+        notices[replySeq] = const ReplyNotice(
+          'Context size not reported',
+          'The engine did not report how much of the context this turn '
+              'used, so Aithra cannot tell when to summarize older messages. '
+              'A long chat may stop fitting; starting a new chat avoids it.',
+        );
+      } else if (shouldSummarize(
+        usedTokens: used,
+        contextTokens: contextSize,
+        replyTokens: replyTokens,
+      )) {
+        _reportFailures(replySeq, _summarize());
+      }
+      final asked = history.lastWhere((m) => m.role == Role.user);
+      _reportFailures(
+        replySeq,
+        _afterReply(conv.id, history, asked.content, text),
+      );
     } catch (e) {
       error = e is PlatformException ? (e.message ?? e.code) : '$e';
     } finally {
@@ -293,6 +356,102 @@ class ChatSession extends ChangeNotifier {
     }
   }
 
+  /// Shows a failure of [work], which runs after the reply, under it.
+  void _reportFailures(int replySeq, Future<void> work) {
+    unawaited(
+      work.catchError((Object e) {
+        if (e is! PlatformException) throw e;
+        if (_disposed) return;
+        notices[replySeq] = ReplyNotice(
+          'Background task failed',
+          'After this reply Aithra could not finish its housekeeping '
+              '(naming the chat, memory suggestions or summarizing): '
+              '${e.message ?? e.code}',
+        );
+        notifyListeners();
+      }),
+    );
+  }
+
+  /// Housekeeping once the reply is in and the engine is free: naming a new
+  /// chat, spotting facts worth remembering and embedding the new messages
+  /// for recall. Each
+  /// step yields to the user's next message (see
+  /// [BackgroundRun]); a new message ends the whole run.
+  Future<void> _afterReply(
+    String convId,
+    List<ChatMessage> history,
+    String asked,
+    String reply,
+  ) async {
+    final run = _assistant.engine.backgroundRun();
+    final firstUser = history.where((m) => m.role == Role.user).toList();
+    if (firstUser.length == 1 && history.first.seq == 0) {
+      final provisional = titleFrom(firstUser.single.content);
+      final raw = await run.generate(
+        ChatTitler.prompt(asked, reply),
+        maxTokens: ChatTitler.maxTokens,
+      );
+      final title = raw == null ? null : ChatTitler.parse(raw);
+      final current = await _native.dbConversation(convId);
+      // Only replace the provisional title, never one the user chose.
+      if (title != null && current?['title'] == provisional) {
+        await _store.rename(convId, title);
+        if (!_disposed && _conversation?.id == convId) {
+          _conversation = _conversation!.copyWith(title: title);
+          notifyListeners();
+        }
+      }
+    }
+    if (suggestFacts && asked.trim().isNotEmpty && !_disposed) {
+      final raw = await run.generate(
+        FactSuggester.prompt(asked),
+        maxTokens: FactSuggester.maxTokens,
+      );
+      if (raw != null && !_disposed && !busy) {
+        suggestions = _memories.filterSuggestions(FactSuggester.parse(raw));
+        notifyListeners();
+      }
+    }
+    if (!run.preempted) _recallIndex.indexInBackground();
+  }
+
+  /// Exact token counts for [history] and [system] under [modelId]'s
+  /// tokenizer. Messages keep their count in the database, so only those
+  /// new since the last turn (or counted by another model) are tokenized,
+  /// in one call with the system prompt. All null on a runtime without a
+  /// tokenizer.
+  Future<({Map<int, int> messages, int? system, int? overhead})> _countTokens(
+    String modelId,
+    String system,
+    List<ChatMessage> history,
+  ) async {
+    final cached = {
+      for (final m in history)
+        if (m.tokens != null && m.tokensModel == modelId) m.id: m.tokens!,
+    };
+    final missing = [
+      for (final m in history)
+        if (!cached.containsKey(m.id)) m,
+    ];
+    final r = await _assistant.engine.countTokens([
+      EngineTurn('system', system),
+      for (final m in missing)
+        EngineTurn(m.role == Role.user ? 'user' : 'model', m.content),
+    ]);
+    final counts = r.counts;
+    if (counts == null) return (messages: cached, system: null, overhead: null);
+    final fresh = {
+      for (var i = 0; i < missing.length; i++) missing[i].id: counts[i + 1],
+    };
+    if (fresh.isNotEmpty) await _native.dbSetTokens(fresh, modelId);
+    return (
+      messages: {...cached, ...fresh},
+      system: counts.first,
+      overhead: r.overhead,
+    );
+  }
+
   /// Images are sent for the two most recent user messages that have any;
   /// older ones stay in the chat but not in the prompt.
   int _imagesSent(List<ChatMessage> history, ChatMessage m) {
@@ -302,20 +461,6 @@ class ChatSession extends ChangeNotifier {
       withImages.length - 2 < 0 ? 0 : withImages.length - 2,
     );
     return recent.contains(m) ? m.imageIds.length : 0;
-  }
-
-  Future<List<String>> _recall(String query, String convId) async {
-    if (query.trim().isEmpty) return const [];
-    final rows = await _native.dbRecall(query, convId, 3);
-    return [
-      for (final r in rows)
-        if ((r['score']! as num) > 2.0) _clip(r['content']! as String, 240),
-    ];
-  }
-
-  static String _clip(String s, int max) {
-    final flat = s.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return flat.length <= max ? flat : '${flat.substring(0, max)}…';
   }
 
   /// Folds older turns into the conversation summary so the chat keeps its
@@ -391,6 +536,7 @@ class ChatSession extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _generation?.cancel();
     streaming.dispose();
     super.dispose();

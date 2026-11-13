@@ -5,12 +5,17 @@ import 'package:flutter/material.dart';
 import '../../models/catalog.dart';
 import '../../models/download_state.dart';
 import '../../services.dart';
+import '../aithra_type.dart';
 
 /// A model with its download state and the action that fits it.
 class ModelTile extends StatelessWidget {
-  const ModelTile({required this.spec, super.key});
+  const ModelTile({required this.spec, this.prominent = false, super.key});
 
   final ModelSpec spec;
+
+  /// Download as the screen's primary action (onboarding) rather than the
+  /// tonal button used in the model list.
+  final bool prominent;
 
   @override
   Widget build(BuildContext context) {
@@ -37,53 +42,77 @@ class ModelTile extends StatelessWidget {
         color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(AppSpacing.radiusPill),
       ),
-      child: Text(text, style: AppTextStyles.caption.copyWith(color: color)),
+      child: Text(
+        text,
+        style: AithraType.caption.copyWith(
+          color: color,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
     );
 
+    final caption = AithraType.caption.copyWith(color: c.textSecondary);
+    final badges = [
+      if (spec.recommended) badge('Recommended', c.accent),
+      if (spec.vision) badge('Images', c.info),
+      if (spec.experimental) badge('Experimental', c.warning),
+      if (active) badge('In use', c.positive),
+    ];
+
     return VaultCard(
-      padding: const EdgeInsets.all(AppSpacing.md),
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.smd + 2,
+        AppSpacing.md,
+        AppSpacing.smd,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
             children: [
               Expanded(
                 child: Text(
                   spec.name,
-                  style: AppTextStyles.h4.copyWith(color: c.textPrimary),
+                  style: AithraType.title.copyWith(
+                    color: c.textPrimary,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
               Text(
                 formatBytes(spec.sizeBytes),
-                style: AppTextStyles.numberSmall.copyWith(
-                  color: c.textSecondary,
+                style: AithraType.caption.copyWith(
+                  color: c.textTertiary,
+                  fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: AppSpacing.xs),
+          const SizedBox(height: 2),
           Text(
             spec.summary,
-            style: AppTextStyles.bodySmall.copyWith(color: c.textSecondary),
+            style: AithraType.bodySmall.copyWith(color: c.textSecondary),
           ),
-          const SizedBox(height: AppSpacing.sm),
-          Wrap(
-            children: [
-              if (spec.recommended) badge('Recommended', c.accent),
-              if (spec.vision) badge('Images', c.info),
-              if (spec.experimental) badge('Experimental', c.warning),
-              if (active) badge('In use', c.positive),
-            ],
-          ),
+          if (badges.isNotEmpty) ...[
+            const SizedBox(height: AppSpacing.sm),
+            Wrap(runSpacing: AppSpacing.xs, children: badges),
+          ],
           const SizedBox(height: AppSpacing.smd),
           switch (state) {
-            NotDownloaded() => Align(
-              alignment: Alignment.centerLeft,
-              child: FilledButton.icon(
+            NotDownloaded() => _ActionRow(
+              status: Text(
+                '${formatBytes(spec.sizeBytes)} download',
+                style: caption,
+              ),
+              action: (prominent ? FilledButton.icon : FilledButton.tonalIcon)(
                 onPressed: spec.url.isEmpty
                     ? null
                     : () => s.models.download(spec),
-                icon: const Icon(Icons.download_rounded),
+                style: _compact,
+                icon: const Icon(Icons.download_rounded, size: 18),
                 label: const Text('Download'),
               ),
             ),
@@ -94,89 +123,128 @@ class ModelTile extends StatelessWidget {
               :final waitingReason,
             ) =>
               Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  AppProgressBar(value: fraction ?? 0),
-                  const SizedBox(height: AppSpacing.xs),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          waitingReason ??
-                              '${formatBytes(downloaded)} of ${formatBytes(total)}',
-                          style: AppTextStyles.caption.copyWith(
-                            color: c.textSecondary,
+                  AppProgressBar(value: fraction ?? 0, height: 6),
+                  _ActionRow(
+                    status: Text.rich(
+                      TextSpan(
+                        children: [
+                          if (fraction != null)
+                            TextSpan(
+                              text: '${(fraction * 100).floor()}%  ',
+                              style: TextStyle(
+                                color: c.textPrimary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          TextSpan(
+                            text:
+                                waitingReason ??
+                                '${formatBytes(downloaded)} of ${formatBytes(total)}',
                           ),
-                        ),
+                        ],
                       ),
-                      TextButton(
-                        onPressed: () => s.models.cancelDownload(spec),
-                        child: const Text('Cancel'),
+                      style: caption.copyWith(
+                        fontFeatures: const [FontFeature.tabularFigures()],
                       ),
-                    ],
+                    ),
+                    action: TextButton(
+                      onPressed: () => s.models.cancelDownload(spec),
+                      style: _trailingText,
+                      child: const Text('Cancel'),
+                    ),
                   ),
                 ],
               ),
-            DownloadFailed(:final message) => Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    message,
-                    style: AppTextStyles.caption.copyWith(color: c.negative),
-                  ),
-                ),
-                TextButton(
-                  onPressed: () => s.models.download(spec),
-                  child: const Text('Try again'),
-                ),
-              ],
+            DownloadFailed(:final message) => _ActionRow(
+              status: Text(message, style: caption.copyWith(color: c.negative)),
+              action: TextButton(
+                onPressed: () => s.models.download(spec),
+                style: _trailingText,
+                child: const Text('Try again'),
+              ),
             ),
             Ready() =>
               calibrating != null
                   ? Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         AppProgressBar(
                           value: calibrating.total == 0
                               ? 0
                               : calibrating.done / calibrating.total,
+                          height: 6,
                         ),
-                        const SizedBox(height: AppSpacing.xs),
-                        Text(
-                          'Tuning for your phone… testing ${calibrating.label}',
-                          style: AppTextStyles.caption.copyWith(
-                            color: c.textSecondary,
+                        _ActionRow(
+                          status: Text(
+                            'Tuning for your phone… testing ${calibrating.label}',
+                            style: caption,
                           ),
                         ),
                       ],
                     )
-                  : Row(
-                      children: [
-                        if (!active)
-                          FilledButton(
-                            onPressed: () => s.assistant.select(spec),
-                            child: const Text('Use'),
-                          )
-                        else
-                          Text(
-                            _backendLine(context, spec),
-                            style: AppTextStyles.caption.copyWith(
-                              color: c.textSecondary,
+                  : spec.kind == ModelKind.embedding
+                  ? _RecallStatus(onDelete: () => _confirmDelete(context, spec))
+                  : _ActionRow(
+                      status: active
+                          ? Row(
+                              children: [
+                                Icon(
+                                  Icons.check_circle_rounded,
+                                  size: 16,
+                                  color: c.positive,
+                                ),
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(
+                                    _backendLine(context, spec),
+                                    style: caption,
+                                  ),
+                                ),
+                              ],
+                            )
+                          : FilledButton(
+                              onPressed: () => s.assistant.select(spec),
+                              style: _compact,
+                              child: const Text('Use'),
                             ),
-                          ),
-                        const Spacer(),
-                        IconButton(
-                          tooltip: 'Delete',
-                          icon: const Icon(Icons.delete_outline_rounded),
-                          onPressed: () => _confirmDelete(context, spec),
+                      action: IconButton(
+                        tooltip: 'Delete',
+                        // Icon flush with the card's right text edge.
+                        constraints: const BoxConstraints.tightFor(
+                          width: 44,
+                          height: 44,
                         ),
-                      ],
+                        padding: EdgeInsets.zero,
+                        style: IconButton.styleFrom(
+                          alignment: Alignment.centerRight,
+                        ),
+                        iconSize: 22,
+                        icon: Icon(
+                          Icons.delete_outline_rounded,
+                          color: c.textSecondary,
+                        ),
+                        onPressed: () => _confirmDelete(context, spec),
+                      ),
                     ),
           },
         ],
       ),
     );
   }
+
+  static final _compact = FilledButton.styleFrom(
+    minimumSize: const Size(64, 40),
+    padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+  );
+
+  /// A trailing text action whose label ends on the card's text edge.
+  static final _trailingText = TextButton.styleFrom(
+    padding: const EdgeInsets.only(left: AppSpacing.smd),
+    minimumSize: const Size(48, 40),
+    alignment: Alignment.centerRight,
+  );
 
   String _backendLine(BuildContext context, ModelSpec spec) {
     final b = context.services.assistant.backendFor(spec);
@@ -188,7 +256,12 @@ class ModelTile extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: Text('Delete ${spec.name}?'),
-        content: Text('Frees ${formatBytes(spec.sizeBytes)}. Your chats stay.'),
+        content: Text(
+          spec.kind == ModelKind.embedding
+              ? 'Frees ${formatBytes(spec.sizeBytes)}. Aithra stops bringing '
+                    'up your other chats; the chats themselves stay.'
+              : 'Frees ${formatBytes(spec.sizeBytes)}. Your chats stay.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -203,8 +276,92 @@ class ModelTile extends StatelessWidget {
     );
     if (ok == true && context.mounted) {
       final s = context.services;
-      await s.engine.release();
+      if (spec.kind == ModelKind.chat) await s.engine.release();
       await s.models.delete(spec);
     }
+  }
+}
+
+/// Status on the left, one action flush with the card's right text edge.
+class _ActionRow extends StatelessWidget {
+  const _ActionRow({required this.status, this.action});
+
+  final Widget status;
+  final Widget? action;
+
+  @override
+  Widget build(BuildContext context) => ConstrainedBox(
+    constraints: const BoxConstraints(minHeight: 40),
+    child: Row(
+      children: [
+        Expanded(
+          child: Align(alignment: Alignment.centerLeft, child: status),
+        ),
+        if (action != null) ...[const SizedBox(width: AppSpacing.sm), action!],
+      ],
+    ),
+  );
+}
+
+/// The embedding model's state: how much is indexed, or why recall is not
+/// working, with a way to try again.
+class _RecallStatus extends StatelessWidget {
+  const _RecallStatus({required this.onDelete});
+
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    final recall = context.services.recall;
+    final caption = AithraType.caption.copyWith(color: c.textSecondary);
+    return ListenableBuilder(
+      listenable: recall,
+      builder: (context, _) {
+        final failure = recall.failure;
+        if (failure != null) {
+          return _ActionRow(
+            status: Text(
+              'Not working: $failure',
+              style: caption.copyWith(color: c.negative),
+            ),
+            action: TextButton(
+              onPressed: recall.retry,
+              style: ModelTile._trailingText,
+              child: const Text('Try again'),
+            ),
+          );
+        }
+        final indexed = recall.indexed;
+        final total = recall.total;
+        return _ActionRow(
+          status: Row(
+            children: [
+              Icon(Icons.check_circle_rounded, size: 16, color: c.positive),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  indexed == null || total == null
+                      ? 'On'
+                      : indexed >= total
+                      ? 'On · all $total messages indexed'
+                      : 'On · $indexed of $total messages indexed',
+                  style: caption,
+                ),
+              ),
+            ],
+          ),
+          action: IconButton(
+            tooltip: 'Delete',
+            constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+            padding: EdgeInsets.zero,
+            style: IconButton.styleFrom(alignment: Alignment.centerRight),
+            iconSize: 22,
+            icon: Icon(Icons.delete_outline_rounded, color: c.textSecondary),
+            onPressed: onDelete,
+          ),
+        );
+      },
+    );
   }
 }

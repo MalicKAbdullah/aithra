@@ -27,6 +27,13 @@ object LlamaNative {
         temperature: Float,
         callback: TokenCallback,
     ): DoubleArray
+
+    external fun nativeCountTurns(handle: Long, roles: Array<String>, contents: Array<String>): IntArray
+    external fun nativePromptOverhead(handle: Long): Int
+
+    external fun nativeEmbedLoad(path: String, threads: Int): Long
+    external fun nativeEmbedFree(handle: Long)
+    external fun nativeEmbed(handle: Long, text: String): FloatArray
 }
 
 /** llama.cpp on the CPU, for GGUF models. Text only. */
@@ -53,6 +60,14 @@ class LlamaEngine(path: String, threads: Int, nCtx: Int) : LlmEngine {
             note = null,
         )
     }
+
+    override fun countTurns(turns: List<ChatTurn>): IntArray = LlamaNative.nativeCountTurns(
+        handle,
+        turns.map { it.role }.toTypedArray(),
+        turns.map { it.text }.toTypedArray(),
+    )
+
+    override val promptOverhead: Int by lazy { LlamaNative.nativePromptOverhead(handle) }
 
     override fun cancel() = cancelled.set(true)
 

@@ -7,7 +7,9 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -122,6 +124,21 @@ std::string format_chat(Session *s, JNIEnv *env, jobjectArray roles, jobjectArra
     // assistant turn opens with an empty think block.
     if (s->template_thinks) prompt += "<think>\n\n</think>\n\n";
     return prompt;
+}
+
+// Tokens of [msgs] rendered with the model's chat template, without BOS.
+int count_rendered(Session *s, const std::vector<llama_chat_message> &msgs, bool add_assistant) {
+    const char *tmpl = s->tmpl.empty() ? nullptr : s->tmpl.c_str();
+    std::vector<char> buf(8192);
+    int len = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), add_assistant, buf.data(), (int32_t) buf.size());
+    if (len < 0) return -1;
+    if (len > (int) buf.size()) {
+        buf.resize(len);
+        len = llama_chat_apply_template(tmpl, msgs.data(), msgs.size(), add_assistant, buf.data(), (int32_t) buf.size());
+    }
+    std::string text(buf.data(), len);
+    if (add_assistant && s->template_thinks) text += "<think>\n\n</think>\n\n";
+    return (int) tokenize(llama_model_get_vocab(s->model), text, false).size();
 }
 
 }  // namespace
@@ -269,4 +286,154 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeGenerate(
     jdoubleArray result = env->NewDoubleArray(5);
     env->SetDoubleArrayRegion(result, 0, 5, out);
     return result;
+}
+
+// -- Embeddings ---------------------------------------------------------------
+//
+// A separate model and context in embedding mode (EmbeddingGemma for
+// cross-chat recall). The pooling type comes from the model's metadata; the
+// whole text is one sequence in one batch because the model attends both
+// ways, so it is truncated to the context.
+
+namespace {
+
+struct Embedder {
+    llama_model *model = nullptr;
+    llama_context *ctx = nullptr;
+    int n_ctx = 0;
+    int n_embd = 0;
+};
+
+}  // namespace
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_dev_abdullah_aithra_engine_LlamaNative_nativeEmbedLoad(JNIEnv *env, jobject, jstring jpath, jint threads) {
+    std::string path = to_string(env, jpath);
+    llama_model *model = llama_model_load_from_file(path.c_str(), llama_model_default_params());
+    if (!model) {
+        throw_java(env, "llama.cpp could not load " + path);
+        return 0;
+    }
+    int n_ctx = std::min(llama_model_n_ctx_train(model), 2048);
+    llama_context_params cp = llama_context_default_params();
+    cp.embeddings = true;
+    cp.n_ctx = n_ctx;
+    cp.n_batch = n_ctx;
+    cp.n_ubatch = n_ctx;
+    cp.n_seq_max = 1;
+    cp.n_threads = threads;
+    cp.n_threads_batch = threads;
+    llama_context *ctx = llama_init_from_model(model, cp);
+    if (!ctx) {
+        llama_model_free(model);
+        throw_java(env, "llama.cpp could not create an embedding context");
+        return 0;
+    }
+    if (llama_pooling_type(ctx) == LLAMA_POOLING_TYPE_NONE) {
+        llama_free(ctx);
+        llama_model_free(model);
+        throw_java(env, "This model does not produce sentence embeddings");
+        return 0;
+    }
+    auto *e = new Embedder();
+    e->model = model;
+    e->ctx = ctx;
+    e->n_ctx = n_ctx;
+    e->n_embd = llama_model_n_embd_out(model);
+    LOGI("embedder %s n_ctx=%d n_embd=%d", path.c_str(), n_ctx, e->n_embd);
+    return reinterpret_cast<jlong>(e);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_abdullah_aithra_engine_LlamaNative_nativeEmbedFree(JNIEnv *, jobject, jlong handle) {
+    auto *e = reinterpret_cast<Embedder *>(handle);
+    llama_free(e->ctx);
+    llama_model_free(e->model);
+    delete e;
+}
+
+// The pooled embedding of [text], L2-normalised.
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_dev_abdullah_aithra_engine_LlamaNative_nativeEmbed(JNIEnv *env, jobject, jlong handle, jstring text) {
+    auto *e = reinterpret_cast<Embedder *>(handle);
+    std::vector<llama_token> tokens = tokenize(llama_model_get_vocab(e->model), to_utf8(env, text), true);
+    if ((int) tokens.size() > e->n_ctx) tokens.resize(e->n_ctx);
+    if (tokens.empty()) {
+        throw_java(env, "Nothing to embed");
+        return nullptr;
+    }
+    llama_batch batch = llama_batch_init((int32_t) tokens.size(), 0, 1);
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        batch.token[i] = tokens[i];
+        batch.pos[i] = (llama_pos) i;
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i] = 1;
+    }
+    batch.n_tokens = (int32_t) tokens.size();
+    llama_memory_clear(llama_get_memory(e->ctx), true);
+    int rc = llama_decode(e->ctx, batch);
+    llama_batch_free(batch);
+    const float *embd = rc == 0 ? llama_get_embeddings_seq(e->ctx, 0) : nullptr;
+    if (!embd) {
+        throw_java(env, "llama.cpp could not embed the text");
+        return nullptr;
+    }
+    std::vector<float> out(embd, embd + e->n_embd);
+    double norm = 0;
+    for (float v : out) norm += (double) v * v;
+    norm = std::sqrt(norm);
+    if (norm > 0) for (float &v : out) v = (float) (v / norm);
+    jfloatArray arr = env->NewFloatArray(e->n_embd);
+    env->SetFloatArrayRegion(arr, 0, e->n_embd, out.data());
+    return arr;
+}
+
+// -- Token counts ---------------------------------------------------------------
+//
+// Per-turn counts let the app cache one number per message and plan the
+// prompt exactly: a prompt costs promptOverhead + the sum of its turns.
+
+// The tokens each turn adds to a prompt, template markup included. Some
+// templates (Gemma) fold the system turn into the first user turn, so a
+// system turn is measured as the difference it makes in front of one.
+extern "C" JNIEXPORT jintArray JNICALL
+Java_dev_abdullah_aithra_engine_LlamaNative_nativeCountTurns(
+        JNIEnv *env, jobject, jlong handle, jobjectArray roles, jobjectArray contents) {
+    auto *s = reinterpret_cast<Session *>(handle);
+    jsize n = env->GetArrayLength(roles);
+    std::vector<jint> out(n);
+    const llama_chat_message empty_user = {"user", ""};
+    int empty_user_tokens = count_rendered(s, {empty_user}, false);
+    for (jsize i = 0; i < n; ++i) {
+        auto r = (jstring) env->GetObjectArrayElement(roles, i);
+        auto c = (jstring) env->GetObjectArrayElement(contents, i);
+        std::string role = to_string(env, r);
+        std::string content = to_utf8(env, c);
+        env->DeleteLocalRef(r);
+        env->DeleteLocalRef(c);
+        llama_chat_message m = {role.c_str(), content.c_str()};
+        int count = role == "system"
+                ? count_rendered(s, {m, empty_user}, false) - empty_user_tokens
+                : count_rendered(s, {m}, false);
+        if (count < 0) {
+            throw_java(env, "This model's chat template is not supported by llama.cpp");
+            return nullptr;
+        }
+        out[i] = count;
+    }
+    jintArray arr = env->NewIntArray(n);
+    env->SetIntArrayRegion(arr, 0, n, out.data());
+    return arr;
+}
+
+// Tokens a prompt costs beyond its turns: BOS and the opening of the
+// assistant's reply.
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_abdullah_aithra_engine_LlamaNative_nativePromptOverhead(JNIEnv *, jobject, jlong handle) {
+    auto *s = reinterpret_cast<Session *>(handle);
+    const llama_chat_message user = {"user", "x"};
+    int open = count_rendered(s, {user}, true) - count_rendered(s, {user}, false);
+    int bos = llama_vocab_get_add_bos(llama_model_get_vocab(s->model)) ? 1 : 0;
+    return open + bos;
 }
