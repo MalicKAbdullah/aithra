@@ -39,10 +39,14 @@ jobs:
       # The integration test runs as an Android instrumentation test, so it
       # needs no flutter_tools or Dart Development Service connection to the
       # emulator. Built here so the emulator step only installs and runs.
+      # The release build above generates a plugin registrant without
+      # dev-dependency plugins; the debug config-only pass regenerates it with
+      # integration_test, which reports the Dart results to the test runner.
       - name: Build x86_64 integration test APKs
-        run: >-
-          android/gradlew -p android app:assembleDebug app:assembleDebugAndroidTest
-          -Ptarget=$PWD/integration_test/app_test.dart -Ptarget-platform=android-x64
+        run: |
+          flutter build apk --debug --config-only
+          android/gradlew -p android app:assembleDebug app:assembleDebugAndroidTest \
+            -Ptarget=$PWD/integration_test/app_test.dart -Ptarget-platform=android-x64
       - name: Launch smoke and integration test
         uses: reactivecircus/android-emulator-runner@v2
         timeout-minutes: 60
