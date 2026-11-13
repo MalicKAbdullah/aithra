@@ -10,6 +10,7 @@ import '../engine/engine_service.dart';
 import '../memory/fact_suggester.dart';
 import '../memory/memory_store.dart';
 import '../memory/recall_index.dart';
+import '../models/catalog.dart';
 import '../platform/native.dart';
 import 'chat_models.dart';
 import 'chat_titler.dart';
@@ -85,6 +86,7 @@ class ChatSession extends ChangeNotifier {
 
   static const int pageSize = 30;
   static const int replyTokens = 1024;
+  static const int summaryTokens = 256;
 
   final NativeBridge _native;
   final Assistant _assistant;
@@ -251,19 +253,27 @@ class ChatSession extends ChangeNotifier {
         recalled: recalled,
         summary: fresh.summary,
       );
-      final counted = await _countTokens(spec.id, system, history);
+      final counted = await _countTokens(spec, system, history);
+      final messages = [
+        for (final m in history)
+          PromptMessage(
+            seq: m.seq,
+            isUser: m.role == Role.user,
+            text: m.content,
+            imageCount: spec.vision ? _imagesSent(history, m) : 0,
+            tokens: counted.messages[m.id]!,
+          ),
+      ];
+      final latest = messages.last;
+      final newest = await fitMessage(
+        latest,
+        room: contextSize - replyTokens - counted.system - counted.overhead,
+        cost: counted.cost,
+      );
+      messages.last = newest;
       final plan = planPrompt(
         system: system,
-        history: [
-          for (final m in history)
-            PromptMessage(
-              seq: m.seq,
-              isUser: m.role == Role.user,
-              text: m.content,
-              imageCount: spec.vision ? _imagesSent(history, m) : 0,
-              tokens: counted.messages[m.id],
-            ),
-        ],
+        history: messages,
         contextTokens: contextSize,
         replyTokens: replyTokens,
         systemTokens: counted.system,
@@ -296,6 +306,12 @@ class ChatSession extends ChangeNotifier {
       });
       final metrics = await generation.done;
       await sub.cancel();
+      if (counted.estimated && turns.every((t) => t.images.isEmpty)) {
+        if (metrics.promptTokens case final tokens?) {
+          final bytes = turns.fold(0, (n, t) => n + utf8.encode(t.text).length);
+          unawaited(_assistant.observeTokensPerByte(spec, tokens / bytes));
+        }
+      }
       final text = streaming.full.trim();
       if (text.isEmpty) return;
       final saved = await _native.dbAddMessage(
@@ -324,20 +340,23 @@ class ChatSession extends ChangeNotifier {
       if (recall case RecallFailed(:final message)) {
         notices[replySeq] = ReplyNotice.recall(message);
       }
-      final used = metrics.contextTokens ?? plan.promptTokens;
-      if (used == null) {
-        notices[replySeq] = const ReplyNotice(
-          'Context size not reported',
-          'The engine did not report how much of the context this turn '
-              'used, so Aithra cannot tell when to summarize older messages. '
-              'A long chat may stop fitting; starting a new chat avoids it.',
+      if (!identical(newest, latest)) {
+        notices[replySeq] = ReplyNotice(
+          'Your message was shortened',
+          "It was too long for ${spec.name}'s memory, so Aithra read its "
+              'beginning and end and left out part of the middle.',
         );
-      } else if (shouldSummarize(
+      }
+      final used = metrics.contextTokens ?? plan.promptTokens;
+      if (shouldSummarize(
         usedTokens: used,
         contextTokens: contextSize,
         replyTokens: replyTokens,
       )) {
-        _reportFailures(replySeq, _summarize());
+        _reportFailures(
+          replySeq,
+          _summarize(cost: counted.cost, contextTokens: contextSize),
+        );
       }
       final asked = history.lastWhere((m) => m.role == Role.user);
       _reportFailures(
@@ -416,39 +435,60 @@ class ChatSession extends ChangeNotifier {
     if (!run.preempted) _recallIndex.indexInBackground();
   }
 
-  /// Exact token counts for [history] and [system] under [modelId]'s
-  /// tokenizer. Messages keep their count in the database, so only those
-  /// new since the last turn (or counted by another model) are tokenized,
-  /// in one call with the system prompt. All null on a runtime without a
-  /// tokenizer.
-  Future<({Map<int, int> messages, int? system, int? overhead})> _countTokens(
-    String modelId,
-    String system,
-    List<ChatMessage> history,
-  ) async {
+  /// Token counts for [history] and [system] under [spec], and a [cost]
+  /// for re-measuring a shortened message. Exact with a tokenizer: messages
+  /// keep their count in the database, so only those new since the last
+  /// turn (or counted by another model) are tokenized, in one call with the
+  /// system prompt. Without one, every count is an [estimateTokens] and the
+  /// prompt's template markup is folded into the measured ratio.
+  Future<
+    ({
+      Map<int, int> messages,
+      int system,
+      int overhead,
+      bool estimated,
+      Future<int> Function(String text) cost,
+    })
+  >
+  _countTokens(ModelSpec spec, String system, List<ChatMessage> history) async {
     final cached = {
       for (final m in history)
-        if (m.tokens != null && m.tokensModel == modelId) m.id: m.tokens!,
+        if (m.tokens != null && m.tokensModel == spec.id) m.id: m.tokens!,
     };
     final missing = [
       for (final m in history)
         if (!cached.containsKey(m.id)) m,
     ];
-    final r = await _assistant.engine.countTokens([
+    final engine = _assistant.engine;
+    final r = await engine.countTokens([
       EngineTurn('system', system),
       for (final m in missing)
         EngineTurn(m.role == Role.user ? 'user' : 'model', m.content),
     ]);
     final counts = r.counts;
-    if (counts == null) return (messages: cached, system: null, overhead: null);
+    if (counts == null) {
+      final ratio = _assistant.tokensPerByte(spec);
+      return (
+        messages: {
+          for (final m in history) m.id: estimateTokens(m.content, ratio),
+        },
+        system: estimateTokens(system, ratio),
+        overhead: 0,
+        estimated: true,
+        cost: (String text) async => estimateTokens(text, ratio),
+      );
+    }
     final fresh = {
       for (var i = 0; i < missing.length; i++) missing[i].id: counts[i + 1],
     };
-    if (fresh.isNotEmpty) await _native.dbSetTokens(fresh, modelId);
+    if (fresh.isNotEmpty) await _native.dbSetTokens(fresh, spec.id);
     return (
       messages: {...cached, ...fresh},
       system: counts.first,
-      overhead: r.overhead,
+      overhead: r.overhead!,
+      estimated: false,
+      cost: (String text) async =>
+          (await engine.countTokens([EngineTurn('user', text)])).counts!.single,
     );
   }
 
@@ -465,7 +505,10 @@ class ChatSession extends ChangeNotifier {
 
   /// Folds older turns into the conversation summary so the chat keeps its
   /// meaning while staying inside the model's context.
-  Future<void> _summarize() async {
+  Future<void> _summarize({
+    required Future<int> Function(String text) cost,
+    required int contextTokens,
+  }) async {
     final conv = _conversation;
     if (conv == null) return;
     final fresh = ConversationInfo.fromMap(
@@ -479,15 +522,21 @@ class ChatSession extends ChangeNotifier {
       ))
         ChatMessage.fromMap(r),
     ];
-    final prompt = [
-      for (final m in history)
-        PromptMessage(seq: m.seq, isUser: m.role == Role.user, text: m.content),
-    ];
-    final fold = messagesToSummarize(prompt);
+    final fold = messagesToSummarize(history);
     if (fold.isEmpty) return;
+    final text = summarizePrompt(fresh.summary, [
+      for (final m in fold) (isUser: m.role == Role.user, text: m.content),
+    ]);
+    // The folded turns include any message that was shortened to fit its
+    // own reply, so the summary request is fitted the same way.
+    final request = await fitMessage(
+      PromptMessage(seq: 0, isUser: true, text: text, tokens: await cost(text)),
+      room: contextTokens - summaryTokens,
+      cost: cost,
+    );
     final g = _assistant.engine.generate(
-      [EngineTurn('user', summarizePrompt(fresh.summary, fold))],
-      maxTokens: 256,
+      [EngineTurn('user', request.text)],
+      maxTokens: summaryTokens,
       temperature: 0.2,
     );
     final summary = (await g.text.join()).trim();

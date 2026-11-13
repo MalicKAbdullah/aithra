@@ -5,7 +5,7 @@ import 'package:aithra/src/voice/sentence_splitter.dart';
 import 'package:aithra/src/voice/speech_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-PromptMessage msg(int seq, String text, {bool user = true, int? tokens}) =>
+PromptMessage msg(int seq, String text, {bool user = true, int tokens = 1}) =>
     PromptMessage(seq: seq, isUser: user, text: text, tokens: tokens);
 
 void main() {
@@ -57,15 +57,40 @@ void main() {
       expect(plan.messages.single.seq, 0);
     });
 
-    test('without a tokenizer nothing is guessed: all kept, size unknown', () {
-      final plan = planPrompt(
-        system: 'sys',
-        history: [msg(0, 'a'), msg(1, 'b', user: false)],
-        contextTokens: 4096,
-        replyTokens: 1024,
+    test('estimates scale with UTF-8 bytes', () {
+      expect(estimateTokens('abcd', byteBoundTokensPerByte), 4);
+      expect(estimateTokens('é', byteBoundTokensPerByte), 2);
+      expect(estimateTokens('abcdefgh', 0.25), 2);
+    });
+
+    test('a message that fits is left as it is', () async {
+      final m = msg(0, 'short', tokens: 5);
+      expect(
+        await fitMessage(m, room: 10, cost: (t) async => t.length),
+        same(m),
       );
-      expect(plan.messages, hasLength(2));
-      expect(plan.promptTokens, isNull);
+    });
+
+    test('an over-long message is clipped in the middle to fit', () async {
+      final text = 'START ${'x' * 20000} END';
+      Future<int> cost(String t) async => estimateTokens(t, 0.3);
+      final fitted = await fitMessage(
+        msg(0, text, tokens: await cost(text)),
+        room: 3000,
+        cost: cost,
+      );
+      expect(fitted.tokens, lessThanOrEqualTo(3000));
+      expect(fitted.tokens, await cost(fitted.text));
+      expect(fitted.text, startsWith('START '));
+      expect(fitted.text, endsWith(' END'));
+      expect(fitted.text, contains('characters left out'));
+    });
+
+    test('with no room left the prompt cannot be fitted', () {
+      expect(
+        fitMessage(msg(0, 'hi', tokens: 1), room: 0, cost: (t) async => 1),
+        throwsStateError,
+      );
     });
 
     test('summarize once another turn would pass 80% of the context', () {
@@ -115,8 +140,8 @@ void main() {
 
     test('summarize prompt labels speakers', () {
       final p = summarizePrompt('Earlier.', [
-        msg(0, 'Hi'),
-        msg(1, 'Hello', user: false),
+        (isUser: true, text: 'Hi'),
+        (isUser: false, text: 'Hello'),
       ]);
       expect(p, contains('Earlier summary:\nEarlier.'));
       expect(p, contains('User: Hi\nAssistant: Hello'));

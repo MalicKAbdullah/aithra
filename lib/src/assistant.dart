@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
 
 import 'calibration/calibration.dart';
+import 'calibration/correctness.dart';
+import 'chat/context_builder.dart';
 import 'data/settings_store.dart';
 import 'engine/engine_service.dart';
 import 'models/catalog.dart';
@@ -57,6 +60,27 @@ class Assistant extends ChangeNotifier with WidgetsBindingObserver {
     final c = settings.calibrations[spec.id];
     return c != null && c.fileSize == models.sizeOf(spec) ? c : null;
   }
+
+  /// Prompt tokens per UTF-8 byte for [spec] on a runtime without a
+  /// tokenizer: the highest ratio seen in calibration's speed run or in any
+  /// chat turn since, or the byte bound before anything was measured.
+  double tokensPerByte(ModelSpec spec) {
+    final seen = [
+      ?settings.tokensPerByte[spec.id],
+      for (final r in [...?calibrationFor(spec)?.results])
+        if (r.speed?.promptTokens case final tokens?)
+          tokens / utf8.encode(speedPrompt).length,
+    ];
+    return seen.isEmpty
+        ? byteBoundTokensPerByte
+        : seen.reduce((a, b) => a > b ? a : b);
+  }
+
+  /// Records the ratio a chat turn showed when it is the highest so far.
+  Future<void> observeTokensPerByte(ModelSpec spec, double ratio) =>
+      ratio > tokensPerByte(spec)
+      ? settings.putTokensPerByte(spec.id, ratio)
+      : Future.value();
 
   BackendOption? backendFor(ModelSpec spec) {
     final id = calibrationFor(spec)?.chosenBackend;

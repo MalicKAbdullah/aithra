@@ -15,6 +15,10 @@ class SettingsStore extends ChangeNotifier {
   bool perfOverlay = false;
   final Map<String, Calibration> calibrations = {};
 
+  /// Highest prompt tokens per UTF-8 byte each model (by id) has shown in a
+  /// chat, for runtimes without a tokenizer.
+  final Map<String, double> tokensPerByte = {};
+
   Future<void> load() async {
     final j = await _vault.read('settings') as Map<String, Object?>?;
     if (j == null) return;
@@ -25,6 +29,9 @@ class SettingsStore extends ChangeNotifier {
     for (final c in (j['calibrations'] as List? ?? const [])) {
       final cal = Calibration.fromJson(Map<String, Object?>.from(c as Map));
       calibrations[cal.modelId] = cal;
+    }
+    for (final e in (j['tokensPerByte'] as Map? ?? const {}).entries) {
+      tokensPerByte[e.key as String] = (e.value as num).toDouble();
     }
     notifyListeners();
   }
@@ -37,11 +44,17 @@ class SettingsStore extends ChangeNotifier {
       'speakReplies': speakReplies,
       'perfOverlay': perfOverlay,
       'calibrations': [for (final c in calibrations.values) c.toJson()],
+      'tokensPerByte': tokensPerByte,
     });
   }
 
   Future<void> update(void Function(SettingsStore s) change) {
     change(this);
+    return _save();
+  }
+
+  Future<void> putTokensPerByte(String modelId, double ratio) {
+    tokensPerByte[modelId] = ratio;
     return _save();
   }
 
