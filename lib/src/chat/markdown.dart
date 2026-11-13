@@ -1,7 +1,9 @@
-/// A small Markdown parser for chat replies: fenced code, headings, lists,
-/// quotes, rules and paragraphs, with bold/italic/code/link inlines. It is
-/// tolerant of half-written input, because replies are parsed while they
-/// stream (an unclosed code fence is still a code block).
+/// A small Markdown parser for chat replies: fenced code, display math,
+/// headings, lists, quotes, rules and paragraphs, with bold/italic/code/link
+/// and LaTeX math inlines. It is tolerant of half-written input, because
+/// replies are parsed while they stream: an unclosed code fence is still a
+/// code block, and math whose closing delimiter has not arrived yet stays
+/// plain text until it does.
 sealed class MdBlock {
   const MdBlock();
 }
@@ -42,11 +44,47 @@ class MdRule extends MdBlock {
   const MdRule();
 }
 
+/// A display equation on lines of its own: `$$ … $$` or `\[ … \]`.
+class MdMath extends MdBlock {
+  const MdMath(this.tex);
+  final String tex;
+}
+
 final _fence = RegExp(r'^\s*(```|~~~)\s*([\w+#.-]*)\s*$');
 final _heading = RegExp(r'^(#{1,6})\s+(.*)$');
 final _bullet = RegExp(r'^(\s*)[-*+]\s+(.*)$');
 final _numbered = RegExp(r'^(\s*)(\d+)[.)]\s+(.*)$');
 final _rule = RegExp(r'^\s*([-*_])(\s*\1){2,}\s*$');
+
+/// The display math starting at [lines] `[start]`, as the equation and the
+/// index of its last line; null when the line does not open one or its
+/// closing delimiter has not arrived (the lines then read as text).
+(String, int)? _displayMath(List<String> lines, int start) {
+  final first = lines[start].trimLeft();
+  final String close;
+  if (first.startsWith(r'$$')) {
+    close = r'$$';
+  } else if (first.startsWith(r'\[')) {
+    close = r'\]';
+  } else {
+    return null;
+  }
+  final body = StringBuffer();
+  var rest = first.substring(2);
+  for (var i = start; i < lines.length; i++) {
+    if (i > start) rest = lines[i];
+    final end = rest.indexOf(close);
+    if (end >= 0) {
+      // Text after the closer means the equation sits inside a paragraph.
+      if (rest.substring(end + close.length).trim().isNotEmpty) return null;
+      body.write(rest.substring(0, end));
+      final tex = body.toString().trim();
+      return tex.isEmpty ? null : (tex, i);
+    }
+    body.writeln(rest);
+  }
+  return null;
+}
 
 List<MdBlock> parseMarkdown(String source) {
   final blocks = <MdBlock>[];
@@ -79,6 +117,13 @@ List<MdBlock> parseMarkdown(String source) {
     }
     if (line.trim().isEmpty) {
       flush();
+      continue;
+    }
+    final math = _displayMath(lines, i);
+    if (math != null) {
+      flush();
+      blocks.add(MdMath(math.$1));
+      i = math.$2;
       continue;
     }
     final h = _heading.firstMatch(line);
@@ -123,7 +168,20 @@ List<MdBlock> parseMarkdown(String source) {
   return blocks;
 }
 
-enum InlineStyle { plain, bold, italic, boldItalic, code, link }
+enum InlineStyle {
+  plain,
+  bold,
+  italic,
+  boldItalic,
+  code,
+  link,
+
+  /// LaTeX set in the line: `$…$` or `\(…\)`.
+  math,
+
+  /// LaTeX set as a display equation within a paragraph: `$$…$$` or `\[…\]`.
+  displayMath,
+}
 
 class MdSpan {
   const MdSpan(this.text, this.style);
@@ -141,25 +199,143 @@ class MdSpan {
   String toString() => '${style.name}("$text")';
 }
 
-final _inline = RegExp(
-  r'(`[^`]+`)|(\*\*\*[^*]+\*\*\*)|(\*\*[^*]+\*\*|__[^_]+__)|(\*[^*\s][^*]*\*|_[^_\s][^_]*_)|(\[[^\]]+\]\([^)]+\))',
+final _emphasis = RegExp(
+  r'(\*\*\*[^*]+\*\*\*)|(\*\*[^*]+\*\*|__[^_]+__)|(\*[^*\s][^*]*\*|_[^_\s][^_]*_)|(\[[^\]]+\]\([^)]+\))',
 );
 
+/// Inline Markdown in [text]. Code spans and math are found first, so the
+/// `*`, `_` and `$` inside them keep their literal meaning there.
 List<MdSpan> parseInline(String text) {
   final spans = <MdSpan>[];
+  var plainFrom = 0;
+  var i = 0;
+
+  void literalUpTo(int end) {
+    if (end > plainFrom) {
+      _addEmphasis(spans, text.substring(plainFrom, end));
+    }
+  }
+
+  void take(int start, int end, MdSpan span) {
+    literalUpTo(start);
+    spans.add(span);
+    i = plainFrom = end;
+  }
+
+  while (i < text.length) {
+    final ch = text.codeUnitAt(i);
+    if (ch == _backtick) {
+      final close = text.indexOf('`', i + 1);
+      if (close > i + 1) {
+        take(
+          i,
+          close + 1,
+          MdSpan(text.substring(i + 1, close), InlineStyle.code),
+        );
+        continue;
+      }
+    } else if (ch == _backslash && i + 1 < text.length) {
+      final next = text[i + 1];
+      if (next == '(' || next == '[') {
+        final closer = next == '(' ? r'\)' : r'\]';
+        final close = text.indexOf(closer, i + 2);
+        final tex = close < 0 ? '' : text.substring(i + 2, close).trim();
+        if (tex.isNotEmpty) {
+          final style = next == '('
+              ? InlineStyle.math
+              : InlineStyle.displayMath;
+          take(i, close + 2, MdSpan(tex, style));
+          continue;
+        }
+      }
+      // An escaped character (`\$` above all) is never a delimiter.
+      i += 2;
+      continue;
+    } else if (ch == _dollar) {
+      final end = _mathEnd(text, i);
+      if (end != null) {
+        final display = text.startsWith(r'$$', i);
+        final width = display ? 2 : 1;
+        take(
+          i,
+          end + width,
+          MdSpan(
+            text.substring(i + width, end).trim(),
+            display ? InlineStyle.displayMath : InlineStyle.math,
+          ),
+        );
+        continue;
+      }
+      // A `$$` that does not open math is skipped whole, so its second `$`
+      // cannot open inline math.
+      i += text.startsWith(r'$$', i) ? 2 : 1;
+      continue;
+    }
+    i++;
+  }
+  literalUpTo(text.length);
+  return spans;
+}
+
+const _backtick = 0x60;
+const _backslash = 0x5C;
+const _dollar = 0x24;
+
+bool _isSpace(String c) => c.trim().isEmpty;
+bool _isDigit(String c) => c.compareTo('0') >= 0 && c.compareTo('9') <= 0;
+
+/// Where the math opened by the `$` or `$$` at [open] closes, or null when
+/// it is not math. Follows the usual Markdown rules that keep prices from
+/// reading as math: the opening `$` is not followed by a space, the closing
+/// one is the next unescaped `$`, is not preceded by a space and is not
+/// followed by a digit ("$5 and $10" stays text).
+int? _mathEnd(String text, int open) {
+  if (text.startsWith(r'$$', open)) {
+    final close = _unescaped(text, r'$$', open + 2);
+    if (close == null || text.substring(open + 2, close).trim().isEmpty) {
+      return null;
+    }
+    return close;
+  }
+  final after = open + 1;
+  if (after >= text.length || _isSpace(text[after])) return null;
+  final close = _unescaped(text, r'$', after);
+  if (close == null || close == after) return null;
+  if (_isSpace(text[close - 1])) return null;
+  if (close + 1 < text.length && _isDigit(text[close + 1])) return null;
+  return close;
+}
+
+/// The index of the next [token] at or after [from] that no backslash
+/// escapes.
+int? _unescaped(String text, String token, int from) {
+  var at = text.indexOf(token, from);
+  while (at >= 0) {
+    var slashes = 0;
+    while (at - slashes - 1 >= 0 &&
+        text.codeUnitAt(at - slashes - 1) == _backslash) {
+      slashes++;
+    }
+    if (slashes.isEven) return at;
+    at = text.indexOf(token, at + 1);
+  }
+  return null;
+}
+
+void _addEmphasis(List<MdSpan> spans, String raw) {
+  // Outside math and code a backslash-escaped dollar is a dollar sign.
+  final text = raw.replaceAll(r'\$', r'$');
   var last = 0;
-  for (final m in _inline.allMatches(text)) {
+  for (final m in _emphasis.allMatches(text)) {
     if (m.start > last) {
       spans.add(MdSpan(text.substring(last, m.start), InlineStyle.plain));
     }
     final t = m.group(0)!;
     if (m.group(1) != null) {
-      spans.add(MdSpan(t.substring(1, t.length - 1), InlineStyle.code));
-    } else if (m.group(2) != null) {
       spans.add(MdSpan(t.substring(3, t.length - 3), InlineStyle.boldItalic));
-    } else if (m.group(3) != null) {
+    } else if (m.group(2) != null) {
       spans.add(MdSpan(t.substring(2, t.length - 2), InlineStyle.bold));
-    } else if (m.group(4) != null) {
+    } else if (m.group(3) != null) {
       spans.add(MdSpan(t.substring(1, t.length - 1), InlineStyle.italic));
     } else {
       spans.add(MdSpan(t.substring(1, t.indexOf(']')), InlineStyle.link));
@@ -169,7 +345,6 @@ List<MdSpan> parseInline(String text) {
   if (last < text.length) {
     spans.add(MdSpan(text.substring(last), InlineStyle.plain));
   }
-  return spans;
 }
 
 /// [source] as one line of plain text for a list preview: Markdown syntax
@@ -182,7 +357,7 @@ String plainPreview(String source) {
         MdParagraph(:final text) ||
         MdListItem(:final text) ||
         MdQuote(:final text) => parseInline(text).map((s) => s.text).join(),
-        MdCode(:final code) => code,
+        MdCode(:final code) || MdMath(tex: final code) => code,
         MdRule() => '',
       },
   ];

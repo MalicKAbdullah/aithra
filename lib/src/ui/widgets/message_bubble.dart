@@ -185,13 +185,39 @@ class _StreamingBubbleState extends State<StreamingBubble>
         ),
         child: Align(
           alignment: Alignment.centerLeft,
-          child: ValueListenableBuilder<String>(
-            valueListenable: widget.session.streaming,
-            builder: (context, text, _) => text.isEmpty
-                ? const TypingDots()
-                : MarkdownView(text, caret: _breath),
-          ),
+          child: widget.session.phase == ReplyPhase.queued
+              ? const _Queued()
+              : ValueListenableBuilder<String>(
+                  valueListenable: widget.session.streaming,
+                  builder: (context, text, _) => text.isEmpty
+                      ? const TypingDots()
+                      : MarkdownView(text, caret: _breath),
+                ),
         ),
+      ),
+    );
+  }
+}
+
+/// A reply waiting for another chat's reply to finish with the engine.
+class _Queued extends StatelessWidget {
+  const _Queued();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    return SizedBox(
+      height: 24,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.schedule_rounded, size: 16, color: c.textTertiary),
+          const SizedBox(width: 6),
+          Text(
+            'Queued · starts when the other reply finishes',
+            style: AithraType.bodySmall.copyWith(color: c.textTertiary),
+          ),
+        ],
       ),
     );
   }

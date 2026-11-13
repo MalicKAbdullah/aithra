@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 
@@ -212,6 +213,11 @@ class NativeBridge {
   Future<List<Map<String, Object?>>> dbSearch(String query, int limit) =>
       _rows('db.search', {'query': query, 'limit': limit});
 
+  /// Chats with a message containing [query], ignoring case, newest first:
+  /// conversation rows with a `snippet` of the message around the match.
+  Future<List<Map<String, Object?>>> dbSearchText(String query, int limit) =>
+      _rows('db.searchText', {'query': query, 'limit': limit});
+
   /// Past messages from other chats closest in meaning to [query], using
   /// the embedding model at [modelPath].
   Future<List<Map<String, Object?>>> dbRecall(
@@ -236,6 +242,21 @@ class NativeBridge {
     'query': query,
     'limit': limit,
   });
+
+  /// Unit vectors for [texts] from the embedding model at [modelPath],
+  /// embedded as search queries or as documents to be found.
+  Future<List<Float32List>> embed(
+    String modelPath,
+    List<String> texts, {
+    required bool query,
+  }) async => [
+    for (final v in (await _channel.invokeMethod<List<Object?>>('embed.texts', {
+      'modelPath': modelPath,
+      'texts': texts,
+      'query': query,
+    }))!)
+      v! as Float32List,
+  ];
 
   Future<({int indexed, int total})> dbVectorStatus() async {
     final m = await _map('db.vectorStatus');

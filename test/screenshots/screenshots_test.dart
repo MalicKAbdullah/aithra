@@ -19,12 +19,13 @@ import 'package:aithra/src/data/settings_store.dart';
 import 'package:aithra/src/data/vault.dart';
 import 'package:aithra/src/engine/engine_service.dart';
 import 'package:aithra/src/engine/run_metrics.dart';
+import 'package:aithra/src/memory/memory_curator.dart';
 import 'package:aithra/src/memory/memory_store.dart';
 import 'package:aithra/src/memory/recall_index.dart';
 import 'package:aithra/src/models/model_manager.dart';
 import 'package:aithra/src/platform/native.dart';
 import 'package:aithra/src/services.dart';
-import 'package:aithra/src/ui/screens/chat_screen.dart';
+import 'package:aithra/src/ui/screens/custom_instructions_screen.dart';
 import 'package:aithra/src/ui/screens/memories_screen.dart';
 import 'package:aithra/src/ui/screens/models_screen.dart';
 import 'package:aithra/src/ui/screens/performance_screen.dart';
@@ -108,7 +109,12 @@ class FakeNative extends NativeBridge {
     required int? threads,
     required bool vision,
     required int? maxTokens,
-  }) async => {'contextSize': 4096, 'loadMs': 3400.0, 'peakRssMb': 2200.0};
+  }) async => {
+    'contextSize': 4096,
+    'loadMs': 3400.0,
+    'peakRssMb': 2200.0,
+    'cacheWrittenMb': 0.0,
+  };
 
   @override
   Future<Map<String, Object?>> generate({
@@ -240,6 +246,12 @@ class FakeNative extends NativeBridge {
   @override
   Future<List<Map<String, Object?>>> dbSearch(String query, int limit) async =>
       [];
+
+  @override
+  Future<List<Map<String, Object?>>> dbSearchText(
+    String query,
+    int limit,
+  ) async => [];
   @override
   Future<List<Map<String, Object?>>> dbRecall(
     String modelPath,
@@ -589,6 +601,27 @@ Future<Uint8List> _plantPhoto() async {
   return data!.buffer.asUint8List();
 }
 
+const _mathQuestion = 'How do I solve 2x² + 3x − 2 = 0?';
+
+const _mathAnswer = r'''Use the quadratic formula. For $ax^2 + bx + c = 0$:
+
+$$
+x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}
+$$
+
+Here $a = 2$, $b = 3$ and $c = -2$, so the discriminant is
+
+$$
+\Delta = b^2 - 4ac = 9 + 16 = 25
+$$
+
+and $\sqrt{\Delta} = 5$. That gives two roots:
+
+- $x_1 = \frac{-3 + 5}{4} = \frac{1}{2}$
+- $x_2 = \frac{-3 - 5}{4} = -2$
+
+**Check:** $2\left(\tfrac12\right)^2 + 3\cdot\tfrac12 - 2 = 0$ ✓''';
+
 void _seedChats(FakeNative n, Uint8List photo) {
   final now = DateTime.now().millisecondsSinceEpoch;
   const min = 60000, hour = 3600000, day = 86400000;
@@ -659,6 +692,13 @@ void _seedChats(FakeNative n, Uint8List photo) {
         ).toJson(),
       ),
     ),
+  ];
+  n.conversations.add(
+    conv('math', 'Solving a quadratic equation', now - 40 * min),
+  );
+  n.messages['math'] = [
+    msg(5, 0, 'user', _mathQuestion, now - 41 * min),
+    msg(6, 1, 'model', _mathAnswer, now - 40 * min),
   ];
   n.images['img-plant'] = photo;
   n.messages['plant'] = [
@@ -784,6 +824,12 @@ Future<Harness> _build(
     recall: recall,
     chats: ChatStore(native, searchMessages: recall.search),
     assistant: Assistant(engine: engine, models: models, settings: settings),
+    keeper: MemoryKeeper(
+      native: native,
+      memories: memories,
+      models: models,
+      settings: settings,
+    ),
     lock: LockController(
       deviceAuth: const UnavailableDeviceAuth(),
       hasher: const Argon2PasswordHasher(),
@@ -889,6 +935,11 @@ Future<void> _settle(WidgetTester tester, [int frames = 12]) async {
   }
 }
 
+/// Shows a seeded chat on the home screen, as tapping it in the drawer does.
+void _open(Harness h, String id) => h.services.sessions.open(
+  h.services.chats.items.firstWhere((c) => c.id == id),
+);
+
 Future<void> _push(WidgetTester tester, Widget screen) async {
   final nav = tester.state<NavigatorState>(find.byType(Navigator).last);
   unawaited(nav.push(MaterialPageRoute<void>(builder: (_) => screen)));
@@ -987,16 +1038,45 @@ void main() {
         await _teardown(tester, h);
       });
 
-      testWidgets('chat list $t', (tester) async {
+      testWidgets('home and drawer $t', (tester) async {
         final h = await _build(tester, brightness: b);
-        await _shot(tester, '04-chat-list-$t');
+        // The greeting rises in over 640 ms.
+        await _settle(tester, 16);
+        await _shot(tester, '04-home-new-chat-$t');
+        await tester.tap(find.byTooltip('Chats'));
+        await _settle(tester, 16);
+        await _shot(tester, '04b-drawer-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('math reply $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        _open(h, 'math');
+        await _settle(tester, 16);
+        await _shot(tester, '04c-math-reply-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('custom instructions $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        await h.services.settings.update(
+          (s) => s
+            ..aboutUser =
+                'I teach secondary-school physics in Leeds and I am learning '
+                'Spanish.'
+            ..replyStyle =
+                'Be brief and direct. Show the steps when you solve maths '
+                'problems, and use LaTeX for formulas.',
+        );
+        await _push(tester, const CustomInstructionsScreen());
+        await _shot(tester, '11b-custom-instructions-$t');
         await _teardown(tester, h);
       });
 
       testWidgets('chat streaming $t', (tester) async {
         final h = await _build(tester, brightness: b);
-        final info = h.services.chats.items.firstWhere((c) => c.id == 'code');
-        await _push(tester, ChatScreen(conversation: info));
+        _open(h, 'code');
+        await _settle(tester, 16);
         await tester.enterText(find.byType(TextField), _followUp);
         await tester.pump();
         await tester.tap(find.byTooltip('Send'));
@@ -1012,8 +1092,8 @@ void main() {
 
       testWidgets('chat image $t', (tester) async {
         final h = await _build(tester, brightness: b);
-        final info = h.services.chats.items.firstWhere((c) => c.id == 'plant');
-        await _push(tester, ChatScreen(conversation: info));
+        _open(h, 'plant');
+        await _settle(tester, 16);
         await _decodeImages(tester);
         await _settle(tester);
         await _shot(tester, '06-chat-image-$t');

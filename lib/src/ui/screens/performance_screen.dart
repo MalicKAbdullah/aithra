@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../../calibration/calibration.dart';
 import '../../calibration/correctness.dart';
 import '../../calibration/report.dart';
+import '../../engine/engine_service.dart';
 import '../../models/catalog.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
@@ -70,7 +71,12 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('Performance')),
       body: ListenableBuilder(
-        listenable: Listenable.merge([s.settings, s.assistant, s.models]),
+        listenable: Listenable.merge([
+          s.settings,
+          s.assistant,
+          s.models,
+          s.engine,
+        ]),
         builder: (context, _) {
           final active = s.assistant.activeModel;
           final tuning = s.assistant.calibrating;
@@ -136,6 +142,12 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
               RowGroup(
                 separatorIndent: AppSpacing.md,
                 children: [
+                  if (s.engine.lastLoad case final load?)
+                    _DiagnosticRow(
+                      title: 'Last model load',
+                      subtitle: _loadLine(load),
+                      trailing: const SizedBox.shrink(),
+                    ),
                   _DiagnosticRow(
                     title: 'Performance overlay',
                     subtitle:
@@ -156,6 +168,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                               'and recall, then removes them'
                         : '10k messages · page ${(_dbTest!['pageMs'] as num).toStringAsFixed(1)} ms · '
                               'search ${(_dbTest!['searchMs'] as num).toStringAsFixed(1)} ms · '
+                              'text ${(_dbTest!['textSearchMs'] as num).toStringAsFixed(0)} ms · '
                               'recall ${(_dbTest!['recallMs'] as num).toStringAsFixed(1)} ms',
                     trailing: _dbRunning
                         ? const SizedBox.square(
@@ -175,6 +188,19 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       ),
     );
   }
+}
+
+/// "Gemma 4 E2B · GPU · 4.1 s · from cache", or how much cache a first load
+/// on that backend built.
+String _loadLine(LastLoad load) {
+  final r = load.result;
+  final seconds = (r.loadMs / 1000).toStringAsFixed(1);
+  final cache = r.cacheWrittenMb >= 1
+      ? 'first load, built ${(r.cacheWrittenMb / 1024).toStringAsFixed(2)} GB of cache'
+      : load.spec.runtime == Runtime.litertlm
+      ? 'from cache'
+      : 'no cache for this runtime';
+  return '${load.spec.name} · ${load.backend.label} · $seconds s · $cache';
 }
 
 class _DiagnosticRow extends StatelessWidget {

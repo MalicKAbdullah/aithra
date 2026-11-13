@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:aithra/src/chat/chat_titler.dart';
 import 'package:aithra/src/engine/engine_service.dart';
-import 'package:aithra/src/memory/fact_suggester.dart';
+import 'package:aithra/src/memory/memory_curator.dart';
 import 'package:aithra/src/models/catalog.dart';
 import 'package:aithra/src/platform/native.dart';
 import 'package:flutter/services.dart';
@@ -30,7 +30,12 @@ class FakeEngine extends NativeBridge {
     required int? threads,
     required bool vision,
     required int? maxTokens,
-  }) async => {'contextSize': 4096, 'loadMs': 1.0, 'peakRssMb': 1.0};
+  }) async => {
+    'contextSize': 4096,
+    'loadMs': 1.0,
+    'peakRssMb': 1.0,
+    'cacheWrittenMb': 0.0,
+  };
 
   @override
   Future<Map<String, Object?>> generate({
@@ -68,38 +73,72 @@ ModelSpec get _spec => catalog.first;
 BackendOption get _cpu => BackendOption.byId('cpu');
 
 void main() {
-  group('memory suggestions from model output', () {
-    test('reads the facts out of the JSON reply', () {
-      expect(
-        FactSuggester.parse(
-          'Sure!\n```json\n{"facts": ["Lives in Oslo", "Has a dog named Rex"]}\n```',
-        ),
-        ['Lives in Oslo', 'Has a dog named Rex'],
+  group('memory edits from model output', () {
+    const keys = {'m1': 'id-1', 'm2': 'id-2', 'm3': 'id-3'};
+    MemoryEdits parse(String raw) => MemoryCurator.parse(raw, keys: keys);
+
+    test('reads adds, updates and removals out of the JSON reply', () {
+      final e = parse(
+        'Sure!\n```json\n{"add": ["Lives in Oslo"], '
+        '"update": [{"id": "m1", "text": "Works as a nurse"}], '
+        '"remove": ["m2"]}\n```',
       );
+      expect(e.add, ['Lives in Oslo']);
+      expect(e.update, {'id-1': 'Works as a nurse'});
+      expect(e.remove, ['id-2']);
     });
 
-    test('anything but the JSON asked for gives no suggestions', () {
-      expect(FactSuggester.parse('The user lives in Oslo.'), isEmpty);
-      expect(FactSuggester.parse('{"facts": ["Lives in Os'), isEmpty);
-      expect(FactSuggester.parse('{"facts": "Lives in Oslo"}'), isEmpty);
-      expect(FactSuggester.parse('[]'), isEmpty);
+    test('nothing to change is valid', () {
+      expect(parse('{"add": [], "update": [], "remove": []}').isEmpty, isTrue);
+      expect(parse('{}').isEmpty, isTrue);
     });
 
-    test('drops non-strings, blanks, overlong facts and duplicates', () {
-      expect(
-        FactSuggester.parse(
-          '{"facts": [1, null, " ", "x", "${'a' * 121}", '
-          '"Is vegetarian", "is  vegetarian", "Speaks\\u0007 Urdu"]}',
-        ),
-        ['Is vegetarian'],
-      );
+    test('anything but the JSON asked for changes nothing', () {
+      expect(parse('The user lives in Oslo.').isEmpty, isTrue);
+      expect(parse('{"add": ["Lives in Os').isEmpty, isTrue);
+      expect(parse('{"add": "Lives in Oslo"}').isEmpty, isTrue);
+      expect(parse('["Lives in Oslo"]').isEmpty, isTrue);
     });
 
-    test('offers at most three', () {
-      expect(
-        FactSuggester.parse('{"facts": ["Aa a", "Bb b", "Cc c", "Dd d"]}'),
-        hasLength(3),
+    test('drops non-strings, blanks, overlong notes, control characters '
+        'and repeats', () {
+      final e = parse(
+        '{"add": [1, null, " ", "x", "${'a' * 161}", '
+        '"Is vegetarian", "is  vegetarian", "Speaks\\u0007 Urdu"]}',
       );
+      expect(e.add, ['Is vegetarian']);
+    });
+
+    test('only touches memories it was shown', () {
+      final e = parse(
+        '{"update": [{"id": "m9", "text": "Hacked"}, {"id": "id-1", '
+        '"text": "Raw id"}, {"id": "m3", "text": 5}], '
+        '"remove": ["m7", "id-2", 3]}',
+      );
+      expect(e.isEmpty, isTrue);
+    });
+
+    test('a memory is updated or removed, not both, and at most three of '
+        'each change', () {
+      final e = parse(
+        '{"add": ["Aa a", "Bb b", "Cc c", "Dd d"], '
+        '"update": [{"id": "m1", "text": "New text"}], '
+        '"remove": ["m1", "m2", "m2"]}',
+      );
+      expect(e.add, hasLength(3));
+      expect(e.update.keys, ['id-1']);
+      expect(e.remove, ['id-2']);
+    });
+
+    test('the prompt shows the related memories by key', () {
+      final turns = MemoryCurator.prompt(
+        userMessage: 'I moved to Bergen',
+        reply: 'Nice!',
+        related: const [('m1', 'Lives in Oslo')],
+      );
+      expect(turns.first.role, 'system');
+      expect(turns.last.text, contains('m1: Lives in Oslo'));
+      expect(turns.last.text, contains('I moved to Bergen'));
     });
   });
 
@@ -126,7 +165,7 @@ void main() {
     late EngineService engine;
 
     setUp(() async {
-      native = FakeEngine()..reply = '{"facts": []}';
+      native = FakeEngine()..reply = '{"add": []}';
       engine = EngineService(native);
       await engine.ensureLoaded(_spec, '/m', _cpu);
     });
@@ -135,7 +174,7 @@ void main() {
       final result = engine.backgroundRun().generate(const [], maxTokens: 8);
       await pumpEventQueue();
       native.finish();
-      expect(await result, '{"facts": []}');
+      expect(await result, '{"add": []}');
     });
 
     test('never load a model themselves', () async {

@@ -23,7 +23,9 @@ import javax.crypto.spec.SecretKeySpec
  * backed) and is handed over by Dart on [open]; it is never written here.
  *
  * The chat-list search box matches word prefixes of titles through a blind
- * index: each prefix is stored only as a keyed HMAC. Cross-chat recall is
+ * index: each prefix is stored only as a keyed HMAC. Message text is found
+ * by decrypting and scanning ([searchText]), newest chats first. Cross-chat
+ * recall is
  * semantic: each message's EmbeddingGemma vector is stored encrypted and
  * compared by cosine similarity at query time (see [indexVectors] and
  * [recall]); without the embedding model, recall is off.
@@ -41,6 +43,10 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
 
         /** Characters of a message that are embedded. */
         const val EMBED_CHARS = 1500
+
+        /** Characters of context kept on each side of a text match. */
+        const val SNIPPET_BEFORE = 40
+        const val SNIPPET_AFTER = 110
     }
 
     private var key: SecretKeySpec? = null
@@ -364,6 +370,41 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         ).use { c -> buildList { while (c.moveToNext()) add(conversationRow(c)) } }
     }
 
+    /**
+     * Conversations (as [listConversations] rows) with a message containing
+     * [query], ignoring case, most recently updated first, each with its
+     * newest matching message cut around the match as `snippet`. Message text is encrypted, so it is decrypted as
+     * the scan goes; the scan visits newest chats first, skips the rest of a
+     * chat once it matched and stops at [limit] chats.
+     */
+    fun searchText(query: String, limit: Int): List<Map<String, Any?>> {
+        val needle = query.trim()
+        if (needle.isEmpty()) return emptyList()
+        val found = LinkedHashMap<String, String>()
+        readableDatabase.rawQuery(
+            "SELECT m.conv_id, m.content FROM messages m JOIN conversations c ON c.id = m.conv_id " +
+                "ORDER BY c.updated DESC, m.conv_id, m.seq DESC",
+            null,
+        ).use { c ->
+            while (found.size < limit && c.moveToNext()) {
+                val conv = c.getString(0)
+                if (conv in found) continue
+                val text = openText(c.getBlob(1))
+                val at = text.indexOf(needle, ignoreCase = true)
+                if (at >= 0) found[conv] = snippet(text, at, needle.length)
+            }
+        }
+        // Every id came from the join above, on this same db thread.
+        return found.map { (conv, text) -> getConversation(conv)!! + ("snippet" to text) }
+    }
+
+    private fun snippet(text: String, at: Int, length: Int): String {
+        val start = maxOf(0, at - SNIPPET_BEFORE)
+        val end = minOf(text.length, at + length + SNIPPET_AFTER)
+        val body = text.substring(start, end).replace(Regex("\\s+"), " ").trim()
+        return (if (start > 0) "…" else "") + body + (if (end < text.length) "…" else "")
+    }
+
     private fun packVector(v: FloatArray): ByteArray {
         val buf = ByteBuffer.allocate(v.size * 4).order(ByteOrder.LITTLE_ENDIAN)
         v.forEach { buf.putFloat(it) }
@@ -525,12 +566,19 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         val t2 = System.nanoTime()
         search("harb", 20)
         val searchMs = (System.nanoTime() - t2) / 1e6
+        // A miss scans every message, the slowest a text search can be.
+        val t4 = System.nanoTime()
+        searchText("no message says this", 20)
+        val textSearchMs = (System.nanoTime() - t4) / 1e6
         val q = FloatArray(Embedder.DIMS) { if (it == 0) 1f else 0f }
         val t3 = System.nanoTime()
         rankAndLoad(q, null, 3, -1f)
         val recallMs = (System.nanoTime() - t3) / 1e6
         deleteConversation(conv)
-        return mapOf("messages" to messages, "insertMs" to insertMs, "pageMs" to pageMs, "searchMs" to searchMs, "recallMs" to recallMs)
+        return mapOf(
+            "messages" to messages, "insertMs" to insertMs, "pageMs" to pageMs, "searchMs" to searchMs,
+            "textSearchMs" to textSearchMs, "recallMs" to recallMs,
+        )
     }
 }
 
