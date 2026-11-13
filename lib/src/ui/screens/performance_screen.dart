@@ -4,9 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../calibration/calibration.dart';
+import '../../calibration/correctness.dart';
 import '../../calibration/report.dart';
 import '../../models/catalog.dart';
 import '../../services.dart';
+import '../aithra_type.dart';
+import '../widgets/section_label.dart';
 
 /// Calibration results per model and backend, with re-run and a
 /// copy-as-Markdown report for sending back.
@@ -82,67 +85,89 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
               if (_device != null)
                 Text(
                   DeviceFacts(_device!).headline,
-                  style: AppTextStyles.bodySmall.copyWith(
-                    color: c.textSecondary,
-                  ),
+                  style: AithraType.bodySmall.copyWith(color: c.textSecondary),
                 ),
               const SizedBox(height: AppSpacing.md),
-              FilledButton.icon(
-                onPressed: s.settings.calibrations.isEmpty ? null : _copy,
-                icon: const Icon(Icons.content_copy_rounded),
-                label: const Text('Copy results'),
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              OutlinedButton.icon(
-                onPressed: active == null || tuning != null
-                    ? null
-                    : () => s.assistant.calibrate(active),
-                icon: const Icon(Icons.replay_rounded),
-                label: Text(
-                  tuning != null
-                      ? 'Testing ${tuning.label}…'
-                      : 'Re-run speed test${active == null ? '' : ' (${active.name})'}',
-                ),
-              ),
-              for (final cal in s.settings.calibrations.values) ...[
-                SectionHeader(
-                  title: _name(cal.modelId),
-                  subtitle: cal.chosenIsCorrect
-                      ? null
-                      : 'No backend answered every check correctly',
-                ),
-                _ResultsTable(calibration: cal),
-              ],
-              const SectionHeader(title: 'Diagnostics'),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Performance overlay'),
-                subtitle: const Text(
-                  'Tokens/s, time to first token and frame times in chats',
-                ),
-                value: s.settings.perfOverlay,
-                onChanged: (v) => s.settings.update((x) => x.perfOverlay = v),
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Storage self-test'),
-                subtitle: Text(
-                  _dbTest == null
-                      ? 'Writes 10,000 test messages, times paging, search and recall, then removes them'
-                      : '10k messages · page ${(_dbTest!['pageMs'] as num).toStringAsFixed(1)} ms · '
-                            'search ${(_dbTest!['searchMs'] as num).toStringAsFixed(1)} ms · '
-                            'recall ${(_dbTest!['recallMs'] as num).toStringAsFixed(1)} ms',
-                ),
-                trailing: _dbRunning
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : TextButton(
-                        onPressed: _runDbTest,
-                        child: const Text('Run'),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: active == null || tuning != null
+                          ? null
+                          : () => s.assistant.calibrate(active),
+                      icon: const Icon(Icons.replay_rounded, size: 18),
+                      label: Text(
+                        tuning != null
+                            ? 'Testing ${tuning.label}…'
+                            : 'Re-run speed test',
+                        overflow: TextOverflow.ellipsis,
                       ),
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  OutlinedButton.icon(
+                    onPressed: s.settings.calibrations.isEmpty ? null : _copy,
+                    icon: const Icon(Icons.content_copy_rounded, size: 16),
+                    label: const Text('Copy'),
+                  ),
+                ],
+              ),
+              if (active != null) ...[
+                const SizedBox(height: AppSpacing.xs + 2),
+                Text(
+                  'Tests every backend for ${active.name} on this phone.',
+                  style: AithraType.caption.copyWith(color: c.textTertiary),
+                ),
+              ],
+              for (final (i, cal)
+                  in s.settings.calibrations.values.indexed) ...[
+                SectionLabel(_name(cal.modelId)),
+                if (!cal.chosenIsCorrect)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                    child: Text(
+                      'No backend answered every check correctly',
+                      style: AithraType.caption.copyWith(color: c.negative),
+                    ),
+                  ),
+                _Results(calibration: cal, key: ValueKey(i)),
+              ],
+              const SectionLabel('Diagnostics'),
+              RowGroup(
+                separatorIndent: AppSpacing.md,
+                children: [
+                  _DiagnosticRow(
+                    title: 'Performance overlay',
+                    subtitle:
+                        'Tokens/s, time to first token and frame times in chats',
+                    onTap: () => s.settings.update(
+                      (x) => x.perfOverlay = !x.perfOverlay,
+                    ),
+                    trailing: Switch(
+                      value: s.settings.perfOverlay,
+                      onChanged: (v) =>
+                          s.settings.update((x) => x.perfOverlay = v),
+                    ),
+                  ),
+                  _DiagnosticRow(
+                    title: 'Storage self-test',
+                    subtitle: _dbTest == null
+                        ? 'Writes 10,000 test messages, times paging, search '
+                              'and recall, then removes them'
+                        : '10k messages · page ${(_dbTest!['pageMs'] as num).toStringAsFixed(1)} ms · '
+                              'search ${(_dbTest!['searchMs'] as num).toStringAsFixed(1)} ms · '
+                              'recall ${(_dbTest!['recallMs'] as num).toStringAsFixed(1)} ms',
+                    trailing: _dbRunning
+                        ? const SizedBox.square(
+                            dimension: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : TextButton(
+                            onPressed: _runDbTest,
+                            child: const Text('Run'),
+                          ),
+                  ),
+                ],
               ),
             ],
           );
@@ -152,72 +177,228 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   }
 }
 
-class _ResultsTable extends StatelessWidget {
-  const _ResultsTable({required this.calibration});
+class _DiagnosticRow extends StatelessWidget {
+  const _DiagnosticRow({
+    required this.title,
+    required this.subtitle,
+    required this.trailing,
+    this.onTap,
+  });
 
-  final Calibration calibration;
+  final String title;
+  final String subtitle;
+  final Widget trailing;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final c = SuiteColors.of(context);
-    final style = AppTextStyles.numberSmall.copyWith(color: c.textPrimary);
-    final head = AppTextStyles.caption.copyWith(color: c.textTertiary);
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: DataTable(
-        columnSpacing: 16,
-        horizontalMargin: 0,
-        headingTextStyle: head,
-        dataTextStyle: style,
-        columns: const [
-          DataColumn(label: Text('Backend')),
-          DataColumn(label: Text('Load s'), numeric: true),
-          DataColumn(label: Text('TTFT s'), numeric: true),
-          DataColumn(label: Text('Prefill t/s'), numeric: true),
-          DataColumn(label: Text('Decode t/s'), numeric: true),
-          DataColumn(label: Text('RSS MB'), numeric: true),
-          DataColumn(label: Text('Correct')),
-        ],
-        rows: [
-          for (final r in calibration.results)
-            DataRow(
-              cells: [
-                DataCell(
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.md,
+          AppSpacing.smd,
+          AppSpacing.smd,
+          AppSpacing.smd,
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Text(
-                    '${calibration.chosenBackend == r.backendId ? '★ ' : ''}${BackendOption.byId(r.backendId).label}',
+                    title,
+                    style: AithraType.title.copyWith(color: c.textPrimary),
                   ),
-                ),
-                DataCell(
+                  const SizedBox(height: 2),
                   Text(
-                    r.loadMs == null
-                        ? '—'
-                        : (r.loadMs! / 1000).toStringAsFixed(1),
-                  ),
-                ),
-                DataCell(
-                  Text(
-                    r.speed?.ttftMs == null
-                        ? '—'
-                        : (r.speed!.ttftMs! / 1000).toStringAsFixed(2),
-                  ),
-                ),
-                DataCell(Text(fmt(r.speed?.prefillTps))),
-                DataCell(Text(fmt(r.speed?.decodeTps))),
-                DataCell(Text(fmt(r.peakRssMb, digits: 0))),
-                DataCell(
-                  Text(
-                    r.error != null
-                        ? 'failed'
-                        : '${r.allCorrect ? '✓' : '✗'} ${r.correct}/3',
-                    style: TextStyle(
-                      color: r.allCorrect ? c.positive : c.negative,
+                    subtitle,
+                    style: AithraType.bodySmall.copyWith(
+                      color: c.textSecondary,
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
+            const SizedBox(width: AppSpacing.smd),
+            trailing,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One card per model: a row per backend with its verdict and a grid of
+/// metrics, so every number fits a phone without hidden columns.
+class _Results extends StatelessWidget {
+  const _Results({required this.calibration, super.key});
+
+  final Calibration calibration;
+
+  @override
+  Widget build(BuildContext context) => RowGroup(
+    separatorIndent: AppSpacing.md,
+    children: [
+      for (final r in calibration.results)
+        _BackendRow(
+          result: r,
+          chosen: calibration.chosenBackend == r.backendId,
+        ),
+    ],
+  );
+}
+
+class _BackendRow extends StatelessWidget {
+  const _BackendRow({required this.result, required this.chosen});
+
+  final BackendResult result;
+  final bool chosen;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    final r = result;
+    final ok = r.allCorrect;
+    final metrics = <(String, String)>[
+      ('Decode', '${fmt(r.speed?.decodeTps)} t/s'),
+      ('Prefill', '${fmt(r.speed?.prefillTps, digits: 0)} t/s'),
+      (
+        'First token',
+        r.speed?.ttftMs == null
+            ? '—'
+            : '${(r.speed!.ttftMs! / 1000).toStringAsFixed(2)} s',
+      ),
+      (
+        'Load',
+        r.loadMs == null ? '—' : '${(r.loadMs! / 1000).toStringAsFixed(1)} s',
+      ),
+      ('Memory', '${fmt(r.peakRssMb, digits: 0)} MB'),
+    ];
+    return Padding(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        BackendOption.byId(r.backendId).label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AithraType.title.copyWith(
+                          color: c.textPrimary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    if (chosen) ...[
+                      const SizedBox(width: AppSpacing.sm),
+                      _Badge(
+                        icon: Icons.star_rounded,
+                        label: 'Chosen',
+                        color: c.accent,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              _Badge(
+                icon: r.error != null
+                    ? Icons.error_outline_rounded
+                    : ok
+                    ? Icons.check_circle_rounded
+                    : Icons.cancel_rounded,
+                label: r.error != null
+                    ? 'Failed'
+                    : '${r.correct}/${probes.length} correct',
+                color: ok ? c.positive : c.negative,
+              ),
+            ],
+          ),
+          if (r.error == null) ...[
+            const SizedBox(height: AppSpacing.smd),
+            LayoutBuilder(
+              builder: (context, box) {
+                final cell = (box.maxWidth - 2 * AppSpacing.sm) / 3;
+                return Wrap(
+                  spacing: AppSpacing.sm,
+                  runSpacing: AppSpacing.sm,
+                  children: [
+                    for (final (label, value) in metrics)
+                      SizedBox(
+                        width: cell,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              label,
+                              style: AithraType.caption.copyWith(
+                                color: c.textTertiary,
+                              ),
+                            ),
+                            const SizedBox(height: 1),
+                            Text(
+                              value,
+                              style: AithraType.number.copyWith(
+                                color: c.textPrimary,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ] else ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              r.error!,
+              style: AithraType.bodySmall.copyWith(color: c.negative),
+            ),
+          ],
         ],
       ),
     );
   }
+}
+
+class _Badge extends StatelessWidget {
+  const _Badge({required this.icon, required this.label, required this.color});
+
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.fromLTRB(6, 2, 8, 2),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: 0.12),
+      borderRadius: BorderRadius.circular(AppSpacing.radiusPill),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14, color: color),
+        const SizedBox(width: 4),
+        Text(
+          label,
+          style: AithraType.caption.copyWith(
+            color: color,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    ),
+  );
 }
