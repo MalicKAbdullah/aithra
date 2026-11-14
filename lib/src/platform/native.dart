@@ -5,17 +5,29 @@ import 'package:flutter/services.dart';
 
 /// One message as the engines receive it.
 class EngineTurn {
-  const EngineTurn(this.role, this.text, [this.images = const []]);
+  const EngineTurn(
+    this.role,
+    this.text, [
+    this.images = const [],
+    this.context = '',
+  ]);
 
   /// `system`, `user` or `model`.
   final String role;
   final String text;
   final List<Uint8List> images;
 
+  /// Material retrieved for this turn only (recalled snippets), read in
+  /// front of [text]. Per-turn material goes here rather than into the
+  /// system turn, so the conversation's prefix stays the same from turn to
+  /// turn and the engine can keep it (see `keepContext`).
+  final String context;
+
   Map<String, Object?> toMap() => {
     'role': role,
     'text': text,
     'images': images,
+    'context': context,
   };
 }
 
@@ -70,12 +82,14 @@ class NativeBridge {
     required int maxTokens,
     required double temperature,
     required bool ignoreEos,
+    bool keepContext = false,
   }) => _map('engine.generate', {
     'requestId': requestId,
     'turns': [for (final t in turns) t.toMap()],
     'maxTokens': maxTokens,
     'temperature': temperature,
     'ignoreEos': ignoreEos,
+    'keepContext': keepContext,
   });
 
   /// Exact tokens each turn adds to a prompt and the prompt's remaining
@@ -126,12 +140,19 @@ class NativeBridge {
     return m == null ? null : Map<String, Object?>.from(m);
   }
 
-  Future<void> dbCreateConversation(String id, String title, int now) =>
-      _channel.invokeMethod('db.createConversation', {
-        'id': id,
-        'title': title,
-        'now': now,
-      });
+  /// A [private] conversation is never embedded, so it is not recalled in
+  /// other chats.
+  Future<void> dbCreateConversation(
+    String id,
+    String title,
+    int now, {
+    bool private = false,
+  }) => _channel.invokeMethod('db.createConversation', {
+    'id': id,
+    'title': title,
+    'now': now,
+    'private': private,
+  });
 
   Future<void> dbUpdateConversation(String id, Map<String, Object?> fields) =>
       _channel.invokeMethod('db.updateConversation', {
@@ -162,6 +183,8 @@ class NativeBridge {
     'toSeq': toSeq,
   });
 
+  /// Appends a message; returns its `id`, `seq`, `version` and
+  /// `versionCount` (a regenerated reply follows its earlier versions).
   Future<Map<String, Object?>> dbAddMessage({
     required String convId,
     required String role,
@@ -193,16 +216,35 @@ class NativeBridge {
       });
 
   /// Deletes messages from [fromSeq] on, and their images except
-  /// [keepImages].
+  /// [keepImages]. With [archive] (regenerate) the reply at [fromSeq] is
+  /// kept as an earlier version of the one that replaces it.
   Future<void> dbTruncate(
     String convId,
     int fromSeq, {
     List<String> keepImages = const [],
+    bool archive = false,
   }) => _channel.invokeMethod('db.truncate', {
     'convId': convId,
     'fromSeq': fromSeq,
     'keepImages': keepImages,
+    'archive': archive,
   });
+
+  /// Every version of the message at [seq], oldest first: `ord`,
+  /// `content`, `stats`, `created` and `current` (the one on show).
+  Future<List<Map<String, Object?>>> dbMessageVersions(
+    String convId,
+    int seq,
+  ) => _rows('db.messageVersions', {'convId': convId, 'seq': seq});
+
+  /// Shows version [ord] of the message at [seq] in place of the current
+  /// one, which stays among its versions.
+  Future<void> dbSelectVersion(String convId, int seq, int ord) =>
+      _channel.invokeMethod('db.selectVersion', {
+        'convId': convId,
+        'seq': seq,
+        'ord': ord,
+      });
 
   Future<void> dbPutImage(String id, Uint8List jpeg) =>
       _channel.invokeMethod('db.putImage', {'id': id, 'jpeg': jpeg});
@@ -213,10 +255,21 @@ class NativeBridge {
   Future<List<Map<String, Object?>>> dbSearch(String query, int limit) =>
       _rows('db.search', {'query': query, 'limit': limit});
 
-  /// Chats with a message containing [query], ignoring case, newest first:
-  /// conversation rows with a `snippet` of the message around the match.
+  /// Chats with a message where every word of [query] starts a word,
+  /// ignoring case, newest first: conversation rows with the `seq` of the
+  /// newest such message and a `snippet` of it around the match.
   Future<List<Map<String, Object?>>> dbSearchText(String query, int limit) =>
       _rows('db.searchText', {'query': query, 'limit': limit});
+
+  /// Seqs of [convId]'s messages matching [query] as [dbSearchText] does,
+  /// newest first.
+  Future<List<int>> dbFindInChat(String convId, String query) async => [
+    for (final s in await _call<List<Object?>>('db.findInChat', {
+      'convId': convId,
+      'query': query,
+    }))
+      s! as int,
+  ];
 
   /// Past messages from other chats closest in meaning to [query], using
   /// the embedding model at [modelPath].
@@ -352,6 +405,27 @@ class NativeBridge {
 
   Future<void> shareText(String text) =>
       _channel.invokeMethod('share.text', {'text': text});
+
+  /// Writes [text] to a Markdown file for sharing; returns its path.
+  Future<String> exportMarkdown(String name, String text) =>
+      _call<String>('export.markdown', {'name': name, 'text': text});
+
+  /// Draws a chat as an A4 PDF for sharing; returns its path. Each entry
+  /// is `role`, `created` (epoch ms) and `blocks` of `kind` and `text`
+  /// (see chat_export.dart).
+  Future<String> exportPdf(
+    String name,
+    String title,
+    List<Map<String, Object?>> entries,
+  ) => _call<String>('export.pdf', {
+    'name': name,
+    'title': title,
+    'entries': entries,
+  });
+
+  /// Offers the file at [path] to other apps through the share sheet.
+  Future<void> shareFile(String path, String mime) =>
+      _channel.invokeMethod('share.file', {'path': path, 'mime': mime});
 
   // -- Speech ---------------------------------------------------------------
 

@@ -35,6 +35,10 @@ class ChatStore extends ChangeNotifier {
   /// messages rather than its title.
   Map<String, String> snippets = const {};
 
+  /// While searching: the seq of the message each chat was found by, for
+  /// chats found by its words (matches by meaning have none).
+  Map<String, int> matchSeqs = const {};
+
   List<ConversationInfo> get items => _results ?? _items;
   bool get searching => _query.isNotEmpty;
   bool get hasMore => _results == null && _hasMore;
@@ -65,6 +69,7 @@ class ChatStore extends ChangeNotifier {
     if (_query.isEmpty) {
       _results = null;
       snippets = const {};
+      matchSeqs = const {};
       notifyListeners();
       return;
     }
@@ -77,14 +82,18 @@ class ChatStore extends ChangeNotifier {
       if (q != _query) return;
       final found = titles.map(ConversationInfo.fromMap).toList();
       final matched = <String, String>{};
+      final seqs = <String, int>{};
       for (final row in texts) {
         final info = ConversationInfo.fromMap(row);
         if (found.any((c) => c.id == info.id)) continue;
         found.add(info);
         matched[info.id] = row['snippet']! as String;
+        seqs[info.id] = row['seq']! as int;
       }
       _results = found;
       snippets = matched;
+      matchSeqs = seqs;
+
       notifyListeners();
       // Matches by meaning need the embedding model and arrive last.
       final hits = await _searchMessages(q);

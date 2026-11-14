@@ -65,7 +65,8 @@ class CancellingEngine extends NativeBridge {
     required int maxTokens,
     required double temperature,
     required bool ignoreEos,
-  }) async => {'cancelled': cancelled, 'promptTokens': 10};
+    bool keepContext = false,
+  }) async => {'cancelled': cancelled, 'stopped': false, 'promptTokens': 10};
 
   @override
   Future<void> unload() async {}

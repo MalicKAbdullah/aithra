@@ -10,9 +10,11 @@ import '../../memory/profile.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
 import '../widgets/composer.dart';
+import '../widgets/find_bar.dart';
 import '../widgets/greeting.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/perf_hud.dart';
+import '../widgets/reveal.dart';
 import 'memories_screen.dart';
 import 'models_screen.dart';
 
@@ -33,6 +35,7 @@ class _ChatViewState extends State<ChatView> {
   final _scroll = ScrollController();
   final _composer = ComposerController();
   final _greetedAt = DateTime.now();
+  final _reveal = RevealController();
   Timer? _draftTimer;
 
   ChatSession get _session => widget.session;
@@ -40,6 +43,8 @@ class _ChatViewState extends State<ChatView> {
   @override
   void initState() {
     super.initState();
+    _session.addListener(_takeReveal);
+    _session.finding.addListener(_findToggled);
     _composer.text.text = _session.conversation?.draft ?? '';
     _composer.text.addListener(_onDraftChanged);
     _scroll.addListener(() {
@@ -54,8 +59,28 @@ class _ChatViewState extends State<ChatView> {
         if (offset > 0 && _scroll.hasClients) {
           _scroll.jumpTo(offset.clamp(0, _scroll.position.maxScrollExtent));
         }
+        _takeReveal();
       });
+    } else {
+      _takeReveal();
     }
+  }
+
+  /// Shows the message a search asked for (see [ChatSession.reveal]).
+  void _takeReveal() {
+    final seq = _session.takeReveal();
+    if (seq != null) unawaited(_show(seq));
+  }
+
+  Future<void> _show(int seq) async {
+    await _session.loadThrough(seq);
+    // The loaded page is laid out before the list can scroll into it.
+    await WidgetsBinding.instance.endOfFrame;
+    if (mounted) await _reveal.reveal(seq, _scroll);
+  }
+
+  void _findToggled() {
+    if (!_session.finding.value) _reveal.clear();
   }
 
   void _onDraftChanged() {
@@ -68,6 +93,9 @@ class _ChatViewState extends State<ChatView> {
 
   @override
   void dispose() {
+    _session.removeListener(_takeReveal);
+    _session.finding.removeListener(_findToggled);
+    _reveal.dispose();
     _draftTimer?.cancel();
     if (_session.conversation != null) {
       _session.saveDraft(_composer.text.text);
@@ -176,6 +204,12 @@ class _ChatViewState extends State<ChatView> {
       children: [
         Column(
           children: [
+            ValueListenableBuilder(
+              valueListenable: _session.finding,
+              builder: (context, open, _) => open
+                  ? FindBar(session: _session, onShow: _show)
+                  : const SizedBox.shrink(),
+            ),
             Expanded(
               child: ListenableBuilder(
                 listenable: _session,
@@ -240,20 +274,28 @@ class _ChatViewState extends State<ChatView> {
         );
         final notice = _session.notices[m.seq];
         final remembered = _session.memoryUpdates[m.seq];
-        if (notice == null && remembered == null) return bubble;
-        return Column(
+        final cutOff = _session.canContinue(m);
+        if (notice == null && remembered == null && !cutOff) {
+          return RevealAnchor(controller: _reveal, seq: m.seq, child: bubble);
+        }
+        return RevealAnchor(
           key: ValueKey('after-${m.seq}'),
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            bubble,
-            if (remembered != null)
-              _MemoryHint(
-                update: remembered,
-                onUndone: () =>
-                    setState(() => _session.memoryUpdates.remove(m.seq)),
-              ),
-            if (notice != null) _NoticeRow(notice),
-          ],
+          controller: _reveal,
+          seq: m.seq,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              bubble,
+              if (cutOff) _ContinueRow(onContinue: _session.continueReply),
+              if (remembered != null)
+                _MemoryHint(
+                  update: remembered,
+                  onUndone: () =>
+                      setState(() => _session.memoryUpdates.remove(m.seq)),
+                ),
+              if (notice != null) _NoticeRow(notice),
+            ],
+          ),
         );
       },
     );
@@ -277,6 +319,43 @@ class _ChatViewState extends State<ChatView> {
             ),
           ),
           TextButton(onPressed: _session.retry, child: const Text('Retry')),
+        ],
+      ),
+    );
+  }
+}
+
+/// Under a reply that stopped at the reply length limit: writes the rest
+/// onto it.
+class _ContinueRow extends StatelessWidget {
+  const _ContinueRow({required this.onContinue});
+
+  final VoidCallback onContinue;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.gutter,
+        0,
+        AppSpacing.gutter,
+        AppSpacing.sm,
+      ),
+      child: Row(
+        children: [
+          Flexible(
+            child: Text(
+              'Reply reached its length limit',
+              style: AithraType.caption.copyWith(color: c.textTertiary),
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          TextButton.icon(
+            onPressed: onContinue,
+            icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+            label: const Text('Continue'),
+          ),
         ],
       ),
     );

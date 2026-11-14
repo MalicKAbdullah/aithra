@@ -351,19 +351,25 @@ class MemoryKeeper {
 
   // -- Into a chat ---------------------------------------------------------
 
-  /// The profile lines for a chat's system prompt, in section order: all
-  /// of About and Preferences, then the work, interests and projects lines,
-  /// only the [picked] closest in meaning to [message] when there are more
-  /// (with [rank], when the embedding model works this turn). Old memories
-  /// not tidied yet come last. A prompt over budget sheds from the end
-  /// (see SystemContext.shed), so who the user is goes last.
-  Future<List<String>> forPrompt(String message, {required bool rank}) async {
+  /// The profile lines for a chat, in section order. [stable] goes in the
+  /// system prompt: all of About and Preferences, the work, interests and
+  /// projects lines when they are all used, and old memories not tidied
+  /// yet last; a prompt over budget sheds from the end (see
+  /// SystemContext.shed), so who the user is goes last. When there are more
+  /// than [picked] of the other lines and [rank] (the embedding model
+  /// works this turn), only the [picked] closest in meaning to [message]
+  /// are used, as [related]: they change with each message, so they ride
+  /// with it rather than in the system prompt, which then stays the same
+  /// from turn to turn and the engine can keep the conversation.
+  Future<({List<String> stable, List<String> related})> forPrompt(
+    String message, {
+    required bool rank,
+  }) async {
     const core = [ProfileSection.about, ProfileSection.preferences];
     final rest = [
       for (final s in ProfileSection.values)
         if (!core.contains(s)) ..._memories.section(s),
     ];
-    var chosen = rest;
     final path = _models.pathOf(embeddingModel);
     if (rank && path != null && rest.length > picked) {
       final missing = [
@@ -385,17 +391,27 @@ class MemoryKeeper {
           ).compareTo(_dot(query.single, _vectors[a.text]!)),
         );
       final keep = ranked.take(picked).toSet();
-      chosen = [
-        for (final i in rest)
-          if (keep.contains(i)) i,
-      ];
+      return (
+        stable: [
+          for (final s in core)
+            for (final i in _memories.section(s)) i.text,
+          for (final m in _memories.untidied) m.text,
+        ],
+        related: [
+          for (final i in rest)
+            if (keep.contains(i)) i.text,
+        ],
+      );
     }
-    return [
-      for (final s in core)
-        for (final i in _memories.section(s)) i.text,
-      for (final i in chosen) i.text,
-      for (final m in _memories.untidied) m.text,
-    ];
+    return (
+      stable: [
+        for (final s in core)
+          for (final i in _memories.section(s)) i.text,
+        for (final i in rest) i.text,
+        for (final m in _memories.untidied) m.text,
+      ],
+      related: const <String>[],
+    );
   }
 
   static double _dot(Float32List a, Float32List b) {

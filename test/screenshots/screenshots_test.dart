@@ -123,6 +123,7 @@ class FakeNative extends NativeBridge {
     required int maxTokens,
     required double temperature,
     required bool ignoreEos,
+    bool keepContext = false,
   }) {
     lastRequest = requestId;
     // Never completes: the reply stays mid-stream for the screenshot.
@@ -168,7 +169,12 @@ class FakeNative extends NativeBridge {
   }
 
   @override
-  Future<void> dbCreateConversation(String id, String title, int now) async {
+  Future<void> dbCreateConversation(
+    String id,
+    String title,
+    int now, {
+    bool private = false,
+  }) async {
     conversations.add(conv(id, title, now));
     messages[id] = [];
   }
@@ -227,7 +233,7 @@ class FakeNative extends NativeBridge {
         : list.map((m) => m['seq']! as int).reduce(math.max) + 1;
     final id = _nextMessageId++;
     list.add(msg(id, seq, role, content, now, images: images, stats: stats));
-    return {'id': id, 'seq': seq};
+    return {'id': id, 'seq': seq, 'version': 0, 'versionCount': 1};
   }
 
   @override
@@ -237,6 +243,7 @@ class FakeNative extends NativeBridge {
     String convId,
     int fromSeq, {
     List<String> keepImages = const [],
+    bool archive = false,
   }) async {}
   @override
   Future<void> dbPutImage(String id, Uint8List jpeg) async => images[id] = jpeg;
@@ -349,6 +356,7 @@ Map<String, Object?> conv(
   'messageCount': count,
   'preview': preview,
   'previewRole': previewRole,
+  'private': false,
 };
 
 Map<String, Object?> msg(
@@ -367,6 +375,8 @@ Map<String, Object?> msg(
   'images': images,
   'created': created,
   'stats': stats,
+  'version': 0,
+  'versionCount': 1,
 };
 
 // -- Seed data --------------------------------------------------------------

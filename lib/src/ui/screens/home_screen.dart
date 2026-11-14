@@ -117,7 +117,7 @@ class _Title extends StatelessWidget {
             ),
             const SizedBox(height: 1),
             Text(
-              _modelLine(s),
+              session.private ? 'Private · ${_modelLine(s)}' : _modelLine(s),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: AithraType.caption.copyWith(color: c.textTertiary),
@@ -136,7 +136,8 @@ class _Title extends StatelessWidget {
   }
 }
 
-/// Rename and delete for the chat on screen, once it has been saved.
+/// The chat on screen: find, export, private, and once it has been saved,
+/// rename and delete.
 class _ChatMenu extends StatelessWidget {
   const _ChatMenu(this.session);
 
@@ -149,30 +150,50 @@ class _ChatMenu extends StatelessWidget {
       listenable: session,
       builder: (context, _) {
         final conv = session.conversation;
-        if (conv == null) return const SizedBox.shrink();
         return PopupMenuButton<String>(
           onSelected: (action) async {
-            final title =
-                s.chats.items
-                    .where((x) => x.id == conv.id)
-                    .firstOrNull
-                    ?.title ??
-                conv.title;
             switch (action) {
-              case 'rename':
-                final renamed = await renameDialog(context, title);
-                if (renamed != null && renamed.isNotEmpty) {
-                  await s.chats.rename(conv.id, renamed);
-                }
-              case 'delete':
-                if (await confirmDelete(context, title)) {
-                  await s.sessions.delete(conv.id);
+              case 'private':
+                await session.setPrivate(!session.private);
+              case 'find':
+                session.finding.value = true;
+              case 'markdown' || 'pdf':
+                await session.export(pdf: action == 'pdf');
+              case 'rename' || 'delete':
+                // Only offered for a saved chat.
+                final saved = conv!;
+                final title =
+                    s.chats.items
+                        .where((x) => x.id == saved.id)
+                        .firstOrNull
+                        ?.title ??
+                    saved.title;
+                if (action == 'rename') {
+                  final renamed = await renameDialog(context, title);
+                  if (renamed != null && renamed.isNotEmpty) {
+                    await s.chats.rename(saved.id, renamed);
+                  }
+                } else if (await confirmDelete(context, title)) {
+                  await s.sessions.delete(saved.id);
                 }
             }
           },
-          itemBuilder: (_) => const [
-            PopupMenuItem(value: 'rename', child: Text('Rename')),
-            PopupMenuItem(value: 'delete', child: Text('Delete chat')),
+          itemBuilder: (_) => [
+            CheckedPopupMenuItem(
+              value: 'private',
+              checked: session.private,
+              child: const Text('Private chat'),
+            ),
+            if (conv != null) ...const [
+              PopupMenuItem(value: 'find', child: Text('Find in chat')),
+              PopupMenuItem(value: 'pdf', child: Text('Export as PDF')),
+              PopupMenuItem(
+                value: 'markdown',
+                child: Text('Export as Markdown'),
+              ),
+              PopupMenuItem(value: 'rename', child: Text('Rename')),
+              PopupMenuItem(value: 'delete', child: Text('Delete chat')),
+            ],
           ],
         );
       },
