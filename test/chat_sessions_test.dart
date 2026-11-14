@@ -235,6 +235,26 @@ class FakeNative extends NativeBridge {
   Future<void> dbSetTokens(Map<int, int> counts, String model) async {}
 
   @override
+  Future<void> dbTruncate(
+    String convId,
+    int fromSeq, {
+    List<String> keepImages = const [],
+  }) async =>
+      messages[convId]!.removeWhere((m) => (m['seq']! as int) >= fromSeq);
+
+  @override
+  Future<void> dbUpdateMessage(int id, String content, String? stats) async {
+    for (final list in messages.values) {
+      for (final m in list) {
+        if (m['id'] == id) {
+          m['content'] = content;
+          m['stats'] = stats;
+        }
+      }
+    }
+  }
+
+  @override
   Future<List<Map<String, Object?>>> dbSearch(String query, int limit) async =>
       [
         for (final id in conversations.keys)
@@ -607,6 +627,72 @@ void main() {
       expect(
         ChatGroup.of(at(DateTime(2025), pinned: true), now),
         ChatGroup.pinned,
+      );
+    });
+  });
+
+  group('regenerate and edit', () {
+    Future<(Harness, ChatSession, String)> chat() async {
+      final h = await Harness.start();
+      final a = h.sessions.current;
+      unawaited(a.send('Name a colour', const []));
+      await h.settle();
+      h.native.finish('Red.');
+      await h.settle();
+      return (h, a, a.conversation!.id);
+    }
+
+    test(
+      'regenerating keeps earlier answers as versions to page between',
+      () async {
+        final (h, a, id) = await chat();
+        expect(a.versionsOf(a.messages.first), isNull);
+
+        unawaited(a.regenerate());
+        await h.settle();
+        h.native.finish('Blue.');
+        await h.settle();
+        final reply = a.messages.first;
+        final v = a.versionsOf(reply)!;
+        expect([for (final x in v.versions) x.content], ['Red.', 'Blue.']);
+        expect(v.shown, 1);
+
+        await a.showVersion(reply, 0);
+        expect(a.messages.first.content, 'Red.');
+        expect(a.versionsOf(a.messages.first)!.shown, 0);
+        // The chosen answer is what the model reads from now on.
+        expect(h.contents(id), ['Name a colour', 'Red.']);
+      },
+    );
+
+    test(
+      'a regeneration stopped before its first word restores the answer',
+      () async {
+        final (h, a, id) = await chat();
+        unawaited(a.regenerate());
+        await h.settle();
+        await a.stop();
+        await h.settle();
+        expect(h.contents(id), ['Name a colour', 'Red.']);
+        expect(a.messages.first.content, 'Red.');
+      },
+    );
+
+    test('any user message can be edited; what followed it goes', () async {
+      final (h, a, id) = await chat();
+      unawaited(a.send('And another', const []));
+      await h.settle();
+      h.native.finish('Green.');
+      await h.settle();
+      final first = a.messages.lastWhere((m) => m.role == Role.user);
+      unawaited(a.edit(first, 'Name a fruit'));
+      await h.settle();
+      h.native.finish('Apple.');
+      await h.settle();
+      expect(h.contents(id), ['Name a fruit', 'Apple.']);
+      expect(
+        [for (final m in a.messages) m.content],
+        ['Apple.', 'Name a fruit'],
       );
     });
   });

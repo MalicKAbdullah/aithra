@@ -406,49 +406,34 @@ class _ModelTurnState extends State<ModelTurn>
   }
 }
 
-/// Keeps the reader's place while the newest item of a reversed chat list
-/// grows: when the list is scrolled away from the newest end, the scroll
-/// offset follows the growth during layout, so the text being read stays
-/// put instead of sliding up with every new line. Every item carries one
-/// so moving away from the newest end changes only [enabled], never the
-/// item's subtree.
-class KeepReadingPlace extends SingleChildRenderObjectWidget {
-  const KeepReadingPlace({required this.enabled, super.key, super.child});
-
-  /// Only the newest item: growth further up the list sits above the
-  /// reader, where it moves nothing on screen.
-  final bool enabled;
+/// The newest item of a reversed chat list, as a sliver of its own that
+/// keeps the reader's place while it grows: when the list is scrolled away
+/// from the newest end, its growth is handed back to the viewport as a
+/// scroll offset correction, so the text being read stays put instead of
+/// sliding up with every new line. At the newest end the list follows the
+/// growth instead.
+class SliverKeepReadingPlace extends SingleChildRenderObjectWidget {
+  const SliverKeepReadingPlace({super.key, super.child});
 
   @override
-  RenderKeepReadingPlace createRenderObject(BuildContext context) =>
-      RenderKeepReadingPlace()
-        ..position = enabled ? Scrollable.maybeOf(context)?.position : null;
-
-  @override
-  void updateRenderObject(
-    BuildContext context,
-    RenderKeepReadingPlace renderObject,
-  ) => renderObject.position = enabled
-      ? Scrollable.maybeOf(context)?.position
-      : null;
+  RenderSliverKeepReadingPlace createRenderObject(BuildContext context) =>
+      RenderSliverKeepReadingPlace();
 }
 
-class RenderKeepReadingPlace extends RenderProxyBox {
-  ScrollPosition? position;
-  double? _height;
+class RenderSliverKeepReadingPlace extends RenderSliverToBoxAdapter {
+  double? _extent;
 
   @override
   void performLayout() {
     super.performLayout();
-    final before = _height;
-    _height = size.height;
-    final p = position;
-    if (before == null || p == null || !p.hasPixels) return;
-    final delta = size.height - before;
-    // At the newest end (offset 0) the list follows the reply instead.
-    // ScrollPosition.correctBy during layout makes the viewport lay out
-    // again at the corrected offset before anything paints.
-    if (delta != 0 && p.pixels > 0) p.correctBy(delta);
+    final before = _extent;
+    final extent = geometry!.scrollExtent;
+    _extent = extent;
+    if (before != null && extent != before && constraints.scrollOffset > 0) {
+      // The viewport moves its offset by this much and lays out again,
+      // all before this frame paints.
+      geometry = SliverGeometry(scrollOffsetCorrection: extent - before);
+    }
   }
 }
 

@@ -829,11 +829,14 @@ class _CodeBlockState extends State<CodeBlock> {
             ),
             child: Row(
               children: [
-                Text(
-                  widget.language.isEmpty ? 'code' : widget.language,
-                  style: AithraType.caption.copyWith(color: c.textTertiary),
+                Expanded(
+                  child: Text(
+                    widget.language.isEmpty ? 'code' : widget.language,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AithraType.caption.copyWith(color: c.textTertiary),
+                  ),
                 ),
-                const Spacer(),
                 IconButton(
                   visualDensity: VisualDensity.compact,
                   tooltip: 'Copy code',

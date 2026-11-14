@@ -159,8 +159,7 @@ class _ChatViewState extends State<ChatView> {
     final messages = _session.messages;
     final hasError = _session.error != null;
     final busy = _session.busy;
-    final extra = (busy ? 1 : 0) + (hasError ? 1 : 0);
-    if (messages.isEmpty && extra == 0) {
+    if (messages.isEmpty && !busy && !hasError) {
       return _session.conversation == null
           ? Greeting(now: _greetedAt)
           : const SizedBox.shrink();
@@ -172,68 +171,71 @@ class _ChatViewState extends State<ChatView> {
     final Key streamingKey = newest != null && newest.seq >= 0
         ? ValueKey(newest.seq + 1)
         : const ValueKey('reply');
-    final index = {
-      for (final (i, m) in messages.indexed) ValueKey(m.seq): i + extra,
-    };
-    final streamingAt = hasError ? 1 : 0;
+    // The newest item has a sliver of its own (see SliverKeepReadingPlace);
+    // the rest follow in a lazy list.
+    final older = busy ? messages : messages.skip(1).toList();
+    final index = {for (final (i, m) in older.indexed) ValueKey(m.seq): i};
     return SelectionArea(
-      child: ListView.builder(
+      child: CustomScrollView(
         controller: _scroll,
         reverse: true,
-        padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
-        itemCount: messages.length + extra,
-        findChildIndexCallback: (key) =>
-            busy && key == streamingKey ? streamingAt : index[key],
-        itemBuilder: (context, i) {
-          if (hasError && i == 0) return _errorRow(context);
-          if (busy && i == streamingAt) {
-            return KeepReadingPlace(
-              key: streamingKey,
-              enabled: true,
-              child: ModelTurn(session: _session),
-            );
-          }
-          final m = messages[i - extra];
-          final Widget item;
-          if (m.role == Role.user) {
-            item = MessageBubble(
-              message: m,
-              onTap: () => setState(
-                () => _actionsFor = _actionsFor == m.seq ? null : m.seq,
+        slivers: [
+          if (hasError) SliverToBoxAdapter(child: _errorRow(context)),
+          if (busy || newest != null)
+            SliverKeepReadingPlace(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                child: busy
+                    ? ModelTurn(key: streamingKey, session: _session)
+                    : _item(newest!, newest),
               ),
-              footer: [
-                if (_actionsFor == m.seq)
-                  UserActions(message: m, onEdit: busy ? null : () => _edit(m)),
-              ],
-            );
-          } else {
-            final notice = _session.notices[m.seq];
-            item = ModelTurn(
-              session: _session,
-              message: m,
-              footer: [
-                ReplyActions(
-                  message: m,
-                  session: _session,
-                  canRegenerate: identical(m, newest),
-                ),
-                if (_session.memoryUpdates[m.seq] case final update?)
-                  _MemoryHint(
-                    update: update,
-                    onUndone: () =>
-                        setState(() => _session.memoryUpdates.remove(m.seq)),
-                  ),
-                if (notice != null) _NoticeRow(notice),
-              ],
-            );
-          }
-          return KeepReadingPlace(
-            key: ValueKey(m.seq),
-            enabled: i == streamingAt,
-            child: item,
-          );
-        },
+            ),
+          SliverPadding(
+            padding: const EdgeInsets.only(top: AppSpacing.sm),
+            sliver: SliverList.builder(
+              itemCount: older.length,
+              findChildIndexCallback: (key) => index[key],
+              itemBuilder: (context, i) => _item(older[i], newest),
+            ),
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _item(ChatMessage m, ChatMessage? newest) {
+    final busy = _session.busy;
+    if (m.role == Role.user) {
+      return MessageBubble(
+        key: ValueKey(m.seq),
+        message: m,
+        onTap: () =>
+            setState(() => _actionsFor = _actionsFor == m.seq ? null : m.seq),
+        footer: [
+          if (_actionsFor == m.seq)
+            UserActions(message: m, onEdit: busy ? null : () => _edit(m)),
+        ],
+      );
+    }
+    final notice = _session.notices[m.seq];
+    return ModelTurn(
+      key: ValueKey(m.seq),
+      session: _session,
+      message: m,
+      footer: [
+        ReplyActions(
+          message: m,
+          session: _session,
+          canRegenerate: identical(m, newest),
+        ),
+        if (_session.memoryUpdates[m.seq] case final update?)
+          _MemoryHint(
+            update: update,
+            onUndone: () =>
+                setState(() => _session.memoryUpdates.remove(m.seq)),
+          ),
+        if (notice != null) _NoticeRow(notice),
+      ],
     );
   }
 
