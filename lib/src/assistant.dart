@@ -30,6 +30,7 @@ class Assistant extends ChangeNotifier with WidgetsBindingObserver {
     required this.engine,
     required this.models,
     required this.settings,
+    this.tunes = true,
   }) {
     models.addListener(_onModelsChanged);
     WidgetsBinding.instance.addObserver(this);
@@ -38,6 +39,10 @@ class Assistant extends ChangeNotifier with WidgetsBindingObserver {
   final EngineService engine;
   final ModelManager models;
   final SettingsStore settings;
+
+  /// Whether a model without a calibration is tuned on its own. The Ask
+  /// sheet does not: tuning takes minutes and belongs to the app.
+  final bool tunes;
 
   static const Duration releaseAfter = Duration(minutes: 5);
 
@@ -90,7 +95,10 @@ class Assistant extends ChangeNotifier with WidgetsBindingObserver {
   void _onModelsChanged() {
     if (!models.loaded) return;
     final m = activeModel;
-    if (m != null && calibrationFor(m) == null && _calibration == null) {
+    if (tunes &&
+        m != null &&
+        calibrationFor(m) == null &&
+        _calibration == null) {
       unawaited(calibrate(m));
     }
     notifyListeners();

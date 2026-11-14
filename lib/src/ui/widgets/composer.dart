@@ -5,9 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../chat/chat_session.dart';
+import '../../docs/documents.dart';
 import '../../services.dart';
 import '../../voice/speech_service.dart';
 import '../aithra_type.dart';
+import 'attach_menu.dart';
+import 'attachment_tray.dart';
 import 'speech_notice.dart';
 
 class ComposerController {
@@ -15,12 +18,26 @@ class ComposerController {
   final FocusNode focus = FocusNode();
   final ValueNotifier<List<PendingImage>> images = ValueNotifier(const []);
 
+  /// Documents picked or shared, stored and waiting to be sent.
+  final ValueNotifier<List<DocInfo>> docs = ValueNotifier(const []);
+
+  /// A file being read in: pages done of the total.
+  final ValueNotifier<({int done, int total})?> reading = ValueNotifier(null);
+
+  /// The text came from another app, so the chips offer what to do with it.
+  final ValueNotifier<bool> shared = ValueNotifier(false);
+
+  /// Starts the full-document summary of [docs] (their Summarise chip).
+  void Function(List<DocInfo> docs)? summarise;
+
   /// The next send replaces the last user message.
   bool editing = false;
 
   void clear() {
     text.clear();
     images.value = const [];
+    docs.value = const [];
+    shared.value = false;
     editing = false;
   }
 
@@ -28,6 +45,9 @@ class ComposerController {
     text.dispose();
     focus.dispose();
     images.dispose();
+    docs.dispose();
+    reading.dispose();
+    shared.dispose();
   }
 }
 
@@ -150,46 +170,6 @@ class _ComposerState extends State<Composer> {
   static String _join(String a, String b) =>
       a.trim().isEmpty ? b : '${a.trimRight()} $b';
 
-  Future<void> _attach() async {
-    final native = context.services.native;
-    final source = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Photo library'),
-              onTap: () => Navigator.pop(context, 'gallery'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_camera_outlined),
-              title: const Text('Camera'),
-              onTap: () => Navigator.pop(context, 'camera'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (source == null) return;
-    final Uint8List? jpeg;
-    try {
-      jpeg = source == 'camera'
-          ? await native.capturePhoto()
-          : await native.pickImage();
-    } on PlatformException catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Couldn't add the photo: ${e.message}")),
-        );
-      }
-      return;
-    }
-    if (jpeg == null) return;
-    _c.images.value = [..._c.images.value, PendingImage(jpeg)];
-  }
-
   @override
   Widget build(BuildContext context) {
     final c = SuiteColors.of(context);
@@ -208,6 +188,7 @@ class _ComposerState extends State<Composer> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              AttachmentTray(controller: _c, onSend: widget.onSend),
               ValueListenableBuilder<List<PendingImage>>(
                 valueListenable: _c.images,
                 builder: (context, images, _) => images.isEmpty
@@ -289,13 +270,11 @@ class _ComposerState extends State<Composer> {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    if (widget.canAttachImages)
-                      IconButton(
-                        tooltip: 'Add image',
-                        iconSize: 22,
-                        icon: const Icon(Icons.add_photo_alternate_outlined),
-                        onPressed: widget.busy ? null : _attach,
-                      ),
+                    AttachButton(
+                      controller: _c,
+                      canAttachImages: widget.canAttachImages,
+                      enabled: !widget.busy,
+                    ),
                     Expanded(
                       child: TextField(
                         controller: _c.text,
@@ -314,8 +293,8 @@ class _ComposerState extends State<Composer> {
                           border: InputBorder.none,
                           enabledBorder: InputBorder.none,
                           focusedBorder: InputBorder.none,
-                          contentPadding: EdgeInsets.fromLTRB(
-                            widget.canAttachImages ? 0 : AppSpacing.md + 2,
+                          contentPadding: const EdgeInsets.fromLTRB(
+                            0,
                             15,
                             AppSpacing.xs,
                             15,
@@ -335,11 +314,16 @@ class _ComposerState extends State<Composer> {
                     Padding(
                       padding: const EdgeInsets.all(6),
                       child: ListenableBuilder(
-                        listenable: Listenable.merge([_c.text, _c.images]),
+                        listenable: Listenable.merge([
+                          _c.text,
+                          _c.images,
+                          _c.docs,
+                        ]),
                         builder: (context, _) {
                           final canSend =
                               _c.text.text.trim().isNotEmpty ||
-                              _c.images.value.isNotEmpty;
+                              _c.images.value.isNotEmpty ||
+                              _c.docs.value.isNotEmpty;
                           return IconButton.filled(
                             tooltip: widget.busy ? 'Stop' : 'Send',
                             iconSize: 20,

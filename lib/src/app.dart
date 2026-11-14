@@ -18,6 +18,8 @@ class AithraApp extends StatelessWidget {
       builder: (context, _) => MaterialApp(
         title: 'Aithra',
         debugShowCheckedModeBanner: false,
+        navigatorKey: s.navigatorKey,
+        scaffoldMessengerKey: s.messengerKey,
         theme: aithraTheme(Brightness.light),
         darkTheme: aithraTheme(Brightness.dark),
         themeMode: s.appearance.mode,

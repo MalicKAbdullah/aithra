@@ -59,11 +59,10 @@ class AskActivity : FlutterFragmentActivity() {
                 finish()
             }
             "ask.openChat" -> {
-                startActivity(
-                    Intent(this, MainActivity::class.java)
-                        .putExtra(MainActivity.EXTRA_OPEN_CHAT, call.argument<String>("id"))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-                )
+                val open = Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                call.argument<String>("id")?.let { open.putExtra(MainActivity.EXTRA_OPEN_CHAT, it) }
+                startActivity(open)
                 result.success(null)
                 finish()
             }

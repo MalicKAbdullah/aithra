@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'src/app.dart';
+import 'src/ask/ask_app.dart';
 import 'src/assistant.dart';
 import 'src/chat/chat_store.dart';
 import 'src/data/settings_store.dart';
@@ -24,8 +25,6 @@ import 'src/services.dart';
 import 'src/ui/screens/report_screen.dart';
 import 'src/voice/speech_service.dart';
 import 'src/voice/tts_service.dart';
-
-const String lockKey = 'aithra_app_lock_enabled';
 
 /// A crash report from the previous run is shown before anything touches
 /// the database or the Keystore, so a crash in either can still be
@@ -177,6 +176,17 @@ Future<Services> start(NativeBridge native) async {
 }
 
 Future<void> _afterFirstFrame(Services s) async {
+  s.inbox.start();
   await Future.wait([s.models.refresh(), s.memories.load()]);
   s.assistant.warmUp();
+  await s.summarizer.resumePending();
+}
+
+/// The Ask sheet's engine (AskActivity), over another app's selected text.
+@pragma('vm:entry-point')
+Future<void> askMain() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final native = NativeBridge();
+  reportErrorsTo(native);
+  await runAsk(native);
 }

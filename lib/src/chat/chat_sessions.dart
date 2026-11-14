@@ -70,6 +70,14 @@ class ChatSessions extends ChangeNotifier {
     await _store.delete(convId);
   }
 
+  /// Shows a message added to [convId] from outside its session (a
+  /// document summary) if that chat is held open.
+  void reloadShown(String convId) {
+    for (final s in _live) {
+      if (s.conversation?.id == convId) unawaited(s.reload());
+    }
+  }
+
   /// A session made outside the screen's flow (voice mode), sharing the
   /// reply queue; its owner disposes it.
   ChatSession detached() => _create(null);

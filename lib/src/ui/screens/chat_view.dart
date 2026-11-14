@@ -1,14 +1,17 @@
 import 'dart:async';
 
 import 'package:core_theme/core_theme.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
+import '../../docs/documents.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
 import '../widgets/composer.dart';
+import '../widgets/file_chip.dart';
 import '../widgets/greeting.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/perf_hud.dart';
@@ -41,6 +44,9 @@ class _ChatViewState extends State<ChatView> {
     super.initState();
     _composer.text.text = _session.conversation?.draft ?? '';
     _composer.text.addListener(_onDraftChanged);
+    _composer.summarise = _summarise;
+    _session.incoming.addListener(_takeIncoming);
+    _takeIncoming();
     _scroll.addListener(() {
       // Reversed list: extentAfter is the distance to the oldest loaded message.
       if (_scroll.position.extentAfter < 800) _session.loadMore();
@@ -57,6 +63,41 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  /// Fills the composer with what was shared from another app.
+  void _takeIncoming() {
+    final item = _session.incoming.value;
+    if (item == null) return;
+    _session.incoming.value = null;
+    if (item.text.isNotEmpty) {
+      _composer.text.text = item.text;
+      _composer.shared.value = true;
+    }
+    _composer.images.value = [
+      ..._composer.images.value,
+      for (final jpeg in item.images) PendingImage(jpeg),
+    ];
+    _composer.docs.value = [..._composer.docs.value, ...item.documents];
+  }
+
+  /// Sends [docs] with a request for their summary, which the summarizer
+  /// posts as the reply.
+  Future<void> _summarise(List<DocInfo> docs) async {
+    final summarizer = context.services.summarizer;
+    _composer.clear();
+    await _session.send(
+      docs.length == 1
+          ? 'Summarise ${docs.single.name}'
+          : 'Summarise these documents',
+      const [],
+      docs: docs,
+      reply: false,
+    );
+    final sent = _session.messages.firstOrNull;
+    for (final d in _session.attachments[sent?.id] ?? const <DocInfo>[]) {
+      unawaited(summarizer.summarize(d));
+    }
+  }
+
   void _onDraftChanged() {
     _draftTimer?.cancel();
     _draftTimer = Timer(
@@ -68,6 +109,7 @@ class _ChatViewState extends State<ChatView> {
   @override
   void dispose() {
     _draftTimer?.cancel();
+    _session.incoming.removeListener(_takeIncoming);
     if (_session.conversation != null) {
       _session.saveDraft(_composer.text.text);
       if (_scroll.hasClients) _session.saveScroll(_scroll.offset);
@@ -80,7 +122,8 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _send() async {
     final text = _composer.text.text;
     final images = List.of(_composer.images.value);
-    if (text.trim().isEmpty && images.isEmpty) return;
+    final docs = List.of(_composer.docs.value);
+    if (text.trim().isEmpty && images.isEmpty && docs.isEmpty) return;
     _composer.clear();
     if (_scroll.hasClients && _scroll.offset > 0) {
       unawaited(
@@ -91,7 +134,7 @@ class _ChatViewState extends State<ChatView> {
         ),
       );
     }
-    await _session.send(text, images);
+    await _session.send(text, images, docs: docs);
   }
 
   Future<void> _messageActions(ChatMessage m) async {
@@ -181,6 +224,7 @@ class _ChatViewState extends State<ChatView> {
                 builder: (context, _) => _messagesList(context),
               ),
             ),
+            _ActivityLine(_session.activity),
             RepaintBoundary(
               child: ListenableBuilder(
                 listenable: Listenable.merge([_session, s.assistant]),
@@ -239,12 +283,18 @@ class _ChatViewState extends State<ChatView> {
         );
         final notice = _session.notices[m.seq];
         final remembered = _session.memoryUpdates.contains(m.seq);
-        if (notice == null && !remembered) return bubble;
+        final files = _session.attachments[m.id];
+        final sources = _session.sources[m.id];
+        if (notice == null && !remembered && files == null && sources == null) {
+          return bubble;
+        }
         return Column(
           key: ValueKey('after-${m.seq}'),
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             bubble,
+            if (files != null) MessageFiles(docs: files),
+            if (sources != null) SourcesRow(sources: sources),
             if (remembered) const _MemoryHint(),
             if (notice != null) _NoticeRow(notice),
           ],
@@ -272,6 +322,58 @@ class _ChatViewState extends State<ChatView> {
           ),
           TextButton(onPressed: _session.retry, child: const Text('Retry')),
         ],
+      ),
+    );
+  }
+}
+
+/// What the reply is doing before it streams, above the composer: "Reading
+/// report.pdf, page 2 (2 of 5)".
+class _ActivityLine extends StatelessWidget {
+  const _ActivityLine(this.activity);
+
+  final ValueListenable<String?> activity;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    return ValueListenableBuilder<String?>(
+      valueListenable: activity,
+      builder: (context, text, _) => AnimatedSize(
+        duration: AppMotion.fast,
+        curve: AppMotion.standard,
+        child: text == null
+            ? const SizedBox(width: double.infinity)
+            : Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.gutter,
+                  AppSpacing.xs,
+                  AppSpacing.gutter,
+                  AppSpacing.xs,
+                ),
+                child: Row(
+                  children: [
+                    SizedBox.square(
+                      dimension: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: c.textTertiary,
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: Text(
+                        text,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AithraType.caption.copyWith(
+                          color: c.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
       ),
     );
   }

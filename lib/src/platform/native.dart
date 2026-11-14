@@ -290,6 +290,10 @@ class NativeBridge {
   Future<Map<String, Object?>?> pickDocument() async =>
       _optMap(await _channel.invokeMethod<Object?>('doc.pick'));
 
+  /// Reads the file at [uri] into an unattached document.
+  Future<Map<String, Object?>> importDocumentUri(String uri) =>
+      _map('doc.importUri', {'uri': uri});
+
   /// Stores [text] as an unattached document named [name].
   Future<Map<String, Object?>> importTextDocument(String name, String text) =>
       _map('doc.importText', {'name': name, 'text': text});
@@ -340,13 +344,12 @@ class NativeBridge {
     int limit,
   ) => _rows('doc.passagesInOrder', {'ids': ids, 'limit': limit});
 
-  Future<Map<String, Object?>?> passage(String docId, int ord) async =>
-      _optMap(
-        await _channel.invokeMethod<Object?>('doc.passage', {
-          'docId': docId,
-          'ord': ord,
-        }),
-      );
+  Future<Map<String, Object?>?> passage(String docId, int ord) async => _optMap(
+    await _channel.invokeMethod<Object?>('doc.passage', {
+      'docId': docId,
+      'ord': ord,
+    }),
+  );
 
   /// Embeds up to [limit] passages that have no vector; returns how many.
   Future<int> indexDocuments(String modelPath, int limit) async =>
@@ -424,8 +427,8 @@ class NativeBridge {
 
   Future<void> askClose() => _channel.invokeMethod('ask.close');
 
-  /// Opens chat [id] in the app and closes the sheet.
-  Future<void> askOpenChat(String id) =>
+  /// Opens the app, at chat [id] when given, and closes the sheet.
+  Future<void> askOpenChat([String? id]) =>
       _channel.invokeMethod('ask.openChat', {'id': id});
 
   // -- Device & files -------------------------------------------------------
