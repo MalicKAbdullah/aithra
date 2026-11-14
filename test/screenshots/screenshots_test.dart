@@ -322,7 +322,26 @@ class FakeNative extends NativeBridge {
   @override
   Future<void> cancelListening() async {}
   @override
-  Future<void> speak(String text, String id) async {}
+  Future<void> speak(
+    String text,
+    String id, {
+    String? language,
+    String? voice,
+    double rate = 1,
+  }) async {}
+  @override
+  Future<List<Map<String, Object?>>> ttsVoices() async => [
+    for (final (name, tag, label) in const [
+      ('en-gb-x-gba-local', 'en-GB', 'English (United Kingdom)'),
+      ('en-gb-x-rjs-local', 'en-GB', 'English (United Kingdom)'),
+      ('en-us-x-iol-local', 'en-US', 'English (United States)'),
+      ('es-es-x-eea-local', 'es-ES', 'Spanish (Spain)'),
+      ('fr-fr-x-frd-local', 'fr-FR', 'French (France)'),
+    ])
+      {'name': name, 'language': tag, 'label': label, 'quality': 400},
+  ];
+  @override
+  Future<String?> detectLanguage(String text) async => 'en';
   @override
   Future<void> stopSpeaking() async {}
 }

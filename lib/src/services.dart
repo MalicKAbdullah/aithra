@@ -14,6 +14,7 @@ import 'memory/memory_store.dart';
 import 'memory/recall_index.dart';
 import 'models/model_manager.dart';
 import 'platform/native.dart';
+import 'voice/read_aloud.dart';
 import 'voice/speech_service.dart';
 import 'voice/tts_service.dart';
 
@@ -48,6 +49,13 @@ class Services {
   final AppearanceController appearance;
   final SpeechService speech;
   final TtsService tts;
+
+  /// Reading replies aloud, for every screen that does.
+  late final ReadAloud readAloud = ReadAloud(
+    tts: tts,
+    native: native,
+    settings: settings,
+  );
 
   /// The chat on screen and every chat still replying; one reply runs on
   /// the engine at a time.

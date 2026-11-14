@@ -409,9 +409,19 @@ class MainActivity : FlutterFragmentActivity() {
                 result.success(null)
             }
             "tts.speak" -> {
-                tts.speak(call.argument<String>("text")!!, call.argument<String>("id")!!)
+                tts.speak(
+                    Utterance(
+                        text = call.argument<String>("text")!!,
+                        id = call.argument<String>("id")!!,
+                        language = call.argument<String>("language"),
+                        voice = call.argument<String>("voice"),
+                        rate = call.argument<Double>("rate")!!.toFloat(),
+                    ),
+                )
                 result.success(null)
             }
+            "tts.voices" -> tts.voices { result.success(it) }
+            "tts.detectLanguage" -> onIo(result) { TtsBridge.detectLanguage(this, call.argument<String>("text")!!) }
             "tts.stop" -> {
                 tts.stop()
                 result.success(null)

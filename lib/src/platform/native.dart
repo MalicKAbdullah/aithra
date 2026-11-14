@@ -376,8 +376,36 @@ class NativeBridge {
   Future<void> openVoiceSettings() =>
       _channel.invokeMethod('speech.openSettings');
 
-  Future<void> speak(String text, String id) =>
-      _channel.invokeMethod('tts.speak', {'text': text, 'id': id});
+  /// Queues [text] for TextToSpeech. [language] is a BCP 47 tag (null: the
+  /// phone's language); [voice] a name from [ttsVoices], used when it
+  /// speaks that language.
+  Future<void> speak(
+    String text,
+    String id, {
+    String? language,
+    String? voice,
+    double rate = 1,
+  }) => _channel.invokeMethod('tts.speak', {
+    'text': text,
+    'id': id,
+    'language': language,
+    'voice': voice,
+    'rate': rate,
+  });
+
+  /// Installed voices that work offline: `name`, `language` (BCP 47),
+  /// `label` (the language's display name) and `quality`
+  /// (`Voice.QUALITY_*`).
+  Future<List<Map<String, Object?>>> ttsVoices() async => [
+    for (final v
+        in await _channel.invokeListMethod<Object?>('tts.voices') ?? const [])
+      Map<String, Object?>.from(v! as Map),
+  ];
+
+  /// The language [text] is written in (BCP 47), from Android's on-device
+  /// TextClassifier; null when it cannot tell.
+  Future<String?> detectLanguage(String text) =>
+      _channel.invokeMethod<String>('tts.detectLanguage', {'text': text});
 
   Future<void> stopSpeaking() => _channel.invokeMethod('tts.stop');
 }

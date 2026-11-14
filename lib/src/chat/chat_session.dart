@@ -143,6 +143,10 @@ class ChatSession extends ChangeNotifier {
   /// shows a quiet hint.
   final Set<int> memoryUpdates = {};
 
+  /// Replies are spoken (voice mode): the system prompt asks for short,
+  /// plain spoken sentences.
+  bool spoken = false;
+
   ConversationInfo? get conversation => _conversation;
 
   /// Newest first (the list view is reversed).
@@ -318,6 +322,7 @@ class ChatSession extends ChangeNotifier {
             : const [],
         recalled: recalled,
         summary: fresh.summary,
+        spoken: spoken,
       );
       final full = buildSystemPrompt(context);
       final counted = await _countTokens(spec, full, history);
