@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:core_theme/core_theme.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
@@ -11,6 +10,7 @@ import '../../services.dart';
 import '../aithra_type.dart';
 import '../widgets/composer.dart';
 import '../widgets/greeting.dart';
+import '../widgets/message_actions.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/perf_hud.dart';
 import 'memories_screen.dart';
@@ -34,6 +34,12 @@ class _ChatViewState extends State<ChatView> {
   final _composer = ComposerController();
   final _greetedAt = DateTime.now();
   Timer? _draftTimer;
+
+  /// The user message being rewritten in the composer.
+  ChatMessage? _editing;
+
+  /// The user message whose actions are showing, by seq.
+  int? _actionsFor;
 
   ChatSession get _session => widget.session;
 
@@ -95,79 +101,16 @@ class _ChatViewState extends State<ChatView> {
     await _session.send(text, images);
   }
 
-  Future<void> _messageActions(ChatMessage m) async {
-    HapticFeedback.mediumImpact();
-    final s = context.services;
-    final lastUser = _session.messages
-        .where((x) => x.role == Role.user)
-        .firstOrNull;
-    final isLastModel =
-        _session.messages.isNotEmpty &&
-        _session.messages.first.id == m.id &&
-        m.role == Role.model;
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _sheetItem(context, Icons.content_copy_rounded, 'Copy', 'copy'),
-            _sheetItem(context, Icons.ios_share_rounded, 'Share', 'share'),
-            if (m.role == Role.user && lastUser?.id == m.id && !_session.busy)
-              _sheetItem(context, Icons.edit_outlined, 'Edit', 'edit'),
-            if (isLastModel && !_session.busy)
-              _sheetItem(
-                context,
-                Icons.refresh_rounded,
-                'Regenerate',
-                'regenerate',
-              ),
-            if (m.stats?.decodeTps != null)
-              Padding(
-                padding: const EdgeInsets.all(AppSpacing.md),
-                child: Text(
-                  '${m.stats!.decodeTps!.toStringAsFixed(1)} tokens/s · '
-                  'first word after ${((m.stats!.ttftMs ?? 0) / 1000).toStringAsFixed(1)} s',
-                  style: AithraType.caption.copyWith(
-                    color: SuiteColors.of(context).textTertiary,
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (!mounted) return;
-    switch (action) {
-      case 'copy':
-        // The stored text: Markdown and LaTeX source, as the model wrote it.
-        await Clipboard.setData(ClipboardData(text: m.content));
-        _toast('Copied');
-      case 'share':
-        await s.native.shareText(m.content);
-      case 'edit':
-        _composer.text.text = m.content;
-        _composer.editing = true;
-        _composer.focus.requestFocus();
-        setState(() {});
-      case 'regenerate':
-        await _session.regenerate();
-    }
+  /// Puts [m] in the composer; sending replaces it and everything after.
+  void _edit(ChatMessage m) {
+    _composer.text.text = m.content;
+    _composer.editing = true;
+    _composer.focus.requestFocus();
+    setState(() {
+      _editing = m;
+      _actionsFor = null;
+    });
   }
-
-  Widget _sheetItem(
-    BuildContext context,
-    IconData icon,
-    String label,
-    String value,
-  ) => ListTile(
-    leading: Icon(icon),
-    title: Text(label),
-    onTap: () => Navigator.pop(context, value),
-  );
-
-  void _toast(String text) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
 
   @override
   Widget build(BuildContext context) {
@@ -190,10 +133,12 @@ class _ChatViewState extends State<ChatView> {
                   busy: _session.busy,
                   canAttachImages: s.assistant.activeModel?.vision ?? false,
                   onSend: () {
-                    if (_composer.editing) {
+                    final editing = _editing;
+                    if (_composer.editing && editing != null) {
                       final text = _composer.text.text;
                       _composer.clear();
-                      _session.editLast(text);
+                      _editing = null;
+                      _session.edit(editing, text);
                     } else {
                       _send();
                     }
@@ -212,50 +157,83 @@ class _ChatViewState extends State<ChatView> {
 
   Widget _messagesList(BuildContext context) {
     final messages = _session.messages;
-    final extra = (_session.busy ? 1 : 0) + (_session.error != null ? 1 : 0);
+    final hasError = _session.error != null;
+    final busy = _session.busy;
+    final extra = (busy ? 1 : 0) + (hasError ? 1 : 0);
     if (messages.isEmpty && extra == 0) {
       return _session.conversation == null
           ? Greeting(now: _greetedAt)
           : const SizedBox.shrink();
     }
-    return ListView.builder(
-      controller: _scroll,
-      reverse: true,
-      padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
-      itemCount: messages.length + extra,
-      itemBuilder: (context, i) {
-        if (_session.error != null && i == 0) return _errorRow(context);
-        final offset = _session.error != null ? 1 : 0;
-        if (_session.busy && i == offset) {
-          return StreamingBubble(
-            key: const ValueKey('streaming'),
-            session: _session,
-          );
-        }
-        final m = messages[i - extra];
-        final bubble = MessageBubble(
-          key: ValueKey(m.seq),
-          message: m,
-          onLongPress: () => _messageActions(m),
-        );
-        final notice = _session.notices[m.seq];
-        final remembered = _session.memoryUpdates[m.seq];
-        if (notice == null && remembered == null) return bubble;
-        return Column(
-          key: ValueKey('after-${m.seq}'),
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            bubble,
-            if (remembered != null)
-              _MemoryHint(
-                update: remembered,
-                onUndone: () =>
-                    setState(() => _session.memoryUpdates.remove(m.seq)),
+    final newest = messages.firstOrNull;
+    // A reply is saved under the next seq of its chat (the store appends at
+    // its highest seq + 1), so the reply in progress takes the key it will
+    // have once saved and keeps its element, laid-out text and all.
+    final Key streamingKey = newest != null && newest.seq >= 0
+        ? ValueKey(newest.seq + 1)
+        : const ValueKey('reply');
+    final index = {
+      for (final (i, m) in messages.indexed) ValueKey(m.seq): i + extra,
+    };
+    final streamingAt = hasError ? 1 : 0;
+    return SelectionArea(
+      child: ListView.builder(
+        controller: _scroll,
+        reverse: true,
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+        itemCount: messages.length + extra,
+        findChildIndexCallback: (key) =>
+            busy && key == streamingKey ? streamingAt : index[key],
+        itemBuilder: (context, i) {
+          if (hasError && i == 0) return _errorRow(context);
+          if (busy && i == streamingAt) {
+            return KeepReadingPlace(
+              key: streamingKey,
+              enabled: true,
+              child: ModelTurn(session: _session),
+            );
+          }
+          final m = messages[i - extra];
+          final Widget item;
+          if (m.role == Role.user) {
+            item = MessageBubble(
+              message: m,
+              onTap: () => setState(
+                () => _actionsFor = _actionsFor == m.seq ? null : m.seq,
               ),
-            if (notice != null) _NoticeRow(notice),
-          ],
-        );
-      },
+              footer: [
+                if (_actionsFor == m.seq)
+                  UserActions(message: m, onEdit: busy ? null : () => _edit(m)),
+              ],
+            );
+          } else {
+            final notice = _session.notices[m.seq];
+            item = ModelTurn(
+              session: _session,
+              message: m,
+              footer: [
+                ReplyActions(
+                  message: m,
+                  session: _session,
+                  canRegenerate: identical(m, newest),
+                ),
+                if (_session.memoryUpdates[m.seq] case final update?)
+                  _MemoryHint(
+                    update: update,
+                    onUndone: () =>
+                        setState(() => _session.memoryUpdates.remove(m.seq)),
+                  ),
+                if (notice != null) _NoticeRow(notice),
+              ],
+            );
+          }
+          return KeepReadingPlace(
+            key: ValueKey(m.seq),
+            enabled: i == streamingAt,
+            child: item,
+          );
+        },
+      ),
     );
   }
 

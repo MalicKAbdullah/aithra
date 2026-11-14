@@ -1,16 +1,40 @@
+import 'dart:collection';
+
 import 'package:core_theme/core_theme.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
+import '../../chat/chart_spec.dart';
 import '../../chat/highlight.dart';
 import '../../chat/markdown.dart';
+import '../../services.dart';
 import '../aithra_type.dart';
+import 'chart_view.dart';
 import 'math_view.dart';
 
-/// Renders a reply's Markdown. Parsed blocks are cached per text, so a
-/// finished message is parsed once; a streaming one re-parses only when its
-/// text changes (once per frame at most).
+/// Least-recently-used memo of [compute] results, so long chats reuse the
+/// work for what is on screen without holding every message ever shown.
+final class _Lru<V> {
+  _Lru(this.capacity);
+
+  final int capacity;
+  final LinkedHashMap<String, V> _map = LinkedHashMap();
+
+  V get(String key, V Function() compute) {
+    final hit = _map.remove(key);
+    if (hit != null) return _map[key] = hit;
+    if (_map.length >= capacity) _map.remove(_map.keys.first);
+    return _map[key] = compute();
+  }
+}
+
+/// Renders a reply's Markdown. A finished message is parsed once and its
+/// blocks cached; a streaming one (with [caret]) is parsed fresh each frame
+/// and never cached, since each frame's text is a one-off prefix. Within it
+/// every block but the last is final text, so their inline parses still hit
+/// the cache and only the growing tail is worked out anew.
 ///
 /// When [caret] is set (the reply is still streaming) a pulsing dot follows
 /// the last word. The animation is owned by the caller, so the dot keeps its
@@ -21,20 +45,34 @@ class MarkdownView extends StatelessWidget {
   final String text;
   final Animation<double>? caret;
 
-  static final Map<String, List<MdBlock>> _cache = {};
-
-  static List<MdBlock> _parse(String text) {
-    final hit = _cache[text];
-    if (hit != null) return hit;
-    if (_cache.length > 200) _cache.remove(_cache.keys.first);
-    return _cache[text] = parseMarkdown(text);
-  }
+  static final _blocks = _Lru<List<MdBlock>>(200);
 
   @override
   Widget build(BuildContext context) {
     final c = SuiteColors.of(context);
     final base = AithraType.body.copyWith(color: c.textPrimary);
-    final blocks = _parse(text);
+    final blocks = caret == null
+        ? _blocks.get(text, () => parseMarkdown(text))
+        : parseMarkdown(text);
+    return _BlockColumn(blocks: blocks, base: base, colors: c, caret: caret);
+  }
+}
+
+class _BlockColumn extends StatelessWidget {
+  const _BlockColumn({
+    required this.blocks,
+    required this.base,
+    required this.colors,
+    this.caret,
+  });
+
+  final List<MdBlock> blocks;
+  final TextStyle base;
+  final SuiteColors colors;
+  final Animation<double>? caret;
+
+  @override
+  Widget build(BuildContext context) {
     final caret = this.caret;
     final trailingCaret =
         caret != null && (blocks.isEmpty || !_inlineBlock(blocks.last));
@@ -45,9 +83,8 @@ class MarkdownView extends StatelessWidget {
           Padding(
             padding: EdgeInsets.only(top: _gapBefore(blocks, i)),
             child: _block(
+              context,
               blocks[i],
-              base,
-              c,
               i == blocks.length - 1 ? caret : null,
             ),
           ),
@@ -75,71 +112,360 @@ class MarkdownView extends StatelessWidget {
     return AppSpacing.sm + 2;
   }
 
-  Widget _block(
-    MdBlock b,
-    TextStyle base,
-    SuiteColors c,
-    Animation<double>? caret,
-  ) => switch (b) {
-    MdHeading(:final level, :final text) => _InlineText(
-      text,
-      base: switch (level) {
-        1 => AithraType.h1,
-        2 => AithraType.h2,
-        _ => AithraType.h3,
-      }.copyWith(color: c.textPrimary),
-      colors: c,
-      caret: caret,
-    ),
-    MdParagraph(:final text) => _InlineText(
-      text,
-      base: base,
-      colors: c,
-      caret: caret,
-    ),
-    MdListItem(:final text, :final marker, :final indent) => Padding(
-      padding: EdgeInsets.only(left: indent * 14.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: marker == '•' ? 16 : 22,
-            child: Text(
-              marker,
-              style: base.copyWith(
-                color: c.textTertiary,
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
-            ),
-          ),
-          Expanded(
-            child: _InlineText(text, base: base, colors: c, caret: caret),
-          ),
-        ],
-      ),
-    ),
-    MdQuote(:final text) => Container(
-      padding: const EdgeInsets.only(left: AppSpacing.smd),
-      decoration: BoxDecoration(
-        border: Border(left: BorderSide(color: c.border, width: 3)),
-      ),
-      child: _InlineText(
+  Widget _block(BuildContext context, MdBlock b, Animation<double>? caret) {
+    final c = colors;
+    return switch (b) {
+      MdHeading(:final level, :final text) => _InlineText(
         text,
-        base: base.copyWith(color: c.textSecondary),
+        base: switch (level) {
+          1 => AithraType.h1,
+          2 => AithraType.h2,
+          _ => AithraType.h3,
+        }.copyWith(color: c.textPrimary),
         colors: c,
         caret: caret,
       ),
+      MdParagraph(:final text) => _InlineText(
+        text,
+        base: base,
+        colors: c,
+        caret: caret,
+      ),
+      MdListItem(:final text, :final marker, :final indent, :final checked) =>
+        Padding(
+          padding: EdgeInsets.only(left: indent * 14.0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: checked != null ? 24 : (marker == '•' ? 16 : 22),
+                child: checked != null
+                    ? Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Icon(
+                          checked
+                              ? Icons.check_box_rounded
+                              : Icons.check_box_outline_blank_rounded,
+                          size: 17,
+                          color: checked ? c.accent : c.textTertiary,
+                          semanticLabel: checked ? 'Done' : 'Not done',
+                        ),
+                      )
+                    : Text(
+                        marker,
+                        style: base.copyWith(
+                          color: c.textTertiary,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+              ),
+              Expanded(
+                child: _InlineText(
+                  text,
+                  base: checked == true
+                      ? base.copyWith(color: c.textSecondary)
+                      : base,
+                  colors: c,
+                  caret: caret,
+                ),
+              ),
+            ],
+          ),
+        ),
+      MdQuote(:final blocks) => Container(
+        padding: const EdgeInsets.only(left: AppSpacing.smd),
+        decoration: BoxDecoration(
+          border: Border(left: BorderSide(color: c.border, width: 3)),
+        ),
+        child: _BlockColumn(
+          blocks: blocks,
+          base: base.copyWith(color: c.textSecondary),
+          colors: c,
+          caret: caret,
+        ),
+      ),
+      MdRule() => Divider(color: c.hairline),
+      MdCode(:final language, :final code, :final closed)
+          when ChartSpec.languages.contains(language) =>
+        ChartBlock(language: language, source: code, closed: closed),
+      MdCode(:final language, :final code) => CodeBlock(
+        language: language,
+        code: code,
+      ),
+      MdMath(:final tex) => _Equation(
+        tex: tex,
+        child: MathView.block(
+          tex,
+          base.copyWith(fontSize: (base.fontSize ?? 15) + 1),
+        ),
+      ),
+      MdTable() => TableBlock(table: b, base: base, colors: c),
+    };
+  }
+}
+
+/// A display equation; tapping it offers its TeX.
+class _Equation extends StatelessWidget {
+  const _Equation({required this.tex, required this.child});
+
+  final String tex;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    behavior: HitTestBehavior.opaque,
+    onTap: () => showModalBottomSheet<void>(
+      context: context,
+      builder: (sheet) {
+        final c = SuiteColors.of(sheet);
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.gutter,
+              AppSpacing.lg,
+              AppSpacing.gutter,
+              AppSpacing.md,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Equation',
+                  style: AithraType.h2.copyWith(color: c.textPrimary),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                SelectableText(
+                  tex,
+                  style: AithraType.code.copyWith(color: c.textSecondary),
+                ),
+                const SizedBox(height: AppSpacing.lg),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.icon(
+                    icon: const Icon(Icons.content_copy_rounded, size: 18),
+                    label: const Text('Copy TeX'),
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: tex));
+                      Navigator.pop(sheet);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('TeX copied')),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     ),
-    MdRule() => Divider(color: c.hairline),
-    MdCode(:final language, :final code) => CodeBlock(
-      language: language,
-      code: code,
-    ),
-    MdMath(:final tex) => MathView.block(
-      tex,
-      base.copyWith(fontSize: (base.fontSize ?? 15) + 1),
-    ),
-  };
+    child: child,
+  );
+}
+
+/// What a tap on a link offers: the address, opening it and copying it.
+Future<void> showLinkSheet(BuildContext context, String url) =>
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheet) {
+        final c = SuiteColors.of(sheet);
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.gutter,
+              AppSpacing.lg,
+              AppSpacing.gutter,
+              AppSpacing.md,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Link',
+                  style: AithraType.h2.copyWith(color: c.textPrimary),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                SelectableText(
+                  url,
+                  style: AithraType.bodySmall.copyWith(color: c.textSecondary),
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  'Opening it leaves Aithra and goes online.',
+                  style: AithraType.caption.copyWith(color: c.textTertiary),
+                ),
+                const SizedBox(height: AppSpacing.lg),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton.icon(
+                      icon: const Icon(Icons.content_copy_rounded, size: 18),
+                      label: const Text('Copy'),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: url));
+                        Navigator.pop(sheet);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Link copied')),
+                        );
+                      },
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    FilledButton.icon(
+                      icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                      label: const Text('Open'),
+                      onPressed: () async {
+                        final messenger = ScaffoldMessenger.of(context);
+                        final native = context.services.native;
+                        Navigator.pop(sheet);
+                        if (!await native.openUrl(url)) {
+                          messenger.showSnackBar(
+                            const SnackBar(
+                              content: Text('No app on this phone opens it'),
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+/// A Markdown table: scrolls sideways when wider than the reply, with a
+/// copy button that puts it on the clipboard as tab-separated values.
+class TableBlock extends StatelessWidget {
+  const TableBlock({
+    required this.table,
+    required this.base,
+    required this.colors,
+    super.key,
+  });
+
+  final MdTable table;
+  final TextStyle base;
+  final SuiteColors colors;
+
+  static const _cellPad = EdgeInsets.symmetric(
+    horizontal: AppSpacing.smd,
+    vertical: AppSpacing.sm,
+  );
+  static const _maxColumn = 260.0;
+  static const _minColumn = 44.0;
+
+  /// Column widths from each column's widest cell as plain text, so the
+  /// table never asks its cells for intrinsic sizes (which equations and
+  /// chips cannot answer cheaply); long cells wrap at [_maxColumn].
+  List<double> _widths(TextScaler scaler, TextStyle style) {
+    final widths = List.filled(table.header.length, _minColumn);
+    final painter = TextPainter(
+      textDirection: TextDirection.ltr,
+      textScaler: scaler,
+    );
+    for (final (r, row) in [table.header, ...table.rows].indexed) {
+      for (final (i, cell) in row.indexed) {
+        painter
+          ..text = TextSpan(
+            text: plainPreview(cell),
+            style: r == 0 ? style.copyWith(fontWeight: FontWeight.w600) : style,
+          )
+          ..layout();
+        final w = painter.width + _cellPad.horizontal + 2;
+        if (w > widths[i]) widths[i] = w.clamp(_minColumn, _maxColumn);
+      }
+    }
+    painter.dispose();
+    return widths;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = colors;
+    final style = base.copyWith(fontSize: (base.fontSize ?? 15) - 1);
+    final widths = _widths(MediaQuery.textScalerOf(context), style);
+    TextAlign align(int i) => switch (table.align[i]) {
+      MdAlign.start => TextAlign.start,
+      MdAlign.center => TextAlign.center,
+      MdAlign.end => TextAlign.end,
+    };
+    Widget cell(String text, int i, {required bool head}) => Padding(
+      padding: _cellPad,
+      child: _InlineText(
+        text,
+        base: head ? style.copyWith(fontWeight: FontWeight.w600) : style,
+        colors: c,
+        textAlign: align(i),
+      ),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        RepaintBoundary(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border.all(color: c.hairline),
+                borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                child: Table(
+                  columnWidths: {
+                    for (final (i, w) in widths.indexed) i: FixedColumnWidth(w),
+                  },
+                  border: TableBorder(
+                    horizontalInside: BorderSide(color: c.hairline),
+                    verticalInside: BorderSide(color: c.hairline),
+                  ),
+                  children: [
+                    TableRow(
+                      decoration: BoxDecoration(color: c.surfaceAlt),
+                      children: [
+                        for (final (i, h) in table.header.indexed)
+                          cell(h, i, head: true),
+                      ],
+                    ),
+                    for (final row in table.rows)
+                      TableRow(
+                        children: [
+                          for (final (i, v) in row.indexed)
+                            cell(v, i, head: false),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              foregroundColor: c.textTertiary,
+              textStyle: AithraType.caption,
+            ),
+            icon: const Icon(Icons.content_copy_rounded, size: 14),
+            label: const Text('Copy table'),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: tableTsv(table)));
+              HapticFeedback.selectionClick();
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('Table copied')));
+            },
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 /// One run of inline Markdown. Inline code is drawn as a rounded chip
@@ -151,12 +477,14 @@ class _InlineText extends StatefulWidget {
     required this.base,
     required this.colors,
     this.caret,
+    this.textAlign = TextAlign.start,
   });
 
   final String text;
   final TextStyle base;
   final SuiteColors colors;
   final Animation<double>? caret;
+  final TextAlign textAlign;
 
   @override
   State<_InlineText> createState() => _InlineTextState();
@@ -164,15 +492,37 @@ class _InlineText extends StatefulWidget {
 
 class _InlineTextState extends State<_InlineText> {
   /// Hair spaces pad each chip so its rounded edge clears the glyphs.
-  static const _pad = ' ';
+  static const _pad = ' ';
+
+  /// Inline parses of final text (finished replies, and every block of a
+  /// streaming reply but the one still growing).
+  static final _inlines = _Lru<List<MdSpan>>(600);
 
   final _math = InlineMath();
+
+  /// Tap handlers for this paragraph's links, by address; kept across
+  /// rebuilds and released with the paragraph.
+  final Map<String, TapGestureRecognizer> _links = {};
+
+  @override
+  void dispose() {
+    for (final r in _links.values) {
+      r.dispose();
+    }
+    super.dispose();
+  }
+
+  TapGestureRecognizer _link(String url) =>
+      _links[url] ??= TapGestureRecognizer()
+        ..onTap = () => showLinkSheet(context, url);
 
   @override
   Widget build(BuildContext context) {
     final c = widget.colors;
     final base = widget.base;
-    final runs = parseInline(widget.text);
+    final runs = widget.caret == null
+        ? _inlines.get(widget.text, () => parseInline(widget.text))
+        : parseInline(widget.text);
     final math = _math.spansFor([
       for (final s in runs)
         if (s.style == InlineStyle.math || s.style == InlineStyle.displayMath)
@@ -186,6 +536,12 @@ class _InlineTextState extends State<_InlineText> {
     final chips = <TextRange>[];
     var offset = 0;
     final children = <InlineSpan>[];
+    final linkStyle = TextStyle(
+      color: c.accent,
+      decoration: TextDecoration.underline,
+      decorationColor: c.accent.withValues(alpha: 0.5),
+    );
+    const strike = TextStyle(decoration: TextDecoration.lineThrough);
     for (final s in runs) {
       if (s.style == InlineStyle.math || s.style == InlineStyle.displayMath) {
         final spans = math[equation++];
@@ -195,14 +551,17 @@ class _InlineTextState extends State<_InlineText> {
         offset += spans.length;
         continue;
       }
+      final url = s.url;
+      final recognizer = url == null ? null : _link(url);
       if (s.style == InlineStyle.code) {
         final t = '$_pad${s.text}$_pad';
         chips.add(TextRange(start: offset, end: offset + t.length));
         children.add(
           TextSpan(
             text: t,
+            recognizer: recognizer,
             style: AithraType.code.copyWith(
-              color: c.textPrimary,
+              color: url == null ? c.textPrimary : c.accent,
               fontSize: (base.fontSize ?? 15) - 2,
             ),
           ),
@@ -210,27 +569,22 @@ class _InlineTextState extends State<_InlineText> {
         offset += t.length;
         continue;
       }
-      children.add(
-        TextSpan(
-          text: s.text,
-          style: switch (s.style) {
-            InlineStyle.plain ||
-            InlineStyle.code ||
-            InlineStyle.math ||
-            InlineStyle.displayMath => null,
-            InlineStyle.bold => const TextStyle(fontWeight: FontWeight.w600),
-            InlineStyle.italic => const TextStyle(fontStyle: FontStyle.italic),
-            InlineStyle.boldItalic => const TextStyle(
-              fontWeight: FontWeight.w600,
-              fontStyle: FontStyle.italic,
-            ),
-            InlineStyle.link => TextStyle(
-              color: c.accent,
-              decoration: TextDecoration.underline,
-              decorationColor: c.accent.withValues(alpha: 0.5),
-            ),
-          },
+      var style = switch (s.style) {
+        InlineStyle.plain ||
+        InlineStyle.code ||
+        InlineStyle.math ||
+        InlineStyle.displayMath => null,
+        InlineStyle.bold => const TextStyle(fontWeight: FontWeight.w600),
+        InlineStyle.italic => const TextStyle(fontStyle: FontStyle.italic),
+        InlineStyle.boldItalic => const TextStyle(
+          fontWeight: FontWeight.w600,
+          fontStyle: FontStyle.italic,
         ),
+        InlineStyle.link => linkStyle,
+      };
+      if (s.strike) style = style?.merge(strike) ?? strike;
+      children.add(
+        TextSpan(text: s.text, style: style, recognizer: recognizer),
       );
       offset += s.text.length;
     }
@@ -252,6 +606,9 @@ class _InlineTextState extends State<_InlineText> {
       chipColor: c.surfaceAlt,
       chipBorder: c.hairline,
       textScaler: MediaQuery.textScalerOf(context),
+      textAlign: widget.textAlign,
+      selectionRegistrar: SelectionContainer.maybeOf(context),
+      selectionColor: DefaultSelectionStyle.of(context).selectionColor,
     );
   }
 }
@@ -263,6 +620,9 @@ class _ChipText extends RichText {
     required this.chipColor,
     required this.chipBorder,
     required super.textScaler,
+    required super.textAlign,
+    required super.selectionRegistrar,
+    required super.selectionColor,
   });
 
   final List<TextRange> chips;
@@ -274,7 +634,10 @@ class _ChipText extends RichText {
     text,
     textDirection: Directionality.of(context),
     textScaler: textScaler,
+    textAlign: textAlign,
     locale: Localizations.maybeLocaleOf(context),
+    registrar: selectionRegistrar,
+    selectionColor: selectionColor,
     chips: chips,
     chipColor: chipColor,
     chipBorder: chipBorder,
@@ -295,7 +658,10 @@ class _ChipParagraph extends RenderParagraph {
     super.text, {
     required super.textDirection,
     required super.textScaler,
+    required super.textAlign,
     required super.locale,
+    required super.registrar,
+    required super.selectionColor,
     required List<TextRange> chips,
     required Color chipColor,
     required Color chipBorder,
@@ -456,7 +822,7 @@ class _CodeBlockState extends State<CodeBlock> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Container(
-            height: 36,
+            constraints: const BoxConstraints(minHeight: 36),
             padding: const EdgeInsets.only(left: AppSpacing.smd),
             decoration: BoxDecoration(
               border: Border(bottom: BorderSide(color: c.hairline)),

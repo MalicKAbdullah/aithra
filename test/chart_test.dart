@@ -4,7 +4,6 @@ import 'package:aithra/src/chat/chart_spec.dart';
 import 'package:aithra/src/chat/expr.dart';
 import 'package:aithra/src/ui/aithra_type.dart';
 import 'package:aithra/src/ui/widgets/chart_view.dart';
-import 'package:core_theme/core_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 

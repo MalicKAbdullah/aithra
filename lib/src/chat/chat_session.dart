@@ -701,8 +701,7 @@ class ChatSession extends ChangeNotifier {
     final last = _messages.first;
     if (last.role != Role.model) return;
     final versions =
-        _versions.remove(last.seq) ??
-        [ReplyVersion(last.content, last.stats)];
+        _versions.remove(last.seq) ?? [ReplyVersion(last.content, last.stats)];
     _shownVersion.remove(last.seq);
     _messages.removeAt(0);
     notifyListeners();
@@ -711,7 +710,10 @@ class ChatSession extends ChangeNotifier {
     await _reply(recallQuery: lastUser.content);
     final fresh = _messages.firstOrNull;
     if (fresh != null && fresh.role == Role.model && fresh.seq == last.seq) {
-      _versions[fresh.seq] = [...versions, ReplyVersion(fresh.content, fresh.stats)];
+      _versions[fresh.seq] = [
+        ...versions,
+        ReplyVersion(fresh.content, fresh.stats),
+      ];
       _shownVersion[fresh.seq] = versions.length;
       notifyListeners();
     } else if (!_disposed) {
