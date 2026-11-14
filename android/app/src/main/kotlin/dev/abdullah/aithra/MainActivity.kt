@@ -373,6 +373,30 @@ class MainActivity : FlutterFragmentActivity() {
                 startActivity(Intent.createChooser(send, null))
                 result.success(null)
             }
+            "clipboard.copy" -> {
+                RichOutput.copy(this, call.argument<String>("text")!!, call.argument<String>("html"))
+                result.success(null)
+            }
+            "share.image" -> {
+                val png = call.argument<ByteArray>("png")!!
+                val name = call.argument<String>("name")!!
+                io.execute {
+                    val staged = runCatching { RichOutput.stageImage(this, png, name) }
+                    runOnUiThread {
+                        staged.fold(
+                            {
+                                RichOutput.shareImage(this, it)
+                                result.success(null)
+                            },
+                            { result.error("share", it.message ?: it.javaClass.simpleName, null) },
+                        )
+                    }
+                }
+            }
+            "media.saveImage" -> onIo(result) {
+                RichOutput.saveImage(this, call.argument<ByteArray>("png")!!, call.argument<String>("name")!!)
+            }
+            "url.open" -> result.success(RichOutput.openUrl(this, call.argument<String>("url")!!))
 
             "permission.microphone" -> {
                 if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {

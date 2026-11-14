@@ -353,6 +353,21 @@ class NativeBridge {
   Future<void> shareText(String text) =>
       _channel.invokeMethod('share.text', {'text': text});
 
+  /// Puts [text] on the clipboard, with [html] for apps that paste
+  /// formatting.
+  Future<void> copy(String text, {String? html}) =>
+      _channel.invokeMethod('clipboard.copy', {'text': text, 'html': html});
+
+  Future<void> shareImage(Uint8List png, String name) =>
+      _channel.invokeMethod('share.image', {'png': png, 'name': name});
+
+  /// Saves [png] to the phone's Pictures/Aithra folder.
+  Future<void> saveImage(Uint8List png, String name) =>
+      _channel.invokeMethod('media.saveImage', {'png': png, 'name': name});
+
+  /// Opens [url] in the app that handles it; false when none does.
+  Future<bool> openUrl(String url) => _call<bool>('url.open', {'url': url});
+
   // -- Speech ---------------------------------------------------------------
 
   /// `granted`, `denied`, or `blocked` when only Settings can grant it.
