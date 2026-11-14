@@ -34,6 +34,17 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+        </activity>
+        <!-- Its own task: a share must not start a second copy of the app
+             inside the sharing app's task (see ShareActivity). -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:label="Aithra"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity="dev.abdullah.aithra.share"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.intent.action.SEND"/>
                 <action android:name="android.intent.action.SEND_MULTIPLE"/>

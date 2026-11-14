@@ -46,17 +46,27 @@ object Documents {
      */
     const val MAX_VISION_PAGES = 30
 
-    fun extract(context: Context, uri: Uri, onProgress: (done: Int, total: Int) -> Unit): ExtractedDocument {
-        val name = Media.displayName(context, uri)
-        val type = context.contentResolver.getType(uri)
+    fun extract(context: Context, uri: Uri, onProgress: (done: Int, total: Int) -> Unit): ExtractedDocument =
+        extract(context, Media.displayName(context, uri), context.contentResolver.getType(uri), onProgress) {
+            context.contentResolver.openInputStream(uri)!!
+        }
+
+    /** Reads the file [open] gives, named [name], of MIME [type] when known. */
+    fun extract(
+        context: Context,
+        name: String,
+        type: String?,
+        onProgress: (done: Int, total: Int) -> Unit,
+        open: () -> InputStream,
+    ): ExtractedDocument {
         val ext = name.substringAfterLast('.', "").lowercase()
         return when {
-            type == PDF || ext == "pdf" -> pdf(context, uri, name, onProgress)
-            type == DOCX || ext == "docx" -> context.contentResolver.openInputStream(uri)!!.use {
+            type == PDF || ext == "pdf" -> pdf(context, name, open, onProgress)
+            type == DOCX || ext == "docx" -> open().use {
                 ExtractedDocument(name, DOCX, listOf(PageContent(0, capped(name, DocxText.extract(it, Xml.newPullParser())), null)), false)
             }
             else -> {
-                val bytes = context.contentResolver.openInputStream(uri)!!.use { readAtMost(it, MAX_TEXT_BYTES + 1) }
+                val bytes = open().use { readAtMost(it, MAX_TEXT_BYTES + 1) }
                 require(bytes.size <= MAX_TEXT_BYTES) { "$name is larger than 2 MB. Aithra reads text files up to 2 MB." }
                 val text = requireNotNull(TextDecoding.decode(bytes)) {
                     "$name isn't a text, PDF or Word (.docx) file."
@@ -89,10 +99,10 @@ object Documents {
      * not give (a pipe from a cloud provider), so the file is copied to the
      * cache first and deleted once read.
      */
-    private fun pdf(context: Context, uri: Uri, name: String, onProgress: (Int, Int) -> Unit): ExtractedDocument {
+    private fun pdf(context: Context, name: String, open: () -> InputStream, onProgress: (Int, Int) -> Unit): ExtractedDocument {
         val copy = File(context.cacheDir, "import/${System.nanoTime()}.pdf").apply { parentFile!!.mkdirs() }
         try {
-            context.contentResolver.openInputStream(uri)!!.use { input -> copy.outputStream().use { input.copyTo(it) } }
+            open().use { input -> copy.outputStream().use { input.copyTo(it) } }
             ParcelFileDescriptor.open(copy, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
                 val pdf = PdfPages.open(fd)
                 try {

@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../chat/chat_models.dart';
 import '../chat/chat_sessions.dart';
@@ -49,7 +49,9 @@ class Inbox {
     _navigator.currentState?.popUntil((r) => r.isFirst);
     switch (m['kind']) {
       case 'chat':
-        final id = m['id']! as String;
+        // Without an id the Ask sheet only opened the app.
+        final id = m['id'] as String?;
+        if (id == null) return;
         await _store.upsert(id);
         final row = await _native.dbConversation(id);
         if (row != null) _sessions.open(ConversationInfo.fromMap(row));
@@ -60,14 +62,27 @@ class Inbox {
 
   Future<void> _share(Map<String, Object?> m) async {
     final failures = [for (final f in m['failures']! as List) f as String];
+    final docs = <DocInfo>[];
+    for (final f in m['files']! as List) {
+      final file = Map<String, Object?>.from(f! as Map);
+      try {
+        docs.add(
+          DocInfo.fromMap(
+            await _native.importSharedFile(
+              path: file['path']! as String,
+              name: file['name']! as String,
+              mime: file['mime'] as String?,
+            ),
+          ),
+        );
+      } on PlatformException catch (e) {
+        failures.add(e.message ?? e.code);
+      }
+    }
     final text = [
       m['subject'] as String?,
       m['text'] as String?,
     ].nonNulls.where((t) => t.trim().isNotEmpty).toSet().join('\n\n');
-    final docs = [
-      for (final d in m['documents']! as List)
-        DocInfo.fromMap(Map<String, Object?>.from(d! as Map)),
-    ];
     final long = text.length > composerTextLimit;
     if (long) {
       final name = (m['subject'] as String?)?.trim();

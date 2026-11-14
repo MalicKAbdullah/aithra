@@ -294,6 +294,14 @@ class NativeBridge {
   Future<Map<String, Object?>> importDocumentUri(String uri) =>
       _map('doc.importUri', {'uri': uri});
 
+  /// Reads a file a share copied in ([path], deleted once read) into an
+  /// unattached document.
+  Future<Map<String, Object?>> importSharedFile({
+    required String path,
+    required String name,
+    required String? mime,
+  }) => _map('doc.importShared', {'path': path, 'name': name, 'mime': mime});
+
   /// Stores [text] as an unattached document named [name].
   Future<Map<String, Object?>> importTextDocument(String name, String text) =>
       _map('doc.importText', {'name': name, 'text': text});

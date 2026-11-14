@@ -359,6 +359,21 @@ class NativeChannels(
                 pickDocument.launch(arrayOf("*/*"))
             }
             "doc.importUri" -> onIo(result) { importDocument(Uri.parse(call.argument<String>("uri")!!)) }
+            // A file a share copied in (Inbox.read); the copy goes once read.
+            "doc.importShared" -> onIo(result) {
+                val file = File(call.argument<String>("path")!!)
+                try {
+                    docs.put(
+                        Documents.extract(activity, call.argument<String>("name")!!, call.argument<String>("mime"), { _, _ -> }) {
+                            file.inputStream()
+                        },
+                        System.currentTimeMillis(),
+                    )
+                } finally {
+                    file.delete()
+                }
+            }
+            "inbox.take" -> result.success(Inbox.take())
             "doc.importText" -> onIo(result) {
                 val text = call.argument<String>("text")!!
                 docs.put(

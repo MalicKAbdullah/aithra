@@ -70,6 +70,9 @@ class AithraApplication : Application() {
         embedder = Embedder(embedExec)
         io.execute {
             sweepPartialImports()
+            // Shared files wait in memory for the app (Inbox); a new process
+            // has none waiting, so any copy left is from a process that died.
+            Inbox.sharedDir(this).listFiles()!!.forEach { it.delete() }
             EngineCache.migrate(this)
         }
     }

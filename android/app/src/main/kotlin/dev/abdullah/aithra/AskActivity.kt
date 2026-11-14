@@ -59,10 +59,7 @@ class AskActivity : FlutterFragmentActivity() {
                 finish()
             }
             "ask.openChat" -> {
-                val open = Intent(this, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                call.argument<String>("id")?.let { open.putExtra(MainActivity.EXTRA_OPEN_CHAT, it) }
-                startActivity(open)
+                Inbox.deliver(this, mapOf("kind" to "chat", "id" to call.argument<String>("id")))
                 result.success(null)
                 finish()
             }
