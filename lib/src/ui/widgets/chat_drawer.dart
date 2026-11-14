@@ -84,7 +84,10 @@ class _ChatDrawerState extends State<ChatDrawer> {
 
   void _open(ConversationInfo info) {
     HapticFeedback.selectionClick();
+    final match = _s.chats.searching ? _s.chats.matchSeqs[info.id] : null;
     _s.sessions.open(info);
+    // A chat found by a message opens at that message.
+    if (match != null) _s.sessions.current.reveal(match);
     _close();
   }
 

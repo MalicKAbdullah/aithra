@@ -8,6 +8,7 @@ import 'package:aithra/src/chat/chat_models.dart';
 import 'package:aithra/src/chat/chat_session.dart';
 import 'package:aithra/src/chat/chat_sessions.dart';
 import 'package:aithra/src/chat/chat_store.dart';
+import 'package:aithra/src/chat/context_builder.dart';
 import 'package:aithra/src/chat/reply_queue.dart';
 import 'package:aithra/src/data/settings_store.dart';
 import 'package:aithra/src/data/vault.dart';
@@ -56,11 +57,50 @@ class FakeNative extends NativeBridge {
       turns.first.role == 'system' &&
       turns.first.text.startsWith('You are Aithra');
 
-  /// Streams [text] as the oldest running reply and ends it.
-  void finish(String text, {bool cancelled = false}) {
+  /// Streams [text] as the oldest running reply and ends it, after
+  /// [decodeTokens] tokens; [stopped] as by the notification's Stop.
+  void finish(
+    String text, {
+    bool cancelled = false,
+    bool stopped = false,
+    int? decodeTokens,
+  }) {
     final (id, _, done) = replies.removeAt(0);
     _events.add({'type': 'token', 'requestId': id, 'text': text});
-    done.complete({'cancelled': cancelled, 'stopped': false});
+    done.complete({
+      'cancelled': cancelled || stopped,
+      'stopped': stopped,
+      'decodeTokens': decodeTokens,
+    });
+  }
+
+  /// Whether each chat reply asked the engine to keep its state.
+  final List<bool> keptContext = [];
+
+  /// Truncations as (conversation, from seq, archive).
+  final List<(String, int, bool)> truncations = [];
+
+  @override
+  Future<void> dbTruncate(
+    String convId,
+    int fromSeq, {
+    List<String> keepImages = const [],
+    bool archive = false,
+  }) async {
+    truncations.add((convId, fromSeq, archive));
+    messages[convId]!.removeWhere((m) => (m['seq']! as int) >= fromSeq);
+  }
+
+  @override
+  Future<void> dbUpdateMessage(int id, String content, String? stats) async {
+    for (final list in messages.values) {
+      for (final m in list) {
+        if (m['id'] == id) {
+          m['content'] = content;
+          m['stats'] = stats;
+        }
+      }
+    }
   }
 
   @override
@@ -97,6 +137,7 @@ class FakeNative extends NativeBridge {
       return Future.value({'cancelled': false, 'stopped': false});
     }
     final done = Completer<Map<String, Object?>>();
+    keptContext.add(keepContext);
     replies.add((requestId, turns, done));
     return done.future;
   }
@@ -262,7 +303,7 @@ class FakeNative extends NativeBridge {
         if ((m['content']! as String).toLowerCase().contains(
           query.toLowerCase(),
         ))
-          {..._row(id), 'snippet': m['content']},
+          {..._row(id), 'snippet': m['content'], 'seq': m['seq']},
   ];
 }
 
@@ -542,6 +583,131 @@ void main() {
     });
   });
 
+  group('engine context', () {
+    test('chat replies keep the engine state and send a stable system '
+        'turn', () async {
+      final h = await Harness.start();
+      final a = h.sessions.current;
+      unawaited(a.send('First', const []));
+      await h.settle();
+      final firstSystem = h.native.replies.single.$2.first.text;
+      h.native.finish('One.');
+      await h.settle();
+      unawaited(a.send('Second', const []));
+      await h.settle();
+      final turns = h.native.replies.single.$2;
+      expect(turns.first.text, firstSystem);
+      expect(
+        [for (final t in turns) t.text],
+        [firstSystem, 'First', 'One.', 'Second'],
+      );
+      expect(h.native.keptContext, [true, true]);
+    });
+  });
+
+  group('continue', () {
+    test('a reply cut off at the token limit offers Continue, which '
+        'writes the rest onto it', () async {
+      final h = await Harness.start();
+      final a = h.sessions.current;
+      unawaited(a.send('Write a long story', const []));
+      await h.settle();
+      h.native.finish('Once upon a', decodeTokens: ChatSession.replyTokens);
+      await h.settle();
+      final cut = a.messages.first;
+      expect(a.canContinue(cut), isTrue);
+
+      unawaited(a.continueReply());
+      await h.settle();
+      final turns = h.native.replies.single.$2;
+      expect(turns[turns.length - 2].text, 'Once upon a');
+      expect(turns.last.role, 'user');
+      expect(turns.last.text, continuePrompt);
+      h.native.finish(' time, the end.', decodeTokens: 5);
+      await h.settle();
+      final convId = a.conversation!.id;
+      expect(h.contents(convId), [
+        'Write a long story',
+        'Once upon a time, the end.',
+      ]);
+      expect(a.messages.first.content, 'Once upon a time, the end.');
+      expect(a.canContinue(a.messages.first), isFalse);
+    });
+
+    test('a reply that ended on its own offers no Continue', () async {
+      final h = await Harness.start();
+      final a = h.sessions.current;
+      unawaited(a.send('Hi', const []));
+      await h.settle();
+      h.native.finish('Hello!', decodeTokens: 3);
+      await h.settle();
+      expect(a.canContinue(a.messages.first), isFalse);
+    });
+  });
+
+  group('versions and stop', () {
+    test('regenerate keeps the old reply as a version', () async {
+      final h = await Harness.start();
+      final a = h.sessions.current;
+      unawaited(a.send('Name a colour', const []));
+      await h.settle();
+      h.native.finish('Blue.');
+      await h.settle();
+      unawaited(a.regenerate());
+      await h.settle();
+      expect(h.native.truncations.single.$3, isTrue);
+      h.native.finish('Green.');
+      await h.settle();
+      expect(a.messages.first.content, 'Green.');
+    });
+
+    test('Stop in the notification keeps the partial reply without a '
+        'cut-short notice', () async {
+      final h = await Harness.start();
+      final a = h.sessions.current;
+      unawaited(a.send('Count to ten', const []));
+      await h.settle();
+      h.native.finish('One, two', stopped: true);
+      await h.settle();
+      expect(a.messages.first.content, 'One, two');
+      expect(a.notices, isEmpty);
+      expect(a.error, isNull);
+    });
+  });
+
+  group('private chat', () {
+    test(
+      'a private chat is stored private and teaches memory nothing',
+      () async {
+        final h = await Harness.start();
+        h.native.backgroundReply = (turns) =>
+            turns.first.text.contains('long-term memory')
+            ? '{"add": ["Lives in Bergen"], "update": [], "remove": []}'
+            : '{"title": "Moving"}';
+        await h.memories.add('Likes tea');
+        final a = h.sessions.current;
+        await a.setPrivate(true);
+        unawaited(a.send('I just moved to Bergen', const []));
+        await h.settle();
+        expect((await h.info(a.conversation!.id)).private, isTrue);
+        expect(
+          h.native.replies.single.$2.first.text,
+          isNot(contains('Likes tea')),
+        );
+        h.native.finish('Welcome to Bergen!');
+        await h.settle();
+        expect(h.memories.items.map((m) => m.text), ['Likes tea']);
+        expect(
+          h.native.background.where(
+            (t) => t.first.text.contains('long-term memory'),
+          ),
+          isEmpty,
+        );
+        expect(a.memoryUpdates, isEmpty);
+      },
+    );
+  });
+
   group('drawer search', () {
     test('finds chats by title and by message text, with the matching '
         'message for text hits', () async {
@@ -562,7 +728,9 @@ void main() {
       await h.settle();
       expect(h.store.items.map((c) => c.id), ['t', 'm']);
       expect(h.store.snippets, {'m': 'Buy fish at the harbour market'});
+      expect(h.store.matchSeqs, {'m': 0});
       h.store.search('');
+      expect(h.store.matchSeqs, isEmpty);
       expect(h.store.searching, isFalse);
       expect(h.store.items.map((c) => c.id), ['m', 't']);
     });

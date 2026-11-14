@@ -120,7 +120,7 @@ object ChatExport {
 
         fun block(kind: String, text: String) = when (kind) {
             "heading" -> paragraph(text, headingPaint, gapAfter = 6f)
-            "item" -> paragraph("•  $text", bodyPaint, gapAfter = 3f, indent = 10)
+            "item" -> paragraph(text, bodyPaint, gapAfter = 3f, indent = 10)
             "quote" -> paragraph(text, quotePaint, gapAfter = 6f, indent = 14)
             "code" -> paragraph(text, codePaint, gapAfter = 6f, indent = 8)
             "rule" -> {

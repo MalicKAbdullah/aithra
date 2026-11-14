@@ -12,7 +12,9 @@ import '../memory/memory_store.dart';
 import '../memory/recall_index.dart';
 import '../models/catalog.dart';
 import '../platform/native.dart';
+import 'chat_export.dart';
 import 'chat_models.dart';
+
 import 'chat_titler.dart';
 import 'chat_store.dart';
 import 'context_builder.dart';
@@ -196,6 +198,24 @@ class ChatSession extends ChangeNotifier {
     final conv = _conversation;
     if (conv == null || query.trim().isEmpty) return const [];
     return _native.dbFindInChat(conv.id, query);
+  }
+
+  /// Whether the find bar shows over this chat.
+  final ValueNotifier<bool> finding = ValueNotifier(false);
+
+  /// Writes the whole chat as a PDF or as Markdown and offers it through
+  /// the share sheet.
+  Future<void> export({required bool pdf}) async {
+    final conv = _conversation!;
+    final title = (await _native.dbConversation(conv.id))!['title']! as String;
+    final all = [
+      for (final r in await _native.dbMessageRange(conv.id, 0, 1 << 30))
+        ChatMessage.fromMap(r),
+    ];
+    final path = pdf
+        ? await _native.exportPdf(title, title, chatPdfEntries(all))
+        : await _native.exportMarkdown(title, chatMarkdown(title, all));
+    await _native.shareFile(path, pdf ? 'application/pdf' : 'text/markdown');
   }
 
   /// Newest first (the list view is reversed).
@@ -865,6 +885,7 @@ class ChatSession extends ChangeNotifier {
     _stopRequested = true;
     _queue.withdraw(this);
     _generation?.cancel();
+    finding.dispose();
     super.dispose();
   }
 }
