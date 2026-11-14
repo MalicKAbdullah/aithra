@@ -1,6 +1,9 @@
 import 'dart:async';
 
 import 'package:aithra/src/chat/chat_models.dart';
+import 'package:aithra/src/data/settings_store.dart';
+import 'package:aithra/src/voice/read_aloud.dart';
+import 'package:aithra/src/voice/tts_service.dart';
 import 'package:aithra/src/ui/aithra_type.dart';
 import 'package:aithra/src/ui/widgets/message_actions.dart';
 import 'package:aithra/src/ui/widgets/markdown_view.dart';
@@ -9,7 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'chat_sessions_test.dart' show Harness;
+import 'chat_sessions_test.dart' show Harness, MemVault;
 
 final _paragraphs = find.byWidgetPredicate((w) => w is RichText);
 
@@ -160,7 +163,18 @@ void main() {
       versionCount: 3,
     );
     await tester.pumpWidget(
-      app(ReplyActions(message: reply, session: session, canRegenerate: true)),
+      app(
+        ReplyActions(
+          message: reply,
+          session: session,
+          canRegenerate: true,
+          reader: ReadAloud(
+            tts: TtsService(h.native),
+            native: h.native,
+            settings: SettingsStore(MemVault()),
+          ),
+        ),
+      ),
     );
     expect(find.text('2/3'), findsOneWidget);
     expect(find.byTooltip('Previous answer'), findsOneWidget);

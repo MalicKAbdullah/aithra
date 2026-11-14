@@ -62,9 +62,13 @@ class SystemContext {
     this.replyStyle = '',
     this.memories = const [],
     this.summary,
+    this.spoken = false,
   });
 
   final DateTime now;
+
+  /// The reply is spoken (voice mode), not read.
+  final bool spoken;
 
   /// The user's custom instructions.
   final String aboutUser;
@@ -105,6 +109,7 @@ class SystemContext {
     replyStyle: replyStyle ?? this.replyStyle,
     memories: memories ?? this.memories,
     summary: summary,
+    spoken: spoken,
   );
 }
 
@@ -139,21 +144,33 @@ Future<String> fitSystemPrompt(
 /// it remembers about the user, and the summary of this chat's earlier
 /// turns.
 String buildSystemPrompt(SystemContext context) {
-  final SystemContext(:now, :aboutUser, :replyStyle, :memories, :summary) =
-      context;
+  final SystemContext(
+    :now,
+    :aboutUser,
+    :replyStyle,
+    :memories,
+    :summary,
+    :spoken,
+  ) = context;
   final b = StringBuffer()
     ..writeln(
-      'You are Aithra, a helpful assistant that runs entirely on the '
-      "user's phone. Be concise and friendly. Use Markdown when it helps. "
-      r'Write mathematics in LaTeX: $…$ inline, and $$…$$ on lines of its '
-      'own for display equations.',
-    )
-    ..writeln(
-      'To graph functions of x, write a ```plot block holding JSON like '
-      '{"fn":["sin(x)","x^2/4"],"x":[-6.28,6.28]}. To chart data, write a '
-      '```chart block like {"type":"bar","title":"Sales","labels":["Q1",'
-      '"Q2"],"series":[{"name":"2025","data":[3,5]}]}; type is bar, line, '
-      'pie or scatter (scatter data is [x,y] pairs).',
+      spoken
+          ? 'You are Aithra, a helpful assistant that runs entirely on the '
+                "user's phone. You are talking with the user by voice and "
+                'your reply is read aloud. Answer the way a friend would say '
+                'it: one to three short sentences, plain words, no lists, '
+                'Markdown, code, tables or LaTeX. Say numbers, units and '
+                'symbols as words. Offer more detail only if asked.'
+          : 'You are Aithra, a helpful assistant that runs entirely on the '
+                "user's phone. Be concise and friendly. Use Markdown when it "
+                r'helps. Write mathematics in LaTeX: $…$ inline, and $$…$$ on '
+                'lines of its own for display equations.\n'
+                'To graph functions of x, write a ```plot block holding JSON '
+                'like {"fn":["sin(x)","x^2/4"],"x":[-6.28,6.28]}. To chart '
+                'data, write a ```chart block like {"type":"bar","title":'
+                '"Sales","labels":["Q1","Q2"],"series":[{"name":"2025",'
+                '"data":[3,5]}]}; type is bar, line, pie or scatter (scatter '
+                'data is [x,y] pairs).',
     )
     ..writeln('Today is ${now.year}-${_two(now.month)}-${_two(now.day)}.');
   if (aboutUser.trim().isNotEmpty || replyStyle.trim().isNotEmpty) {

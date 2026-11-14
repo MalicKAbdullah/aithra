@@ -30,6 +30,9 @@ import 'package:aithra/src/ui/screens/custom_instructions_screen.dart';
 import 'package:aithra/src/ui/screens/memories_screen.dart';
 import 'package:aithra/src/ui/screens/models_screen.dart';
 import 'package:aithra/src/ui/screens/performance_screen.dart';
+import 'package:aithra/src/ui/screens/prompt_shortcuts_screen.dart';
+import 'package:aithra/src/ui/screens/read_aloud_screen.dart';
+import 'package:aithra/src/ui/screens/voice_note_screen.dart';
 import 'package:aithra/src/ui/screens/settings_screen.dart';
 import 'package:aithra/src/ui/screens/voice_mode_screen.dart';
 import 'package:aithra/src/ui/widgets/aithra_mark.dart';
@@ -331,7 +334,26 @@ class FakeNative extends NativeBridge {
   @override
   Future<void> cancelListening() async {}
   @override
-  Future<void> speak(String text, String id) async {}
+  Future<void> speak(
+    String text,
+    String id, {
+    String? language,
+    String? voice,
+    double rate = 1,
+  }) async {}
+  @override
+  Future<List<Map<String, Object?>>> ttsVoices() async => [
+    for (final (name, tag, label) in const [
+      ('en-gb-x-gba-local', 'en-GB', 'English (United Kingdom)'),
+      ('en-gb-x-rjs-local', 'en-GB', 'English (United Kingdom)'),
+      ('en-us-x-iol-local', 'en-US', 'English (United States)'),
+      ('es-es-x-eea-local', 'es-ES', 'Spanish (Spain)'),
+      ('fr-fr-x-frd-local', 'fr-FR', 'French (France)'),
+    ])
+      {'name': name, 'language': tag, 'label': label, 'quality': 400},
+  ];
+  @override
+  Future<String?> detectLanguage(String text) async => 'en';
   @override
   Future<void> stopSpeaking() async {}
 }
@@ -1305,6 +1327,110 @@ void main() {
         }
         await _settle(tester);
         await _shot(tester, '08-voice-speaking-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('dictation $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        _open(h, 'code');
+        await _settle(tester, 16);
+        await tester.tap(find.byTooltip('Dictate'));
+        await _settle(tester);
+        final n = h.native;
+        void speech(String kind, [Map<String, Object?> extra = const {}]) =>
+            n.emit({
+              'type': 'speech',
+              'kind': kind,
+              't': 0,
+              'onDevice': true,
+              ...extra,
+            });
+        speech('final', {'text': 'Thanks, that worked for the first folder.'});
+        // A spoken level contour, so the waveform shows its shape.
+        for (var i = 0; i < 48; i++) {
+          speech('level', {
+            'rms':
+                -2 +
+                12 * (0.5 + 0.5 * math.sin(i / 2.3)) * (i % 7 == 0 ? 0.3 : 1),
+          });
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        speech('partial', {
+          'text': 'Could it also put the photos into a folder for each',
+        });
+        await _settle(tester, 2);
+        await _shot(tester, '13-dictation-recording-bar-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('voice note $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        await _push(tester, const VoiceNoteScreen());
+        final n = h.native;
+        void speech(String kind, [Map<String, Object?> extra = const {}]) =>
+            n.emit({
+              'type': 'speech',
+              'kind': kind,
+              't': 0,
+              'onDevice': true,
+              ...extra,
+            });
+        speech('final', {
+          'text':
+              'Okay so for the school trip on Friday I need to um email Mrs '
+              'Patel about the permission slips and book the minibus before '
+              'Wednesday',
+        });
+        for (var i = 0; i < 30; i++) {
+          speech('level', {'rms': 2 + 6 * math.sin(i / 1.7).abs()});
+          await tester.pump(const Duration(milliseconds: 50));
+        }
+        speech('partial', {
+          'text': 'and also remind Sam to bring the first aid',
+        });
+        await _settle(tester, 2);
+        await _shot(tester, '14-voice-note-recording-$t');
+        await tester.tap(find.byTooltip('Done'));
+        await tester.pump();
+        speech('final', {
+          'text': 'and also remind Sam to bring the first aid kit.',
+        });
+        speech('idle');
+        await _settle(tester);
+        await tester.tap(find.text('Action items'));
+        await _settle(tester);
+        for (final chunk in _chunks(
+          '- Email Mrs Patel about the permission slips\n'
+          '- Book the minibus before Wednesday\n'
+          '- Remind Sam to bring the first aid kit on Friday\n',
+        )) {
+          n.tokens(chunk);
+          await tester.pump(const Duration(milliseconds: 16));
+        }
+        await _settle(tester);
+        await _shot(tester, '15-voice-note-result-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('prompt shortcuts $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        await _settle(tester, 16);
+        await _shot(tester, '16-home-shortcut-chips-$t');
+        await _push(tester, const PromptShortcutsScreen());
+        await _shot(tester, '17-prompt-shortcuts-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('read aloud settings $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        await h.services.settings.update(
+          (s) => s
+            ..speakReplies = true
+            ..ttsVoice = 'en-gb-x-rjs-local'
+            ..ttsRate = 1.25,
+        );
+        await _push(tester, const ReadAloudScreen());
+        await _shot(tester, '18-read-aloud-settings-$t');
         await _teardown(tester, h);
       });
 

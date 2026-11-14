@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="shortcut_background">#FFFFF1E8</color>
+
+    <string name="shortcut_new_chat">New chat</string>
+    <string name="shortcut_voice_mode">Voice mode</string>
+    <string name="shortcut_voice_mode_long">Talk with Aithra</string>
+    <string name="shortcut_ask_photo">Ask about a photo</string>
+    <string name="shortcut_voice_note">Voice note</string>
+    <string name="shortcut_voice_note_long">Dictate a voice note</string>
+    <string name="tile_label">Talk to Aithra</string>
+</resources>

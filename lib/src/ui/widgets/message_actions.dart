@@ -9,7 +9,7 @@ import '../../chat/chat_session.dart';
 import '../../chat/markdown.dart';
 import '../../memory/memory_keeper.dart';
 import '../../services.dart';
-import '../../voice/sentence_splitter.dart';
+import '../../voice/read_aloud.dart';
 import '../aithra_type.dart';
 
 /// Copies a reply as readable plain text, with HTML alongside so apps that
@@ -72,38 +72,14 @@ class ReplyActions extends StatelessWidget {
     required this.message,
     required this.session,
     required this.canRegenerate,
+    required this.reader,
     super.key,
   });
 
   final ChatMessage message;
   final ChatSession session;
   final bool canRegenerate;
-
-  /// The reply being read aloud, by seq; one at a time across the app.
-  static final speaking = ValueNotifier<int?>(null);
-
-  Future<void> _readAloud(BuildContext context) async {
-    final tts = context.services.tts;
-    final seq = message.seq;
-    if (speaking.value == seq) {
-      speaking.value = null;
-      await tts.stop();
-      return;
-    }
-    await tts.stop();
-    speaking.value = seq;
-    final splitter = SentenceSplitter();
-    final sentences = [
-      ...splitter.add(spokenText(message.content)),
-      ...splitter.flush(),
-    ];
-    for (final s in sentences) {
-      if (speaking.value != seq) return;
-      await tts.say(s);
-    }
-    await tts.idle;
-    if (speaking.value == seq) speaking.value = null;
-  }
+  final ReadAloud reader;
 
   @override
   Widget build(BuildContext context) {
@@ -145,20 +121,24 @@ class ReplyActions extends StatelessWidget {
             label: 'Copy',
             onPressed: () => copyReply(context, message.content),
           ),
-          ValueListenableBuilder<int?>(
-            valueListenable: speaking,
-            builder: (context, seq, _) => seq == message.seq
-                ? _ActionIcon(
-                    icon: Icons.stop_circle_outlined,
-                    label: 'Stop reading',
-                    color: c.accent,
-                    onPressed: () => _readAloud(context),
-                  )
-                : _ActionIcon(
-                    icon: Icons.volume_up_outlined,
-                    label: 'Read aloud',
-                    onPressed: () => _readAloud(context),
-                  ),
+          ListenableBuilder(
+            listenable: reader,
+            builder: (context, _) {
+              // Keyed by id, which is unique across chats; seqs are not.
+              final key = ('message', message.id);
+              return reader.isReading(key)
+                  ? _ActionIcon(
+                      icon: Icons.stop_circle_outlined,
+                      label: 'Stop reading',
+                      color: c.accent,
+                      onPressed: () => reader.stop(),
+                    )
+                  : _ActionIcon(
+                      icon: Icons.volume_up_outlined,
+                      label: 'Read aloud',
+                      onPressed: () => reader.toggle(key, message.content),
+                    );
+            },
           ),
           if (canRegenerate)
             _ActionIcon(

@@ -218,13 +218,6 @@ void main() {
         '<ul><li>a</li><ul><li>b</li></ul><li>c</li></ul>',
       );
     });
-
-    test('spoken text leaves out code, tables and math', () {
-      expect(
-        spokenText(source),
-        'Plan\n\nBuy milk from the shop.\n\neggs\n\nbread\n\none\n\ntwo',
-      );
-    });
   });
 
   test('pathological input parses in linear-ish time', () {

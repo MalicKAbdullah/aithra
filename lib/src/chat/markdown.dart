@@ -955,19 +955,6 @@ String tableTsv(MdTable t) => [
   ...t.rows,
 ].map((r) => r.map((c) => _inlinePlain(c, urls: false)).join('\t')).join('\n');
 
-/// The text to read aloud: prose only, since code, tables and equations
-/// do not survive being spoken.
-String spokenText(String source) => [
-  for (final b in parseMarkdown(source))
-    switch (b) {
-      MdHeading(:final text) ||
-      MdParagraph(:final text) ||
-      MdListItem(:final text) => _inlinePlain(text, urls: false),
-      MdQuote(:final text) => spokenText(text),
-      MdCode() || MdMath() || MdTable() || MdRule() => '',
-    },
-].where((s) => s.isNotEmpty).join('\n\n');
-
 /// [source] as one line of plain text for a list preview: Markdown syntax
 /// removed, code kept as its text, whitespace collapsed.
 String plainPreview(String source) {

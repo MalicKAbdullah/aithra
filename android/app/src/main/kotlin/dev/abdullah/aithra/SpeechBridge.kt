@@ -50,6 +50,13 @@ class SpeechBridge(private val context: Context) {
     private var onDevice = false
 
     /**
+     * The recognizer is in a listening session: from startListening until
+     * its results or error. Continuous dictation spends a loop turn between
+     * sessions, and a stop there has no session to deliver a final.
+     */
+    private var inSession = false
+
+    /**
      * Language checks awaiting the recognizer's answer. A broken connection
      * is reported only to the recognition listener, which fails these.
      */
@@ -187,6 +194,7 @@ class SpeechBridge(private val context: Context) {
 
     fun start(continuous: Boolean) {
         recognizer?.cancel()
+        inSession = false
         this.continuous = continuous
         active = true
         // The service is still winding down the cancelled session within
@@ -211,18 +219,31 @@ class SpeechBridge(private val context: Context) {
             }
             return
         }
+        inSession = true
         use().startListening(intent())
     }
 
-    /** Stops listening; the recognizer still delivers the final result. */
+    /**
+     * Stops listening; the recognizer still delivers the final result. With
+     * no session running (between continuous sessions, or still resolving
+     * the language) there is nothing to deliver, so it finishes at once
+     * instead of starting one more session.
+     */
     fun stop() {
         continuous = false
-        recognizer?.stopListening()
+        if (inSession) {
+            recognizer?.stopListening()
+        } else if (active) {
+            active = false
+            emit("idle")
+            releaseWhenIdle()
+        }
     }
 
     fun cancel() {
         active = false
         continuous = false
+        inSession = false
         recognizer?.cancel()
         releaseWhenIdle()
     }
@@ -394,6 +415,7 @@ class SpeechBridge(private val context: Context) {
         override fun onEndOfSpeech() = emit("end")
 
         override fun onError(error: Int) {
+            inSession = false
             val silent = error == SpeechRecognizer.ERROR_NO_MATCH ||
                 error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
             if (silent) {
@@ -432,6 +454,7 @@ class SpeechBridge(private val context: Context) {
         }
 
         override fun onResults(results: Bundle?) {
+            inSession = false
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
             emit("final", mapOf("text" to text))
             restartOrFinish()
