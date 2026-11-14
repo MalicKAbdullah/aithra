@@ -115,16 +115,25 @@ void main() {
     expect(native.recallQueries, isEmpty);
   });
 
-  test('recalled messages come back on one line, clipped', () async {
+  test('recalled messages come back on one line, clipped, with who wrote '
+      'them', () async {
     native
       ..embedderOnPhone = true
       ..recallRows = [
-        {'content': 'Booked the\n\nferry to Oslo ${'x' * 300}', 'score': 0.7},
+        {
+          'role': 'user',
+          'content': 'Booked the\n\nferry to Oslo ${'x' * 300}',
+          'score': 0.7,
+        },
+        {'role': 'model', 'content': 'The ferry leaves at nine.', 'score': 0.6},
       ];
     await models.refresh();
     final out = await index.recall('my trip to Oslo', 'c1') as Recalled;
-    expect(out.snippets.single, startsWith('Booked the ferry to Oslo'));
-    expect(out.snippets.single.length, RecallIndex.maxChars + 1);
+    final [asked, answered] = out.messages;
+    expect(asked.fromUser, isTrue);
+    expect(asked.text, startsWith('Booked the ferry to Oslo'));
+    expect(asked.text.length, RecallIndex.maxChars + 1);
+    expect(answered.fromUser, isFalse);
   });
 
   test('the embedding model arriving indexes everything in batches', () async {
