@@ -85,7 +85,12 @@ class ModelSpec {
   final bool vision;
 
   /// KV-cache size requested at load; null keeps the size compiled into the
-  /// model (required for the Tensor NPU bundles).
+  /// model (required for the Tensor NPU bundles). Gemma 4 E2B and E4B take
+  /// 8192 of their 32k: only their few global-attention layers keep a key
+  /// and value per token (the sliding-window layers hold 512), about 6 KB a
+  /// token for E2B and 16 KB for E4B at 16 bits, and a turn prefills only
+  /// its new message once the chat's state is kept, so the larger context
+  /// costs a full prefill only when a chat is first opened after a load.
   final int? contextTokens;
   final bool recommended;
   final bool experimental;
@@ -131,7 +136,7 @@ const List<ModelSpec> catalog = [
     runtime: Runtime.litertlm,
     backends: [BackendOption.gpu, BackendOption.gpuFp32, BackendOption.cpu],
     vision: true,
-    contextTokens: 4096,
+    contextTokens: 8192,
     recommended: true,
   ),
   ModelSpec(
@@ -146,7 +151,7 @@ const List<ModelSpec> catalog = [
     runtime: Runtime.litertlm,
     backends: [BackendOption.gpu, BackendOption.gpuFp32, BackendOption.cpu],
     vision: true,
-    contextTokens: 4096,
+    contextTokens: 8192,
   ),
   ModelSpec(
     id: 'gemma3-1b-g3-npu',

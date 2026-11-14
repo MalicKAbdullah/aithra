@@ -10,6 +10,7 @@ class RunMetrics {
     this.contextTokens,
     this.peakRssMb,
     this.note,
+    this.reusedTokens,
   });
 
   factory RunMetrics.fromMap(Map<String, Object?> m) => RunMetrics(
@@ -21,8 +22,11 @@ class RunMetrics {
     contextTokens: m['contextTokens'] as int?,
     peakRssMb: (m['peakRssMb'] as num?)?.toDouble(),
     note: m['note'] as String?,
+    reusedTokens: m['reusedTokens'] as int?,
   );
 
+  /// Prompt tokens prefilled by this run; [reusedTokens] more were already
+  /// in the engine's kept state for this chat.
   final int? promptTokens;
   final double? prefillMs;
   final double? ttftMs;
@@ -33,6 +37,10 @@ class RunMetrics {
   final int? contextTokens;
   final double? peakRssMb;
   final String? note;
+
+  /// Prompt tokens the engine kept from the previous turn and did not
+  /// prefill again; 0 when it prefilled the whole prompt.
+  final int? reusedTokens;
 
   double? get prefillTps => tokensPerSecond(promptTokens, prefillMs);
   double? get decodeTps => tokensPerSecond(decodeTokens, decodeMs);
@@ -46,6 +54,7 @@ class RunMetrics {
     'contextTokens': contextTokens,
     'peakRssMb': peakRssMb,
     'note': note,
+    'reusedTokens': reusedTokens,
   };
 }
 
