@@ -125,7 +125,10 @@ void main() {
           aboutUser: 'I teach physics.',
           replyStyle: 'Be brief.',
           memories: ["User's name is Sam"],
-          recalled: ['We discussed tide tables'],
+          recalled: const [
+            RecalledMessage(fromUser: true, text: 'When is high tide?'),
+            RecalledMessage(fromUser: false, text: 'High tide is at 14:05.'),
+          ],
           summary: 'Sam is planning a trip.',
         ),
       );
@@ -134,7 +137,8 @@ void main() {
       expect(p, contains('know about them:\nI teach physics.'));
       expect(p, contains('respond:\nBe brief.'));
       expect(p, contains("- User's name is Sam"));
-      expect(p, contains('- We discussed tide tables'));
+      expect(p, contains('- The user wrote: When is high tide?'));
+      expect(p, contains('- You replied: High tide is at 14:05.'));
       expect(p, endsWith('Sam is planning a trip.'));
       final bare = buildSystemPrompt(SystemContext(now: DateTime(2026)));
       expect(bare, isNot(contains('know about the user')));
@@ -148,7 +152,7 @@ void main() {
         aboutUser: 'a' * 1000,
         replyStyle: 'b' * 1000,
         memories: [for (var i = 0; i < 8; i++) 'Memory $i'],
-        recalled: const ['Recalled'],
+        recalled: const [RecalledMessage(fromUser: true, text: 'Recalled')],
         summary: 'The summary.',
       );
       Future<int> cost(String s) async => s.length;
@@ -184,13 +188,14 @@ void main() {
       );
     });
 
-    test('memories are shed from the end of the list, newest kept', () {
+    test('memories are shed from the end of the list, so the first one '
+        'is kept longest', () {
       final c = SystemContext(
         now: DateTime(2026),
-        memories: const ['new', 'mid', 'old', 'oldest'],
+        memories: const ['first', 'second', 'third', 'fourth'],
       );
-      expect(c.shed()!.memories, ['new', 'mid']);
-      expect(c.shed()!.shed()!.memories, ['new']);
+      expect(c.shed()!.memories, ['first', 'second']);
+      expect(c.shed()!.shed()!.memories, ['first']);
       expect(c.shed()!.shed()!.shed()!.memories, isEmpty);
       expect(c.shed()!.shed()!.shed()!.shed(), isNull);
     });

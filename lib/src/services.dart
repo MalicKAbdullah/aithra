@@ -9,7 +9,7 @@ import 'chat/chat_store.dart';
 import 'chat/reply_queue.dart';
 import 'data/settings_store.dart';
 import 'engine/engine_service.dart';
-import 'memory/memory_curator.dart';
+import 'memory/memory_keeper.dart';
 import 'memory/memory_store.dart';
 import 'memory/recall_index.dart';
 import 'models/model_manager.dart';
@@ -71,7 +71,6 @@ class Services {
         native: native,
         assistant: assistant,
         store: chats,
-        memories: memories,
         keeper: keeper,
         recall: recall,
         queue: queue,

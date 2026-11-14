@@ -140,7 +140,7 @@ void main() {
         SystemContext(
           now: DateTime(2026),
           spoken: true,
-          recalled: ['x'],
+          recalled: const [RecalledMessage(fromUser: true, text: 'x')],
         ).shed()!,
       ),
       contains('read aloud'),

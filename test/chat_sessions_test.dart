@@ -12,8 +12,9 @@ import 'package:aithra/src/chat/reply_queue.dart';
 import 'package:aithra/src/data/settings_store.dart';
 import 'package:aithra/src/data/vault.dart';
 import 'package:aithra/src/engine/engine_service.dart';
-import 'package:aithra/src/memory/memory_curator.dart';
+import 'package:aithra/src/memory/memory_keeper.dart';
 import 'package:aithra/src/memory/memory_store.dart';
+import 'package:aithra/src/memory/profile.dart';
 import 'package:aithra/src/memory/recall_index.dart';
 import 'package:aithra/src/models/catalog.dart';
 import 'package:aithra/src/models/model_manager.dart';
@@ -291,8 +292,10 @@ class Harness {
       models: models,
       settings: settings,
     );
+    await memories.load();
     final keeper = MemoryKeeper(
       native: native,
+      engine: engine,
       memories: memories,
       models: models,
       settings: settings,
@@ -304,7 +307,6 @@ class Harness {
         native: native,
         assistant: assistant,
         store: store,
-        memories: memories,
         keeper: keeper,
         recall: recall,
         queue: queue,
@@ -479,57 +481,80 @@ void main() {
     });
   });
 
-  group('autonomous memory', () {
-    test('the model adds what it judges worth keeping, with a quiet hint '
-        'on the reply', () async {
+  group('profile memory', () {
+    const stated = '{"keep": "stated", "quote": "I just moved to Bergen"}';
+
+    bool isGate(List<EngineTurn> t) =>
+        t.first.text.contains('should remember in future');
+    bool isRewrite(List<EngineTurn> t) =>
+        t.first.text.contains('You keep a short profile');
+
+    test('a fact the user states is filed into its section, with a hint '
+        'that can undo it', () async {
       final h = await Harness.start();
-      h.native.backgroundReply = (turns) =>
-          turns.first.text.contains('long-term memory')
-          ? '{"add": ["Lives in Bergen"], "update": [], "remove": []}'
+      h.native.backgroundReply = (turns) => isGate(turns)
+          ? stated
+          : isRewrite(turns)
+          ? '{"section": "about", "items": ["Lives in Bergen"]}'
           : '{"title": "Moving"}';
       final a = h.sessions.current;
       unawaited(a.send('I just moved to Bergen', const []));
       await h.settle();
       h.native.finish('Welcome to Bergen!');
       await h.settle();
-      expect(h.memories.items.map((m) => m.text), ['Lives in Bergen']);
-      expect(a.memoryUpdates, contains(a.messages.first.seq));
+      expect(h.memories.section(ProfileSection.about).map((i) => i.text), [
+        'Lives in Bergen',
+      ]);
+      final update = a.memoryUpdates[a.messages.first.seq]!;
+      expect(await h.memories.undo(update), isTrue);
+      expect(h.memories.count, 0);
     });
 
-    test('a contradicted memory is updated in place, an exact repeat is '
-        'not added again', () async {
+    test('the gate reads only the user\'s message, never the reply', () async {
       final h = await Harness.start();
-      await h.memories.add('Lives in Oslo');
-      h.native.backgroundReply = (turns) =>
-          turns.first.text.contains('long-term memory')
-          ? '{"add": ["lives in oslo"], '
-                '"update": [{"id": "m1", "text": "Lives in Bergen"}]}'
-          : '{}';
-      unawaited(h.sessions.current.send('We left Oslo for Bergen', const []));
+      h.native.backgroundReply = (_) => '{"keep": "none"}';
+      unawaited(h.sessions.current.send('What watch am I wearing?', const []));
       await h.settle();
-      h.native.finish('Exciting!');
+      h.native.finish('It looks like a Casio F-91W.');
       await h.settle();
-      expect(
-        h.native.background
-            .where((t) => t.first.text.contains('long-term memory'))
-            .single
-            .last
-            .text,
-        contains('m1: Lives in Oslo'),
-      );
-      expect(h.memories.items.map((m) => m.text), ['Lives in Bergen']);
+      final gate = h.native.background.where(isGate).single;
+      expect(gate.last.text, contains('What watch am I wearing?'));
+      expect(gate.map((t) => t.text).join(), isNot(contains('Casio')));
+      expect(h.native.background.where(isRewrite), isEmpty);
+      expect(h.memories.count, 0);
+      expect(h.sessions.current.memoryUpdates, isEmpty);
     });
 
-    test('nothing worth keeping changes nothing and shows no hint', () async {
+    test('the profile goes into the chat in section order', () async {
       final h = await Harness.start();
-      h.native.backgroundReply = (_) => '{"add": [], "update": []}';
-      final a = h.sessions.current;
-      unawaited(a.send('What is 2 + 2?', const []));
+      await h.memories.add(ProfileSection.projects, 'Building a shed');
+      await h.memories.add(ProfileSection.about, "User's name is Sam");
+      await h.memories.add(ProfileSection.preferences, 'Prefers metric units');
+      unawaited(h.sessions.current.send('Hi', const []));
       await h.settle();
-      h.native.finish('4');
+      final system = h.native.replies.single.$2.first.text;
+      final name = system.indexOf("- User's name is Sam");
+      final metric = system.indexOf('- Prefers metric units');
+      final shed = system.indexOf('- Building a shed');
+      expect(name, greaterThan(0));
+      expect(name, lessThan(metric));
+      expect(metric, lessThan(shed));
+      h.native.finish('Hello Sam.');
       await h.settle();
-      expect(h.memories.items, isEmpty);
-      expect(a.memoryUpdates, isEmpty);
+    });
+
+    test('a chat that skips memory neither uses nor learns it', () async {
+      final h = await Harness.start();
+      await h.memories.add(ProfileSection.about, "User's name is Sam");
+      h.native.backgroundReply = (turns) => isGate(turns) ? stated : '{}';
+      final a = h.sessions.current..skipMemory = true;
+      unawaited(a.send('I just moved to Bergen', const []));
+      await h.settle();
+      expect(h.native.replies.single.$2.first.text, isNot(contains('Sam')));
+      h.native.finish('Nice.');
+      await h.settle();
+      expect(h.native.background.where(isGate), isEmpty);
+      expect(h.memories.count, 1);
     });
   });
 

@@ -79,9 +79,11 @@ class SettingsScreen extends StatelessWidget {
                 builder: (context, _) => SettingsTile(
                   icon: Icons.auto_awesome_outlined,
                   title: 'Memory',
-                  subtitle: s.settings.memoryEnabled
-                      ? 'On · ${s.memories.items.length} saved on this phone'
-                      : 'Off',
+                  subtitle: !s.settings.memoryEnabled
+                      ? 'Off'
+                      : s.memories.tidyReport != null
+                      ? 'Aithra tidied your memory · Review'
+                      : 'On · ${s.memories.count} saved on this phone',
                   onTap: () => _push(context, const MemoriesScreen()),
                 ),
               ),
