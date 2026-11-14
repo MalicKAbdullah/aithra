@@ -123,6 +123,7 @@ class FakeNative extends NativeBridge {
     required int maxTokens,
     required double temperature,
     required bool ignoreEos,
+    bool background = false,
   }) {
     lastRequest = requestId;
     // Never completes: the reply stays mid-stream for the screenshot.
@@ -237,7 +238,12 @@ class FakeNative extends NativeBridge {
     String convId,
     int fromSeq, {
     List<String> keepImages = const [],
+    List<String> keepDocs = const [],
   }) async {}
+  @override
+  Future<List<Map<String, Object?>>> documentsOf(String convId) async => [];
+  @override
+  Future<List<Map<String, Object?>>> citations(String convId) async => [];
   @override
   Future<void> dbPutImage(String id, Uint8List jpeg) async => images[id] = jpeg;
   @override

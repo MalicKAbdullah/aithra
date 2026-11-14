@@ -64,6 +64,11 @@ class FakeNative extends NativeBridge {
   }
 
   @override
+  Future<List<Map<String, Object?>>> documentsOf(String convId) async => [];
+  @override
+  Future<List<Map<String, Object?>>> citations(String convId) async => [];
+
+  @override
   Future<Map<String, Object?>> load({
     required String runtime,
     required String path,
@@ -85,9 +90,10 @@ class FakeNative extends NativeBridge {
     required int maxTokens,
     required double temperature,
     required bool ignoreEos,
+    bool background = false,
   }) {
     if (!_isChat(turns)) {
-      background.add(turns);
+      this.background.add(turns);
       _events.add({
         'type': 'token',
         'requestId': requestId,
