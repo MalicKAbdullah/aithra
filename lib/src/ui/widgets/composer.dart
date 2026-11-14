@@ -188,7 +188,6 @@ class _ComposerState extends State<Composer> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              AttachmentTray(controller: _c, onSend: widget.onSend),
               ValueListenableBuilder<List<PendingImage>>(
                 valueListenable: _c.images,
                 builder: (context, images, _) => images.isEmpty
@@ -240,6 +239,7 @@ class _ComposerState extends State<Composer> {
                         ),
                       ),
               ),
+              AttachmentTray(controller: _c, onSend: widget.onSend),
               if (_c.editing)
                 Padding(
                   padding: const EdgeInsets.only(

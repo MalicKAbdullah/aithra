@@ -12,9 +12,12 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:aithra/src/app.dart';
+import 'package:aithra/src/ask/ask_app.dart';
+import 'package:aithra/src/ask/ask_controller.dart';
 import 'package:aithra/src/assistant.dart';
 import 'package:aithra/src/calibration/calibration.dart';
 import 'package:aithra/src/chat/chat_store.dart';
+import 'package:aithra/src/chat/templates.dart';
 import 'package:aithra/src/data/settings_store.dart';
 import 'package:aithra/src/data/vault.dart';
 import 'package:aithra/src/engine/engine_service.dart';
@@ -25,6 +28,7 @@ import 'package:aithra/src/memory/recall_index.dart';
 import 'package:aithra/src/models/model_manager.dart';
 import 'package:aithra/src/platform/native.dart';
 import 'package:aithra/src/services.dart';
+import 'package:aithra/src/share/shared_item.dart';
 import 'package:aithra/src/ui/screens/custom_instructions_screen.dart';
 import 'package:aithra/src/ui/screens/memories_screen.dart';
 import 'package:aithra/src/ui/screens/models_screen.dart';
@@ -241,9 +245,15 @@ class FakeNative extends NativeBridge {
     List<String> keepDocs = const [],
   }) async {}
   @override
-  Future<List<Map<String, Object?>>> documentsOf(String convId) async => [];
+  Future<List<Map<String, Object?>>> documentsOf(String convId) async =>
+      docs[convId] ?? [];
   @override
-  Future<List<Map<String, Object?>>> citations(String convId) async => [];
+  Future<List<Map<String, Object?>>> citations(String convId) async =>
+      cites[convId] ?? [];
+
+  /// Documents and citations by conversation, as DocumentStore keeps them.
+  final Map<String, List<Map<String, Object?>>> docs = {};
+  final Map<String, List<Map<String, Object?>>> cites = {};
   @override
   Future<void> dbPutImage(String id, Uint8List jpeg) async => images[id] = jpeg;
   @override
@@ -706,6 +716,38 @@ void _seedChats(FakeNative n, Uint8List photo) {
     msg(5, 0, 'user', _mathQuestion, now - 41 * min),
     msg(6, 1, 'model', _mathAnswer, now - 40 * min),
   ];
+  n.conversations.add(conv('ferry', 'Ferry timetable', now - 2 * min));
+  n.messages['ferry'] = [
+    msg(20, 0, 'user', 'When does the last ferry come back?', now - 3 * min),
+    msg(21, 1, 'model', _ferryAnswer, now - 2 * min),
+  ];
+  n.docs['ferry'] = [
+    {
+      'id': 'doc-ferry',
+      'convId': 'ferry',
+      'msgId': 20,
+      'name': 'ferry-timetable.pdf',
+      'mime': 'application/pdf',
+      'pages': 12,
+      'paged': true,
+      'chars': 18400,
+      'created': now - 3 * min,
+      'summary': null,
+      'summaryParts': null,
+      'unreadPages': 0,
+      'unreadablePages': 0,
+    },
+  ];
+  n.cites['ferry'] = [
+    for (final (ord, page) in [(4, 3), (31, 11)])
+      {
+        'msgId': 21,
+        'docId': 'doc-ferry',
+        'ord': ord,
+        'page': page,
+        'name': 'ferry-timetable.pdf',
+      },
+  ];
   n.images['img-plant'] = photo;
   n.messages['plant'] = [
     msg(3, 0, 'user', _plantQuestion, now - 3 * hour, images: ['img-plant']),
@@ -744,6 +786,33 @@ void _seedModels(FakeNative n) {
       'total': 721918496,
     },
   ];
+}
+
+const _ferryAnswer =
+    'The last ferry back from Oban sails at **18:30** on weekdays and '
+    '**17:45** on Sundays. In winter (November to March) the Sunday '
+    'sailing is at 16:15 instead.';
+
+/// The Ask sheet with an answer in, as after tapping a chip.
+class _AnsweredAsk extends AskController {
+  _AnsweredAsk(NativeBridge native, LockController lock)
+    : super(
+        native,
+        'Le ferry part à neuf heures et revient à dix-huit heures trente.',
+        readOnly: false,
+      ) {
+    this.lock = lock;
+    language = 'English';
+    template = textTemplates.firstWhere((t) => t.id == 'translate');
+    phase = AskPhase.done;
+    answer.add(
+      'The ferry leaves at nine o\'clock and comes back at half past six '
+      'in the evening.',
+    );
+  }
+
+  @override
+  bool get canAsk => true;
 }
 
 // -- Harness ----------------------------------------------------------------
@@ -1113,6 +1182,49 @@ void main() {
         await tester.tap(find.byTooltip('Chats'));
         await _settle(tester, 16);
         await _shot(tester, '04b-drawer-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('documents and sources $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        _open(h, 'ferry');
+        await _settle(tester, 16);
+        await _shot(tester, '04d-document-sources-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('attachment chips $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        final photo = h.native.images['img-plant']!;
+        h.services.sessions.current.incoming.value = SharedItem(
+          images: [photo],
+        );
+        await _settle(tester, 16);
+        await _decodeImages(tester);
+        await _shot(tester, '04e-image-chips-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('ask sheet $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        await tester.pumpWidget(
+          RepaintBoundary(
+            key: _rootKey,
+            child: Stack(
+              textDirection: TextDirection.ltr,
+              children: [
+                ServicesScope(services: h.services, child: const AithraApp()),
+                AskApp(
+                  controller: _AnsweredAsk(h.native, h.services.lock),
+                  appearance: h.services.appearance,
+                ),
+                _SystemBars(dark: b == Brightness.dark),
+              ],
+            ),
+          ),
+        );
+        await _settle(tester, 16);
+        await _shot(tester, '04f-ask-sheet-$t');
         await _teardown(tester, h);
       });
 
