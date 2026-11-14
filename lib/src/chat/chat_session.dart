@@ -1,17 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import '../assistant.dart';
+import '../docs/documents.dart';
 import '../engine/engine_service.dart';
 import '../memory/memory_keeper.dart';
 import '../memory/profile.dart';
 import '../memory/recall_index.dart';
 import '../models/catalog.dart';
 import '../platform/native.dart';
+import '../share/shared_item.dart';
 import 'chat_export.dart';
 import 'chat_models.dart';
 import 'chat_titler.dart';
@@ -40,6 +43,12 @@ class StreamingText extends ValueNotifier<String> {
   }
 
   String get full => _buffer.toString();
+
+  /// Empties the text for a new reply.
+  void reset() {
+    _buffer.clear();
+    value = '';
+  }
 }
 
 enum ReplyPhase {
@@ -144,6 +153,19 @@ class ChatSession extends ChangeNotifier {
 
   bool get _remembering => _assistant.settings.memoryEnabled && !skipMemory;
 
+  /// Documents sent with each user message, by message id.
+  final Map<int, List<DocInfo>> attachments = {};
+
+  /// The passages each reply was given, by message id: its Sources row.
+  final Map<int, List<Source>> sources = {};
+
+  /// What the reply is doing before it streams, when that takes a while
+  /// (reading scanned pages); null otherwise.
+  final ValueNotifier<String?> activity = ValueNotifier(null);
+
+  /// Something shared from another app, for the composer to take.
+  final ValueNotifier<SharedItem?> incoming = ValueNotifier(null);
+
   /// Replies are spoken (voice mode): the system prompt asks for short,
   /// plain spoken sentences.
   bool spoken = false;
@@ -233,12 +255,36 @@ class ChatSession extends ChangeNotifier {
     try {
       final before = _messages.isEmpty ? 1 << 30 : _messages.last.seq;
       final rows = await _native.dbMessages(conv.id, before, pageSize);
+      if (_messages.isEmpty) await _loadDocuments(conv.id);
       _messages.addAll(rows.map(ChatMessage.fromMap));
       _hasMore = rows.length == pageSize;
       notifyListeners();
     } finally {
       _loading = false;
     }
+  }
+
+  /// The chat's documents and citations, which are few: all at once.
+  Future<void> _loadDocuments(String convId) async {
+    final docs = await _native.documentsOf(convId);
+    final cites = await _native.citations(convId);
+    attachments.clear();
+    sources.clear();
+    for (final d in docs.map(DocInfo.fromMap)) {
+      (attachments[d.msgId!] ??= []).add(d);
+    }
+    for (final c in cites) {
+      (sources[c['msgId']! as int] ??= []).add(Source.fromMap(c));
+    }
+  }
+
+  /// Reads the chat again from the store: a summary finished in the
+  /// background added a message.
+  Future<void> reload() async {
+    if (busy || _conversation == null) return;
+    _messages.clear();
+    _hasMore = true;
+    await loadMore();
   }
 
   Future<void> saveDraft(String text) async {
@@ -253,15 +299,21 @@ class ChatSession extends ChangeNotifier {
     await _native.dbUpdateConversation(conv.id, {'scroll': offset});
   }
 
-  /// Sends a user message with new [images] and [keepImageIds], images
-  /// already stored (an edited message keeps its photos).
+  /// Sends a user message with new [images], [keepImageIds] (images already
+  /// stored: an edited message keeps its photos) and [docs]. Without
+  /// [reply] the message is only saved (a document summary answers it).
   Future<void> send(
     String text,
     List<PendingImage> images, {
     List<String> keepImageIds = const [],
+    List<DocInfo> docs = const [],
+    bool reply = true,
   }) async {
     if (busy ||
-        (text.trim().isEmpty && images.isEmpty && keepImageIds.isEmpty)) {
+        (text.trim().isEmpty &&
+            images.isEmpty &&
+            keepImageIds.isEmpty &&
+            docs.isEmpty)) {
       return;
     }
     _assistant.engine.preemptBackground();
@@ -283,7 +335,9 @@ class ChatSession extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final convId = await _ensureConversation(text);
+      final convId = await _ensureConversation(
+        text.trim().isEmpty && docs.isNotEmpty ? docs.first.name : text,
+      );
       final imageIds = [...keepImageIds];
       for (final img in images) {
         final id = '${now.microsecondsSinceEpoch}-${imageIds.length}';
@@ -306,6 +360,14 @@ class ChatSession extends ChangeNotifier {
         imageIds: imageIds,
         created: now,
       );
+      if (docs.isNotEmpty) {
+        final msgId = saved['id']! as int;
+        await _native.attachDocuments(convId, msgId, [
+          for (final d in docs) d.id,
+        ]);
+        attachments[msgId] = [for (final d in docs) d.sentIn(convId, msgId)];
+      }
+      if (!reply) phase = ReplyPhase.idle;
       notifyListeners();
       unawaited(_store.upsert(convId));
     } catch (e) {
@@ -316,7 +378,13 @@ class ChatSession extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    await _reply(recallQuery: text);
+    if (reply) {
+      await _reply(
+        recallQuery: text.trim().isEmpty && docs.isNotEmpty
+            ? docs.first.name
+            : text,
+      );
+    }
   }
 
   Future<String> _ensureConversation(String firstText) async {
@@ -443,15 +511,32 @@ class ChatSession extends ChangeNotifier {
       final latest = messages.last;
       final room = contextSize - replyTokens - systemTokens - counted.overhead;
       final fitted = await fitMessage(latest, room: room, cost: counted.cost);
+      // Documents come first in what the newest turn carries, then the
+      // profile lines and recalled messages in what they leave.
+      final docs = await _documents(conv.id, spec);
+      if (_stopRequested) return;
+      final reading = await readDocuments(
+        native: _native,
+        docs: docs,
+        question: history.lastWhere((m) => m.role == Role.user).content,
+        budget: min(documentBudget(contextSize), room - fitted.tokens),
+        embedderPath: _assistant.models.pathOf(embeddingModel),
+        costs: counted.costs,
+      );
+      final docTokens = reading?.tokens ?? 0;
       final turnContext = await fitTurnContext(
         related: profile.related,
         recalled: recalled,
-        room: room - fitted.tokens,
+        room: room - fitted.tokens - docTokens,
         cost: counted.cost,
       );
+      final contextText = [
+        ?reading?.text,
+        turnContext.text,
+      ].where((t) => t.isNotEmpty).join('\n\n');
       final newest = fitted.withText(
         fitted.text,
-        fitted.tokens + turnContext.tokens,
+        fitted.tokens + docTokens + turnContext.tokens,
       );
       messages.last = newest;
       final plan = planPrompt(
@@ -477,7 +562,7 @@ class ChatSession extends ChangeNotifier {
             p.isUser ? 'user' : 'model',
             p.text,
             images,
-            identical(p, newest) ? turnContext.text : '',
+            identical(p, newest) ? contextText : '',
           ),
         );
       }
@@ -591,6 +676,25 @@ class ChatSession extends ChangeNotifier {
               'beginning and end and left out part of the middle.',
         );
       }
+      if (reading != null && reading.cited.isNotEmpty) {
+        final replyId = saved['id']! as int;
+        await _native.putCitations(replyId, [
+          for (final p in reading.cited) {'docId': p.docId, 'ord': p.ord},
+        ]);
+        final names = {for (final d in docs) d.id: d.name};
+        sources[replyId] = [
+          for (final p in reading.cited)
+            Source(
+              docId: p.docId,
+              ord: p.ord,
+              page: p.page,
+              name: names[p.docId]!,
+            ),
+        ];
+      }
+      if (_documentNotice(docs, reading, spec) case final notice?) {
+        notices[replySeq] = notice;
+      }
       final used = metrics.contextTokens ?? plan.promptTokens;
       if (shouldSummarize(
         usedTokens: used,
@@ -691,6 +795,7 @@ class ChatSession extends ChangeNotifier {
       int overhead,
       bool estimated,
       Future<int> Function(String text) cost,
+      Future<List<int>> Function(List<String> texts) costs,
     })
   >
   _countTokens(ModelSpec spec, String system, List<ChatMessage> history) async {
@@ -719,6 +824,9 @@ class ChatSession extends ChangeNotifier {
         overhead: 0,
         estimated: true,
         cost: (String text) async => estimateTokens(text, ratio),
+        costs: (List<String> texts) async => [
+          for (final t in texts) estimateTokens(t, ratio),
+        ],
       );
     }
     final fresh = {
@@ -732,7 +840,88 @@ class ChatSession extends ChangeNotifier {
       estimated: false,
       cost: (String text) async =>
           (await engine.countTokens([EngineTurn('user', text)])).counts!.single,
+      costs: (List<String> texts) async => (await engine.countTokens([
+        for (final t in texts) EngineTurn('user', t),
+      ])).counts!,
     );
+  }
+
+  /// The chat's documents, with any scanned pages read first by the vision
+  /// model so the question can be answered from them.
+  Future<List<DocInfo>> _documents(String convId, ModelSpec spec) async {
+    final docs = [
+      for (final r in await _native.documentsOf(convId)) DocInfo.fromMap(r),
+    ];
+    if (!spec.vision || docs.every((d) => d.unreadPages == 0)) {
+      return docs;
+    }
+    try {
+      for (final d in docs.where((d) => d.unreadPages > 0)) {
+        final pages = await _native.unreadPages(d.id);
+        for (final (i, p) in pages.indexed) {
+          final page = p['page']! as int;
+          activity.value =
+              'Reading ${d.name}, page $page (${i + 1} of ${pages.length})';
+          final image = await _native.dbImage(
+            p['image']! as String,
+            thumb: false,
+          );
+          final g = _assistant.engine.generate(
+            [
+              EngineTurn('user', readPagePrompt, [image!]),
+            ],
+            maxTokens: replyTokens,
+            temperature: 0,
+          );
+          _generation = g;
+          final text = await g.text.join();
+          await g.done;
+          if (g.cancelled) return docs;
+          await _native.setPageText(d.id, page, text);
+        }
+      }
+    } finally {
+      _generation = null;
+      activity.value = null;
+    }
+    return [
+      for (final r in await _native.documentsOf(convId)) DocInfo.fromMap(r),
+    ];
+  }
+
+  /// What the user should know about how the documents were read.
+  ReplyNotice? _documentNotice(
+    List<DocInfo> docs,
+    DocumentContext? reading,
+    ModelSpec spec,
+  ) {
+    final unread = docs.fold(0, (n, d) => n + d.unreadPages);
+    final unreadable = docs.fold(0, (n, d) => n + d.unreadablePages);
+    if (unread > 0) {
+      return ReplyNotice(
+        'Scanned pages not read',
+        "$unread scanned ${unread == 1 ? 'page has' : 'pages have'} no text "
+            "layer, and ${spec.name} can't read images. Choose a model that "
+            'understands images in Models to include them.',
+      );
+    }
+    if (reading != null && !reading.whole && !reading.searched) {
+      return const ReplyNotice(
+        'Read the beginning only',
+        'The document is longer than fits in one answer, so Aithra read its '
+            'opening passages. Download "Memory across chats" in Models and '
+            'Aithra finds the passages your question is about.',
+      );
+    }
+    if (unreadable > 0) {
+      return ReplyNotice(
+        'Some pages not read',
+        '$unreadable scanned ${unreadable == 1 ? 'page' : 'pages'} had no '
+            'text Aithra could read, or came after the scanned pages Aithra '
+            'reads in one document.',
+      );
+    }
+    return null;
   }
 
   /// Images are sent for the two most recent user messages that have any;
@@ -855,16 +1044,18 @@ class ChatSession extends ChangeNotifier {
   }
 
   /// Rewrites [message], a user message, and answers it again; everything
-  /// after it in the chat goes.
+  /// after it in the chat goes. Its photos and documents stay with it.
   Future<void> edit(ChatMessage message, String text) async {
     if (busy || message.role != Role.user) return;
     _messages.removeWhere((m) => m.seq >= message.seq);
+    final docs = attachments.remove(message.id) ?? const [];
     await _native.dbTruncate(
       _conversation!.id,
       message.seq,
       keepImages: message.imageIds,
+      keepDocs: [for (final d in docs) d.id],
     );
-    await send(text, const [], keepImageIds: message.imageIds);
+    await send(text, const [], keepImageIds: message.imageIds, docs: docs);
   }
 
   /// Answers again after an error.

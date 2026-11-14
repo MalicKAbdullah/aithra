@@ -66,6 +66,7 @@ class CancellingEngine extends NativeBridge {
     required double temperature,
     required bool ignoreEos,
     bool keepContext = false,
+    bool background = false,
   }) async => {'cancelled': cancelled, 'stopped': false, 'promptTokens': 10};
 
   @override

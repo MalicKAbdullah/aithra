@@ -76,6 +76,8 @@ class NativeBridge {
     'maxTokens': maxTokens,
   });
 
+  /// A [background] generation is cancelled by any foreground one, from
+  /// this engine or the other (the app and the Ask sheet share the model).
   Future<Map<String, Object?>> generate({
     required int requestId,
     required List<EngineTurn> turns,
@@ -83,6 +85,7 @@ class NativeBridge {
     required double temperature,
     required bool ignoreEos,
     bool keepContext = false,
+    bool background = false,
   }) => _map('engine.generate', {
     'requestId': requestId,
     'turns': [for (final t in turns) t.toMap()],
@@ -90,6 +93,7 @@ class NativeBridge {
     'temperature': temperature,
     'ignoreEos': ignoreEos,
     'keepContext': keepContext,
+    'background': background,
   });
 
   /// Exact tokens each turn adds to a prompt and the prompt's remaining
@@ -215,18 +219,21 @@ class NativeBridge {
         'model': model,
       });
 
-  /// Deletes messages from [fromSeq] on, and their images except
-  /// [keepImages]. With [archive] (regenerate) the reply at [fromSeq] is
-  /// kept as an earlier version of the one that replaces it.
+  /// Deletes messages from [fromSeq] on, and their images and documents
+  /// except [keepImages] and [keepDocs]. With [archive] (regenerate) the
+  /// reply at [fromSeq] is kept as an earlier version of the one that
+  /// replaces it.
   Future<void> dbTruncate(
     String convId,
     int fromSeq, {
     List<String> keepImages = const [],
+    List<String> keepDocs = const [],
     bool archive = false,
   }) => _channel.invokeMethod('db.truncate', {
     'convId': convId,
     'fromSeq': fromSeq,
     'keepImages': keepImages,
+    'keepDocs': keepDocs,
     'archive': archive,
   });
 
@@ -325,6 +332,159 @@ class NativeBridge {
 
   Future<Map<String, Object?>> dbSelfTest(int messages) =>
       _map('db.selfTest', {'messages': messages});
+
+  // -- Documents (DocumentStore.kt) ---------------------------------------
+
+  static Map<String, Object?>? _optMap(Object? m) =>
+      m == null ? null : Map<String, Object?>.from(m as Map);
+
+  /// Lets the user pick a file and stores its text as an unattached
+  /// document; null when the picker was dismissed. Progress arrives as
+  /// `document` events.
+  Future<Map<String, Object?>?> pickDocument() async =>
+      _optMap(await _channel.invokeMethod<Object?>('doc.pick'));
+
+  /// Reads the file at [uri] into an unattached document.
+  Future<Map<String, Object?>> importDocumentUri(String uri) =>
+      _map('doc.importUri', {'uri': uri});
+
+  /// Reads a file a share copied in ([path], deleted once read) into an
+  /// unattached document.
+  Future<Map<String, Object?>> importSharedFile({
+    required String path,
+    required String name,
+    required String? mime,
+  }) => _map('doc.importShared', {'path': path, 'name': name, 'mime': mime});
+
+  /// Stores [text] as an unattached document named [name].
+  Future<Map<String, Object?>> importTextDocument(String name, String text) =>
+      _map('doc.importText', {'name': name, 'text': text});
+
+  Future<Map<String, Object?>?> document(String id) async =>
+      _optMap(await _channel.invokeMethod<Object?>('doc.get', {'id': id}));
+
+  Future<List<Map<String, Object?>>> documentsOf(String convId) =>
+      _rows('doc.ofConversation', {'convId': convId});
+
+  Future<void> attachDocuments(String convId, int msgId, List<String> ids) =>
+      _channel.invokeMethod('doc.attach', {
+        'convId': convId,
+        'msgId': msgId,
+        'ids': ids,
+      });
+
+  Future<void> deleteDocument(String id) =>
+      _channel.invokeMethod('doc.delete', {'id': id});
+
+  /// Pages that have text, in order: `page` and `text`.
+  Future<List<Map<String, Object?>>> documentPages(String id) =>
+      _rows('doc.pages', {'id': id});
+
+  /// Scanned pages still to be read: `page` and the `image` id.
+  Future<List<Map<String, Object?>>> unreadPages(String id) =>
+      _rows('doc.unreadPages', {'id': id});
+
+  Future<void> setPageText(String id, int page, String text) => _channel
+      .invokeMethod('doc.setPageText', {'id': id, 'page': page, 'text': text});
+
+  Future<void> setDocumentSummary(
+    String id, {
+    String? parts,
+    String? summary,
+  }) => _channel.invokeMethod('doc.setSummary', {
+    'id': id,
+    'parts': parts,
+    'summary': summary,
+  });
+
+  Future<List<Map<String, Object?>>> pendingSummaries() =>
+      _rows('doc.pendingSummaries', const {});
+
+  /// Up to [limit] passages of [ids] in reading order.
+  Future<List<Map<String, Object?>>> passagesInOrder(
+    List<String> ids,
+    int limit,
+  ) => _rows('doc.passagesInOrder', {'ids': ids, 'limit': limit});
+
+  Future<Map<String, Object?>?> passage(String docId, int ord) async => _optMap(
+    await _channel.invokeMethod<Object?>('doc.passage', {
+      'docId': docId,
+      'ord': ord,
+    }),
+  );
+
+  /// The [limit] passages of [ids] closest in meaning to [query].
+  Future<List<Map<String, Object?>>> searchDocuments(
+    String modelPath,
+    List<String> ids,
+    String query,
+    int limit,
+  ) => _rows('doc.search', {
+    'modelPath': modelPath,
+    'ids': ids,
+    'query': query,
+    'limit': limit,
+  });
+
+  Future<void> putCitations(int msgId, List<Map<String, Object?>> cites) =>
+      _channel.invokeMethod('doc.putCitations', {
+        'msgId': msgId,
+        'cites': cites,
+      });
+
+  /// Every citation in [convId]: `msgId`, `docId`, `ord`, `page`, `name`.
+  Future<List<Map<String, Object?>>> citations(String convId) =>
+      _rows('doc.citations', {'convId': convId});
+
+  // -- Inbox, notifications, languages --------------------------------------
+
+  /// What another app shared, or a chat to open, once; null when nothing
+  /// waits. An `inbox` event says something new arrived.
+  Future<Map<String, Object?>?> takeInbox() async =>
+      _optMap(await _channel.invokeMethod<Object?>('inbox.take'));
+
+  /// Shows or updates the notification [tag]; with [done] it is an ongoing
+  /// progress notification, without it one the user can swipe away.
+  Future<void> notifyProgress({
+    required String tag,
+    required String title,
+    required String text,
+    int? done,
+    int? total,
+  }) => _channel.invokeMethod('notify.progress', {
+    'tag': tag,
+    'title': title,
+    'text': text,
+    'done': done,
+    'total': total,
+  });
+
+  Future<void> cancelNotification(String tag) =>
+      _channel.invokeMethod('notify.cancel', {'tag': tag});
+
+  /// Language tags and English names, the user's own languages first.
+  Future<List<({String tag, String name})>> languages() async => [
+    for (final m in await _rows('locale.languages', const {}))
+      (tag: m['tag']! as String, name: m['name']! as String),
+  ];
+
+  // -- Ask sheet (AskActivity) ----------------------------------------------
+
+  /// The selected text and whether the calling app accepts a replacement.
+  Future<({String text, bool readOnly})> askRequest() async {
+    final m = await _map('ask.request');
+    return (text: m['text']! as String, readOnly: m['readOnly']! as bool);
+  }
+
+  /// Returns [text] to the calling app in place of the selection.
+  Future<void> askReplace(String text) =>
+      _channel.invokeMethod('ask.replace', {'text': text});
+
+  Future<void> askClose() => _channel.invokeMethod('ask.close');
+
+  /// Opens the app, at chat [id] when given, and closes the sheet.
+  Future<void> askOpenChat([String? id]) =>
+      _channel.invokeMethod('ask.openChat', {'id': id});
 
   // -- Device & files -------------------------------------------------------
 

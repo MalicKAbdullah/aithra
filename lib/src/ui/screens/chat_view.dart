@@ -1,15 +1,18 @@
 import 'dart:async';
 
 import 'package:core_theme/core_theme.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
+import '../../docs/documents.dart';
 import '../../memory/profile.dart';
 import '../../quick_actions.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
 import '../widgets/composer.dart';
+import '../widgets/file_chip.dart';
 import '../widgets/composer_attach.dart';
 import '../widgets/find_bar.dart';
 import '../widgets/greeting.dart';
@@ -57,6 +60,9 @@ class _ChatViewState extends State<ChatView> {
     _session.finding.addListener(_findToggled);
     _composer.text.text = _session.conversation?.draft ?? '';
     _composer.text.addListener(_onDraftChanged);
+    _composer.summarise = _summarise;
+    _session.incoming.addListener(_takeIncoming);
+    _takeIncoming();
     _scroll.addListener(() {
       // Reversed list: extentAfter is the distance to the oldest loaded message.
       if (_scroll.position.extentAfter < 800) _session.loadMore();
@@ -75,6 +81,41 @@ class _ChatViewState extends State<ChatView> {
       });
     } else {
       _takeReveal();
+    }
+  }
+
+  /// Fills the composer with what was shared from another app.
+  void _takeIncoming() {
+    final item = _session.incoming.value;
+    if (item == null) return;
+    _session.incoming.value = null;
+    if (item.text.isNotEmpty) {
+      _composer.text.text = item.text;
+      _composer.shared.value = true;
+    }
+    _composer.images.value = [
+      ..._composer.images.value,
+      for (final jpeg in item.images) PendingImage(jpeg),
+    ];
+    _composer.docs.value = [..._composer.docs.value, ...item.documents];
+  }
+
+  /// Sends [docs] with a request for their summary, which the summarizer
+  /// posts as the reply.
+  Future<void> _summarise(List<DocInfo> docs) async {
+    final summarizer = context.services.summarizer;
+    _composer.clear();
+    await _session.send(
+      docs.length == 1
+          ? 'Summarise ${docs.single.name}'
+          : 'Summarise these documents',
+      const [],
+      docs: docs,
+      reply: false,
+    );
+    final sent = _session.messages.firstOrNull;
+    for (final d in _session.attachments[sent?.id] ?? const <DocInfo>[]) {
+      unawaited(summarizer.summarize(d));
     }
   }
 
@@ -119,6 +160,7 @@ class _ChatViewState extends State<ChatView> {
     _session.finding.removeListener(_findToggled);
     _reveal.dispose();
     _draftTimer?.cancel();
+    _session.incoming.removeListener(_takeIncoming);
     if (_session.conversation != null) {
       _session.saveDraft(_composer.text.text);
       if (_scroll.hasClients) _session.saveScroll(_scroll.offset);
@@ -131,7 +173,8 @@ class _ChatViewState extends State<ChatView> {
   Future<void> _send() async {
     final text = _composer.text.text;
     final images = List.of(_composer.images.value);
-    if (text.trim().isEmpty && images.isEmpty) return;
+    final docs = List.of(_composer.docs.value);
+    if (text.trim().isEmpty && images.isEmpty && docs.isEmpty) return;
     _composer.clear();
     if (_scroll.hasClients && _scroll.offset > 0) {
       unawaited(
@@ -142,7 +185,7 @@ class _ChatViewState extends State<ChatView> {
         ),
       );
     }
-    final sending = _session.send(text, images);
+    final sending = _session.send(text, images, docs: docs);
     _readReplyAloud();
     await sending;
   }
@@ -182,6 +225,7 @@ class _ChatViewState extends State<ChatView> {
                 builder: (context, _) => _messagesList(context),
               ),
             ),
+            _ActivityLine(_session.activity),
             RepaintBoundary(
               child: ListenableBuilder(
                 listenable: Listenable.merge([_session, s.assistant]),
@@ -189,7 +233,6 @@ class _ChatViewState extends State<ChatView> {
                   controller: _composer,
                   speech: s.speech,
                   busy: _session.busy,
-                  canAttachImages: s.assistant.activeModel?.vision ?? false,
                   onSend: () {
                     final editing = _editing;
                     if (_composer.editing && editing != null) {
@@ -295,6 +338,8 @@ class _ChatViewState extends State<ChatView> {
         onTap: () =>
             setState(() => _actionsFor = _actionsFor == m.seq ? null : m.seq),
         footer: [
+          if (_session.attachments[m.id] case final files?)
+            MessageFiles(docs: files),
           if (_actionsFor == m.seq)
             UserActions(
               message: m,
@@ -309,6 +354,8 @@ class _ChatViewState extends State<ChatView> {
       session: _session,
       message: m,
       footer: [
+        if (_session.sources[m.id] case final sources?)
+          SourcesRow(sources: sources),
         ReplyActions(
           message: m,
           session: _session,
@@ -555,6 +602,58 @@ class _NoticeRow extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// What the reply is doing before it streams, above the composer: "Reading
+/// report.pdf, page 2 (2 of 5)".
+class _ActivityLine extends StatelessWidget {
+  const _ActivityLine(this.activity);
+
+  final ValueListenable<String?> activity;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    return ValueListenableBuilder<String?>(
+      valueListenable: activity,
+      builder: (context, text, _) => AnimatedSize(
+        duration: AppMotion.fast,
+        curve: AppMotion.standard,
+        child: text == null
+            ? const SizedBox(width: double.infinity)
+            : Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.gutter,
+                  AppSpacing.xs,
+                  AppSpacing.gutter,
+                  AppSpacing.xs,
+                ),
+                child: Row(
+                  children: [
+                    SizedBox.square(
+                      dimension: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: c.textTertiary,
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: Text(
+                        text,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AithraType.caption.copyWith(
+                          color: c.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
       ),
     );
   }

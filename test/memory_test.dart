@@ -89,6 +89,7 @@ class FakeModel extends NativeBridge {
     required double temperature,
     required bool ignoreEos,
     bool keepContext = false,
+    bool background = false,
   }) async {
     final kind = kindOf(turns);
     prompts.add((kind, turns));

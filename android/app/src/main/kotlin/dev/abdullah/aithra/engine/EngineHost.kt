@@ -16,16 +16,23 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Generations are cancelled by request id, so a Stop that arrives while
  * the request still waits in the queue, or during its prefill, is not lost.
+ * Request ids are Longs scoped per Flutter engine (see NativeChannels), as
+ * the app and the Ask sheet each number their own requests.
  */
 class EngineHost(private val context: Context) {
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "aithra-engine") }
     @Volatile private var engine: LlmEngine? = null
 
     private val lock = Any()
-    private val queued = HashSet<Int>()
-    private val cancelled = HashSet<Int>()
-    private val stoppedByUser = HashSet<Int>()
-    private var running: Int? = null
+    private val queued = HashSet<Long>()
+    private val cancelled = HashSet<Long>()
+    private val background = HashSet<Long>()
+    private val stoppedByUser = HashSet<Long>()
+    private var running: Long? = null
+
+    /** What the loaded [engine] was loaded with, and what that load measured. */
+    private var loadedArgs: Map<String, Any?>? = null
+    private var loadedResult: Map<String, Any?>? = null
 
     fun <T> submit(block: () -> T, onResult: (Result<T>) -> Unit) {
         worker.execute { onResult(runCatching(block)) }
@@ -41,11 +48,24 @@ class EngineHost(private val context: Context) {
         }
     }
 
-    /** Marks [requestId] as waiting for the engine; call when it is submitted. */
-    fun enqueue(requestId: Int) = synchronized(lock) { queued += requestId }
+    /**
+     * Marks [requestId] as waiting for the engine; call when it is
+     * submitted. A foreground request cancels every background one, queued
+     * or running, whichever Flutter engine sent it: the user never waits on
+     * housekeeping, even housekeeping the other engine started.
+     */
+    fun enqueue(requestId: Long, isBackground: Boolean) = synchronized(lock) {
+        queued += requestId
+        if (isBackground) {
+            background += requestId
+        } else {
+            for (id in background) cancelled += id
+            if (running in background) engine?.cancel()
+        }
+    }
 
     /** Cancels [requestId] whether it is waiting or running. Any thread. */
-    fun cancel(requestId: Int) = synchronized(lock) {
+    fun cancel(requestId: Long) = synchronized(lock) {
         if (requestId !in queued) return@synchronized
         cancelled += requestId
         if (running == requestId) engine?.cancel()
@@ -78,10 +98,14 @@ class EngineHost(private val context: Context) {
         }
     }
 
-    /** Returns load time and peak RSS while loading. */
+    /**
+     * Returns load time and peak RSS while loading. Loading what is already
+     * loaded returns that load's figures without loading again, so the app
+     * and the Ask sheet can each make sure of the model they share.
+     */
     fun load(args: Map<String, Any?>): Map<String, Any?> {
-        engine?.close()
-        engine = null
+        if (engine != null && args == loadedArgs) return loadedResult!!
+        unload()
         val path = args["path"] as String
         val runtime = args["runtime"] as String
         ModelFormat.require(File(path), runtime)
@@ -105,18 +129,23 @@ class EngineHost(private val context: Context) {
             sampler.stop()
         }
         engine = loaded
+        loadedArgs = args
         val loadMs = (System.nanoTime() - start) / 1e6
         val cacheWrittenMb = EngineCache.written(cacheBefore, EngineCache.snapshot(context)) / (1024.0 * 1024.0)
         Log.i("aithra.engine", "loaded $runtime/${args["backend"]} in ${loadMs.toLong()} ms, wrote ${cacheWrittenMb.toLong()} MB of cache")
-        return mapOf(
+        val result = mapOf(
             "loadMs" to loadMs,
             "peakRssMb" to sampler.peakMb,
             "contextSize" to loaded.contextSize,
             "cacheWrittenMb" to cacheWrittenMb,
         )
+        loadedResult = result
+        // Every Flutter engine caches what it believes is loaded.
+        Events.send(mapOf("type" to "engine", "kind" to "loaded"))
+        return result
     }
 
-    fun generate(requestId: Int, request: GenerateRequest, onText: (String) -> Boolean): Map<String, Any?> {
+    fun generate(requestId: Long, request: GenerateRequest, onText: (String) -> Boolean): Map<String, Any?> {
         try {
             val current = engine ?: throw IllegalStateException("No model is loaded")
             synchronized(lock) {
@@ -139,6 +168,7 @@ class EngineHost(private val context: Context) {
                 running = null
                 queued -= requestId
                 cancelled -= requestId
+                background -= requestId
                 stoppedByUser -= requestId
             }
         }
@@ -154,8 +184,12 @@ class EngineHost(private val context: Context) {
     }
 
     fun unload() {
-        engine?.close()
+        val current = engine ?: return
+        current.close()
         engine = null
+        loadedArgs = null
+        loadedResult = null
+        Events.send(mapOf("type" to "engine", "kind" to "unloaded"))
     }
 
     /**

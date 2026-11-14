@@ -5,6 +5,8 @@ import android.content.ComponentCallbacks2
 import dev.abdullah.aithra.engine.Embedder
 import dev.abdullah.aithra.engine.EngineCache
 import dev.abdullah.aithra.engine.EngineHost
+import io.flutter.embedding.engine.FlutterEngineGroup
+import io.flutter.embedding.engine.FlutterEngineGroupCache
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -29,6 +31,37 @@ class AithraApplication : Application() {
     lateinit var embedder: Embedder
         private set
 
+    /** Activities showing Flutter (the app, the Ask sheet). Main thread. */
+    var surfaces = 0
+
+    /**
+     * The app and the Ask sheet run in engines of one group: a second
+     * engine starts in a fraction of the time and memory of the first.
+     * Created on first use, from an activity's onCreate, because creating
+     * it finishes Flutter's initialization on the calling thread.
+     */
+    fun engineGroupId(): String {
+        val cache = FlutterEngineGroupCache.getInstance()
+        if (cache.get(ENGINE_GROUP) == null) cache.put(ENGINE_GROUP, FlutterEngineGroup(this))
+        return ENGINE_GROUP
+    }
+
+    /**
+     * Frees the models once the last Flutter activity has finished for
+     * good: nothing will use them again in this process, and a reopened
+     * app loads them afresh. A reply still generating under the foreground
+     * service finishes first.
+     */
+    fun releaseIfNoSurface() {
+        if (surfaces > 0) return
+        engineHost.releaseWhenIdle()
+        embedder.releaseNow()
+    }
+
+    private companion object {
+        const val ENGINE_GROUP = "aithra"
+    }
+
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
@@ -37,6 +70,9 @@ class AithraApplication : Application() {
         embedder = Embedder(embedExec)
         io.execute {
             sweepPartialImports()
+            // Shared files wait in memory for the app (Inbox); a new process
+            // has none waiting, so any copy left is from a process that died.
+            Inbox.sharedDir(this).listFiles()!!.forEach { it.delete() }
             EngineCache.migrate(this)
             ChatExport.clear(this)
 

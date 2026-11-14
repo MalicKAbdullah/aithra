@@ -5,9 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../chat/chat_session.dart';
+import '../../docs/documents.dart';
 import '../../voice/speech_service.dart';
 import '../../voice/dictation.dart';
 import '../aithra_type.dart';
+import 'attachment_tray.dart';
 import 'composer_attach.dart';
 import 'recording_bar.dart';
 import 'speech_notice.dart';
@@ -17,12 +19,26 @@ class ComposerController {
   final FocusNode focus = FocusNode();
   final ValueNotifier<List<PendingImage>> images = ValueNotifier(const []);
 
+  /// Documents picked or shared, stored and waiting to be sent.
+  final ValueNotifier<List<DocInfo>> docs = ValueNotifier(const []);
+
+  /// A file being read in: pages done of the total.
+  final ValueNotifier<({int done, int total})?> reading = ValueNotifier(null);
+
+  /// The text came from another app, so the chips offer what to do with it.
+  final ValueNotifier<bool> shared = ValueNotifier(false);
+
+  /// Starts the full-document summary of [docs] (their Summarise chip).
+  void Function(List<DocInfo> docs)? summarise;
+
   /// The next send replaces the last user message.
   bool editing = false;
 
   void clear() {
     text.clear();
     images.value = const [];
+    docs.value = const [];
+    shared.value = false;
     editing = false;
   }
 
@@ -36,6 +52,9 @@ class ComposerController {
     text.dispose();
     focus.dispose();
     images.dispose();
+    docs.dispose();
+    reading.dispose();
+    shared.dispose();
   }
 }
 
@@ -47,7 +66,6 @@ class Composer extends StatefulWidget {
     required this.controller,
     required this.speech,
     required this.busy,
-    required this.canAttachImages,
     required this.onSend,
     required this.onStop,
     required this.onFocus,
@@ -57,7 +75,6 @@ class Composer extends StatefulWidget {
   final ComposerController controller;
   final SpeechService speech;
   final bool busy;
-  final bool canAttachImages;
   final VoidCallback onSend;
   final VoidCallback onStop;
   final VoidCallback onFocus;
@@ -147,6 +164,7 @@ class _ComposerState extends State<Composer>
             mainAxisSize: MainAxisSize.min,
             children: [
               _PendingImages(_c),
+              AttachmentTray(controller: _c, onSend: widget.onSend),
               if (_c.editing)
                 Padding(
                   padding: const EdgeInsets.only(
@@ -286,10 +304,8 @@ class _ComposerState extends State<Composer>
     return Row(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        if (widget.canAttachImages) ...[
-          ComposerAttachButton(controller: _c, enabled: !widget.busy),
-          const SizedBox(width: AppSpacing.xs),
-        ],
+        ComposerAttachButton(controller: _c, enabled: !widget.busy),
+        const SizedBox(width: AppSpacing.xs),
         Expanded(
           child: TextField(
             controller: _c.text,
@@ -307,15 +323,8 @@ class _ComposerState extends State<Composer>
               enabledBorder: InputBorder.none,
               focusedBorder: InputBorder.none,
               constraints: const BoxConstraints(minHeight: composerButton),
-              // One line of body text centred on the 40 dp buttons; with the
-              // attach button absent the text starts on the transcript's
-              // inset.
-              contentPadding: EdgeInsets.fromLTRB(
-                widget.canAttachImages ? 0 : AppSpacing.md - composerInset,
-                9,
-                AppSpacing.xs,
-                9,
-              ),
+              // One line of body text centred on the 40 dp buttons.
+              contentPadding: const EdgeInsets.fromLTRB(0, 9, AppSpacing.xs, 9),
             ),
           ),
         ),
@@ -329,10 +338,12 @@ class _ComposerState extends State<Composer>
         ),
         const SizedBox(width: AppSpacing.xs),
         ListenableBuilder(
-          listenable: Listenable.merge([_c.text, _c.images]),
+          listenable: Listenable.merge([_c.text, _c.images, _c.docs]),
           builder: (context, _) {
             final canSend =
-                _c.text.text.trim().isNotEmpty || _c.images.value.isNotEmpty;
+                _c.text.text.trim().isNotEmpty ||
+                _c.images.value.isNotEmpty ||
+                _c.docs.value.isNotEmpty;
             return IconButton.filled(
               tooltip: widget.busy ? 'Stop' : 'Send',
               iconSize: 20,

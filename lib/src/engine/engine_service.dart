@@ -62,13 +62,15 @@ typedef LastLoad = ({ModelSpec spec, BackendOption backend, LoadResult result});
 /// later calls with the same model and backend return at once.
 class EngineService extends ChangeNotifier {
   EngineService(this._native) {
+    // The app and the Ask sheet each run an EngineService on the one native
+    // model, so a load or unload by either changes what the other has. This
+    // service's own load reports `loaded` before its result arrives.
     _native.eventsOf('engine').listen((e) {
-      if (e['kind'] == 'released') {
-        releases++;
-        _loadedKey = null;
-        _status = EngineStatus.idle;
-        notifyListeners();
-      }
+      if (e['kind'] == 'released') releases++;
+      if (_status == EngineStatus.loading) return;
+      _loadedKey = null;
+      _status = EngineStatus.idle;
+      notifyListeners();
     });
   }
 
@@ -218,6 +220,9 @@ class EngineService extends ChangeNotifier {
     if (_backgroundRequest case final id?) unawaited(_native.cancel(id));
   }
 
+  /// Completes once the work queued so far has run.
+  Future<void> whenIdle() => _queue;
+
   /// Starts a run of background work (titles, memory suggestions,
   /// embedding) that ends for good at the first foreground load or
   /// generation after this call.
@@ -274,13 +279,17 @@ class BackgroundRun {
           if (e._loadedKey == null) return null;
           e._backgroundRequest = id;
           try {
-            await e._native.generate(
+            final m = await e._native.generate(
               requestId: id,
               turns: turns,
               maxTokens: maxTokens,
               temperature: temperature,
               ignoreEos: false,
+              background: true,
             );
+            // Foreground work of the other engine (the Ask sheet) cancels it
+            // natively without touching this run's epoch.
+            if (m['cancelled']! as bool) return null;
             return preempted ? null : out.toString();
           } finally {
             e._backgroundRequest = null;

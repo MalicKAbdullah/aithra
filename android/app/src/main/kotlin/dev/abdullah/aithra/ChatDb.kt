@@ -34,7 +34,7 @@ import javax.crypto.spec.SecretKeySpec
  * numbered by `ord` in the order they were written; the `messages` row holds
  * the version on show (its `version` is that version's ord).
  */
-class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4) {
+class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 5) {
     private companion object {
         /** Enough for two lines of preview after Markdown is stripped. */
         const val PREVIEW_CHARS = 240
@@ -52,6 +52,8 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
         const val SNIPPET_BEFORE = 40
         const val SNIPPET_AFTER = 110
     }
+
+    val documents = DocumentStore(this)
 
     private var key: SecretKeySpec? = null
     private var termKey: SecretKeySpec? = null
@@ -76,6 +78,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
         db.execSQL("CREATE TABLE media(id TEXT PRIMARY KEY, data BLOB NOT NULL, thumb BLOB NOT NULL)")
         createSearchTables(db)
         addFindPrivateAndVersions(db)
+        DocumentStore.createTables(db)
     }
 
     /**
@@ -126,6 +129,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
             }
         }
         if (oldVersion < 4) addFindPrivateAndVersions(db)
+        if (oldVersion < 5) DocumentStore.createTables(db)
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -136,7 +140,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
         key = SecretKeySpec(dataKey, "AES")
         val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(dataKey, "HmacSHA256")) }
         termKey = SecretKeySpec(mac.doFinal("aithra-terms".toByteArray()), "HmacSHA256")
-        writableDatabase
+        documents.sweepAbandoned(System.currentTimeMillis())
     }
 
     // -- Crypto ---------------------------------------------------------------
@@ -155,8 +159,8 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
         return cipher.doFinal(sealed, 44, sealed.size - 44)
     }
 
-    private fun sealText(text: String) = seal(text.toByteArray(Charsets.UTF_8))
-    private fun openText(bytes: ByteArray) = String(unseal(bytes), Charsets.UTF_8)
+    internal fun sealText(text: String) = seal(text.toByteArray(Charsets.UTF_8))
+    internal fun openText(bytes: ByteArray) = String(unseal(bytes), Charsets.UTF_8)
 
     // -- Blind keyword index ----------------------------------------------------
 
@@ -275,6 +279,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
                 buildList { while (c.moveToNext()) addAll(c.getString(0).split(',').filter { it.isNotEmpty() }) }
             }
             imageIds.forEach { delete("media", "id = ?", arrayOf(it)) }
+            DocumentStore.deleteIn(this, DocumentStore.idsOfConversation(this, id))
             delete("title_terms", "conv_id = ?", arrayOf(id))
             delete("vectors", "conv_id = ?", arrayOf(id))
             execSQL("DELETE FROM message_terms WHERE msg_id IN (SELECT id FROM messages WHERE conv_id = ?)", arrayOf(id))
@@ -388,14 +393,15 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
 
     /**
      * Deletes every message with seq >= [fromSeq] (edit and regenerate) and
-     * their images, except [keepImages], which an edited message carries
-     * over. With [archive] (regenerate) the reply at [fromSeq] is kept as an
+     * their images and documents, except [keepImages] and [keepDocs], which
+     * an edited message carries over. With [archive] (regenerate) the reply at [fromSeq] is kept as an
      * earlier version, and the next message added there follows it; without,
      * the versions at [fromSeq] go too, since a different message takes
      * that place.
      */
-    fun truncate(convId: String, fromSeq: Int, keepImages: Set<String>, archive: Boolean) {
+    fun truncate(convId: String, fromSeq: Int, keepImages: Set<String>, keepDocs: Set<String>, archive: Boolean) {
         writableDatabase.transaction {
+            DocumentStore.deleteIn(this, DocumentStore.idsFromSeq(this, convId, fromSeq, keepDocs))
             if (archive) {
                 execSQL(
                     "INSERT INTO message_versions(conv_id, seq, ord, content, stats, created) " +
@@ -412,6 +418,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
                 .use { c -> buildList { while (c.moveToNext()) add(c.getLong(0) to c.getString(1)) } }
             for ((id, images) in ids) {
                 delete("vectors", "msg_id = ?", arrayOf(id.toString()))
+                delete("citations", "msg_id = ?", arrayOf(id.toString()))
                 delete("message_terms", "msg_id = ?", arrayOf(id.toString()))
                 images.split(',').filter { it.isNotEmpty() && it !in keepImages }
                     .forEach { delete("media", "id = ?", arrayOf(it)) }
@@ -491,8 +498,10 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
 
     // -- Media ------------------------------------------------------------------
 
-    fun putImage(id: String, jpeg: ByteArray, thumb: ByteArray) {
-        writableDatabase.insertOrThrow("media", null, ContentValues().apply {
+    fun putImage(id: String, jpeg: ByteArray, thumb: ByteArray) = putImageIn(writableDatabase, id, jpeg, thumb)
+
+    internal fun putImageIn(db: SQLiteDatabase, id: String, jpeg: ByteArray, thumb: ByteArray) {
+        db.insertOrThrow("media", null, ContentValues().apply {
             put("id", id)
             put("data", seal(jpeg))
             put("thumb", seal(thumb))
@@ -585,13 +594,13 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
         return (if (start > 0) "…" else "") + body + (if (end < text.length) "…" else "")
     }
 
-    private fun packVector(v: FloatArray): ByteArray {
+    internal fun packVector(v: FloatArray): ByteArray {
         val buf = ByteBuffer.allocate(v.size * 4).order(ByteOrder.LITTLE_ENDIAN)
         v.forEach { buf.putFloat(it) }
         return seal(buf.array())
     }
 
-    private fun unpackVector(sealed: ByteArray): FloatArray {
+    internal fun unpackVector(sealed: ByteArray): FloatArray {
         val buf = ByteBuffer.wrap(unseal(sealed)).order(ByteOrder.LITTLE_ENDIAN)
         return FloatArray(buf.remaining() / 4) { buf.getFloat() }
     }
@@ -775,7 +784,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
     }
 }
 
-private inline fun SQLiteDatabase.transaction(block: SQLiteDatabase.() -> Unit) {
+internal inline fun SQLiteDatabase.transaction(block: SQLiteDatabase.() -> Unit) {
     beginTransaction()
     try {
         block()

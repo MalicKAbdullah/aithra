@@ -44,6 +44,7 @@ class FakeEngine extends NativeBridge {
     required double temperature,
     required bool ignoreEos,
     bool keepContext = false,
+    bool background = false,
   }) {
     started.add(requestId);
     _events.add({'type': 'token', 'requestId': requestId, 'text': reply});

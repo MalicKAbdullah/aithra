@@ -1,6 +1,8 @@
+import 'dart:async';
+
 import 'package:core_lock/core_lock.dart';
 import 'package:core_theme/core_theme.dart';
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 
 import 'assistant.dart';
 import 'chat/chat_session.dart';
@@ -8,16 +10,21 @@ import 'chat/chat_sessions.dart';
 import 'chat/chat_store.dart';
 import 'chat/reply_queue.dart';
 import 'data/settings_store.dart';
+import 'docs/doc_summarizer.dart';
 import 'engine/engine_service.dart';
 import 'memory/memory_keeper.dart';
 import 'memory/memory_store.dart';
 import 'memory/recall_index.dart';
 import 'models/model_manager.dart';
 import 'platform/native.dart';
+import 'share/inbox.dart';
 import 'quick_actions.dart';
 import 'voice/read_aloud.dart';
 import 'voice/speech_service.dart';
 import 'voice/tts_service.dart';
+
+/// Where the app lock keeps its state; the app and the Ask sheet share it.
+const String lockKey = 'aithra_app_lock_enabled';
 
 /// Everything the screens use, created once in main().
 class Services {
@@ -50,6 +57,26 @@ class Services {
   final AppearanceController appearance;
   final SpeechService speech;
   final TtsService tts;
+
+  final navigatorKey = GlobalKey<NavigatorState>();
+  final messengerKey = GlobalKey<ScaffoldMessengerState>();
+
+  late final DocSummarizer summarizer = DocSummarizer(
+    native: native,
+    assistant: assistant,
+    onPosted: (convId) {
+      unawaited(chats.upsert(convId));
+      sessions.reloadShown(convId);
+    },
+  );
+
+  late final Inbox inbox = Inbox(
+    native: native,
+    sessions: sessions,
+    store: chats,
+    navigator: navigatorKey,
+    messenger: messengerKey,
+  );
 
   /// Launcher shortcuts and the Quick Settings tile.
   late final QuickActions quickActions = QuickActions(native);

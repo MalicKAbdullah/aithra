@@ -86,6 +86,7 @@ class FakeNative extends NativeBridge {
     String convId,
     int fromSeq, {
     List<String> keepImages = const [],
+    List<String> keepDocs = const [],
     bool archive = false,
   }) async {
     truncations.add((convId, fromSeq, archive));
@@ -103,6 +104,11 @@ class FakeNative extends NativeBridge {
       }
     }
   }
+
+  @override
+  Future<List<Map<String, Object?>>> documentsOf(String convId) async => [];
+  @override
+  Future<List<Map<String, Object?>>> citations(String convId) async => [];
 
   @override
   Future<Map<String, Object?>> load({
@@ -127,9 +133,10 @@ class FakeNative extends NativeBridge {
     required double temperature,
     required bool ignoreEos,
     bool keepContext = false,
+    bool background = false,
   }) {
     if (!_isChat(turns)) {
-      background.add(turns);
+      this.background.add(turns);
       _events.add({
         'type': 'token',
         'requestId': requestId,

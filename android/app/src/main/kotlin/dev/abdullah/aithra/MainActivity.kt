@@ -1,61 +1,25 @@
 package dev.abdullah.aithra
 
-import android.Manifest
+import android.app.Activity
+import android.app.ActivityManager
+import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
-import android.provider.Settings
-import androidx.activity.result.ActivityResultLauncher
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.FileProvider
-import dev.abdullah.aithra.engine.ChatTurn
-import dev.abdullah.aithra.engine.CpuFeatures
-import dev.abdullah.aithra.engine.Embedder
-import dev.abdullah.aithra.engine.EngineCache
-import dev.abdullah.aithra.engine.EngineHost
-import dev.abdullah.aithra.engine.GenerateRequest
+import java.io.File
+import java.util.UUID
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.EventChannel
-import io.flutter.plugin.common.MethodCall
-import io.flutter.plugin.common.MethodChannel
-import java.io.File
-import java.util.concurrent.Executor
-import java.util.concurrent.Executors
 
 // FlutterFragmentActivity (not FlutterActivity) is required by local_auth
-// (core_lock) and by the activity-result launchers below.
+// (core_lock) and by the activity-result launchers in NativeChannels.
 class MainActivity : FlutterFragmentActivity() {
     private val app get() = application as AithraApplication
-    private val engineHost get() = app.engineHost
-    private val db get() = app.db
-    private val embedder get() = app.embedder
-    private val io get() = app.io
 
-    private lateinit var speech: SpeechBridge
-    private lateinit var tts: TtsBridge
-
-    private lateinit var pickImage: ActivityResultLauncher<PickVisualMediaRequest>
-    private lateinit var takePicture: ActivityResultLauncher<Uri>
-    private lateinit var pickModel: ActivityResultLauncher<Array<String>>
-    private lateinit var askPermission: ActivityResultLauncher<String>
-    private lateinit var askNotifications: ActivityResultLauncher<String>
-
-    // One request of each kind can be open at a time: each launcher has one
-    // result slot.
-    private var pendingImage: MethodChannel.Result? = null
-    private var pendingModel: MethodChannel.Result? = null
-    private var pendingPermission: MethodChannel.Result? = null
-    private var captureFile: File? = null
+    private val channels = NativeChannels(this)
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Created before super.onCreate, which attaches the Flutter engine
-        // (configureFlutterEngine), so every callback that uses them, such
-        // as onDestroy, finds them set.
-        speech = SpeechBridge(this)
-        tts = TtsBridge(this)
+        app.surfaces++
         super.onCreate(savedInstanceState)
         // Started by QuickActionActivity with no task to bring forward. A
         // relaunch from Recents carries the same intent and must not
@@ -63,36 +27,13 @@ class MainActivity : FlutterFragmentActivity() {
         if (savedInstanceState == null && intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0) {
             QuickActions.offer(intent)
         }
-        pickImage = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-            deliverImage(uri)
-        }
-        takePicture = registerForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
-            val file = captureFile
-            deliverImage(if (ok && file != null) Uri.fromFile(file) else null)
-        }
-        pickModel = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            val result = pendingModel ?: return@registerForActivityResult
-            pendingModel = null
-            if (uri == null) {
-                result.success(null)
-                return@registerForActivityResult
-            }
-            onIo(result) { Media.importModel(this, uri) }
-        }
-        // Downloads run the same either way; the answer only decides whether
-        // their progress notification shows.
-        askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
-        askPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            pendingPermission?.success(microphoneState(granted))
-            pendingPermission = null
-        }
     }
+
+    override fun getCachedEngineGroupId(): String = app.engineGroupId()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        val messenger = flutterEngine.dartExecutor.binaryMessenger
-        EventChannel(messenger, "aithra/events").setStreamHandler(Events)
-        MethodChannel(messenger, "aithra/native").setMethodCallHandler(::onCall)
+        channels.attach(flutterEngine)
     }
 
     // From onResume, when the activity is visible: Android lets a visible
@@ -103,397 +44,103 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
-        speech.destroy()
-        tts.shutdown()
+        channels.destroy()
+        app.surfaces--
         // Swiped from recents (or otherwise finished): the Flutter engine,
         // and with it the timer that frees the model after a while in the
         // background, ends with this activity, while the process can live
         // on with the model loaded, under a lingering foreground service or
         // on an Android that keeps it cached.
-        if (isFinishing && !isChangingConfigurations) {
-            engineHost.releaseWhenIdle()
-            embedder.releaseNow()
-        }
+        if (isFinishing && !isChangingConfigurations) app.releaseIfNoSurface()
         super.onDestroy()
     }
+}
 
-    /**
-     * After a denial Android shows the rationale flag only while asking
-     * again can still show the dialog; without it the denial is permanent
-     * and only Settings can grant the microphone.
-     */
-    private fun microphoneState(granted: Boolean) = when {
-        granted -> "granted"
-        shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) -> "denied"
-        else -> "blocked"
-    }
+/**
+ * What another app shared, or the chat the Ask sheet continues, until Dart
+ * takes it (`inbox.take`). Dart is told with an `inbox` event when it is
+ * running and takes it at startup otherwise.
+ */
+object Inbox {
+    private const val MAX_SHARED_FILES = 10
 
-    /** Claims [slot] for [result], or answers `busy` when it is taken. */
-    private inline fun claim(slot: MethodChannel.Result?, result: MethodChannel.Result, launch: () -> Unit) {
-        if (slot != null) {
-            result.error("busy", "Another request of this kind is still open", null)
+    @Volatile private var pending: Map<String, Any?>? = null
+
+    fun sharedDir(context: Context) = File(context.cacheDir, "inbox").apply { mkdirs() }
+
+    fun take(): Map<String, Any?>? = pending.also { pending = null }
+
+    /** Holds [item] for the app and brings the app forward, or starts it. */
+    fun deliver(context: Context, item: Map<String, Any?>) {
+        pending = item
+        Events.send(mapOf("type" to "inbox"))
+        val task = context.getSystemService(ActivityManager::class.java).appTasks.firstOrNull {
+            it.taskInfo.baseActivity?.className == MainActivity::class.java.name
+        }
+        if (task != null) {
+            task.moveToFront()
         } else {
-            launch()
+            context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
     }
-
-    private fun deliverImage(uri: Uri?) {
-        val result = pendingImage ?: return
-        pendingImage = null
-        if (uri == null) {
-            result.success(null)
-            return
-        }
-        val capture = captureFile
-        captureFile = null
-        runOn(io, "image", result) {
-            try {
-                Media.normalizeImage(this, uri)
-            } finally {
-                capture?.delete()
-            }
-        }
-    }
-
-    private fun <T> onEngine(result: MethodChannel.Result, block: () -> T) =
-        engineHost.submit(block) { reply(result, "engine", it) }
-
-    /** Engine work that keeps the process in the foreground while it runs. */
-    private fun <T> onEngineHeld(result: MethodChannel.Result, block: () -> T) =
-        engineHost.submitHeld(block) { reply(result, "engine", it) }
-
-    private fun <T> onIo(result: MethodChannel.Result, block: () -> T) = runOn(io, "io", result, block)
-
-    private fun <T> onDb(result: MethodChannel.Result, block: () -> T) = runOn(app.dbExec, "db", result, block)
-
-    private fun <T> onEmbed(result: MethodChannel.Result, block: () -> T) = runOn(app.embedExec, "embed", result, block)
-
-    private fun <T> runOn(executor: Executor, code: String, result: MethodChannel.Result, block: () -> T) =
-        executor.execute { reply(result, code, runCatching(block)) }
 
     /**
-     * The one place a background outcome reaches the channel. A Kotlin
-     * function with no return value yields [Unit], which StandardMessageCodec
-     * cannot encode (it throws on the main thread and kills the process), so
-     * it is sent as null, the channel's void.
+     * Reads a share: images downsized, other files copied into the cache
+     * for the app to read as documents (`doc.importShared`) once it has
+     * opened the database, which may not have happened yet.
      */
-    private fun <T> reply(result: MethodChannel.Result, code: String, outcome: Result<T>) = runOnUiThread {
-        outcome.fold(
-            { result.success(if (it is Unit) null else it) },
-            { result.error(code, it.message ?: it.javaClass.simpleName, null) },
-        )
-    }
-
-    private fun startDownload(call: MethodCall, result: MethodChannel.Result) = onIo(result) {
-        ModelDownloads.start(
-            this,
-            call.argument<String>("url")!!,
-            call.argument<String>("fileName")!!,
-            call.argument<String>("title")!!,
-            call.argument<Number>("size")!!.toLong(),
-            call.argument<String>("sha256")!!,
-        )
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun onCall(call: MethodCall, result: MethodChannel.Result) {
-        when (call.method) {
-            "engine.load" -> onEngineHeld(result) { engineHost.load(call.arguments as Map<String, Any?>) }
-            "engine.generate" -> {
-                val requestId = call.argument<Int>("requestId")!!
-                val turns = (call.argument<List<Map<String, Any?>>>("turns")!!).map {
-                    ChatTurn(
-                        role = it["role"] as String,
-                        text = it["text"] as String,
-                        images = (it["images"] as List<ByteArray>?) ?: emptyList(),
-                        context = it["context"] as String,
+    fun read(context: Context, intent: Intent): Map<String, Any?> {
+        val uris = when (intent.action) {
+            Intent.ACTION_SEND -> listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
+            else -> intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
+        }.take(MAX_SHARED_FILES)
+        val images = ArrayList<ByteArray>()
+        val files = ArrayList<Map<String, Any?>>()
+        val failures = ArrayList<String>()
+        for (uri in uris) {
+            try {
+                if (context.contentResolver.getType(uri)?.startsWith("image/") == true) {
+                    images += Media.normalizeImage(context, uri)
+                } else {
+                    val copy = File(sharedDir(context), UUID.randomUUID().toString())
+                    context.contentResolver.openInputStream(uri)!!.use { input -> copy.outputStream().use { input.copyTo(it) } }
+                    files += mapOf(
+                        "path" to copy.path,
+                        "name" to Media.displayName(context, uri),
+                        "mime" to context.contentResolver.getType(uri),
                     )
                 }
-                val request = GenerateRequest(
-                    turns = turns,
-                    maxTokens = call.argument<Int>("maxTokens")!!,
-                    temperature = call.argument<Double>("temperature")!!.toFloat(),
-                    ignoreEos = call.argument<Boolean>("ignoreEos")!!,
-                    keepContext = call.argument<Boolean>("keepContext")!!,
-                )
-                engineHost.enqueue(requestId)
-                onEngineHeld(result) {
-                    engineHost.generate(requestId, request) { text ->
-                        Events.send(mapOf("type" to "token", "requestId" to requestId, "text" to text))
-                        true
-                    }
-                }
+            } catch (e: Exception) {
+                failures += e.message ?: e.javaClass.simpleName
             }
-            "engine.countTokens" -> {
-                val turns = (call.argument<List<Map<String, Any?>>>("turns")!!).map {
-                    ChatTurn(role = it["role"] as String, text = it["text"] as String, images = emptyList())
-                }
-                onEngine(result) { engineHost.countTokens(turns) }
-            }
-            "engine.cancel" -> {
-                engineHost.cancel(call.argument<Int>("requestId")!!)
-                result.success(null)
-            }
-            "engine.unload" -> onEngine(result) { engineHost.unload() }
+        }
+        return mapOf(
+            "kind" to "share",
+            "text" to intent.getStringExtra(Intent.EXTRA_TEXT),
+            "subject" to intent.getStringExtra(Intent.EXTRA_SUBJECT),
+            "images" to images,
+            "files" to files,
+            "failures" to failures,
+        )
+    }
+}
 
-            "db.open" -> onDb(result) { db.open(call.argument<ByteArray>("key")!!) }
-            "db.conversations" -> onDb(result) {
-                db.listConversations(call.argument<Int>("offset")!!, call.argument<Int>("limit")!!)
+/**
+ * Where shares from other apps land. In its own task, so the share never
+ * starts a second copy of the app (and of its Flutter engine) inside the
+ * sharing app's task. It reads what was shared while it holds the read
+ * grant for it, then hands it to the app's task.
+ */
+class ShareActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val app = application as AithraApplication
+        app.io.execute {
+            val item = Inbox.read(this, intent)
+            runOnUiThread {
+                Inbox.deliver(this, item)
+                finish()
             }
-            "db.conversation" -> onDb(result) { db.getConversation(call.argument<String>("id")!!) }
-            "db.createConversation" -> onDb(result) {
-                db.createConversation(
-                    call.argument<String>("id")!!,
-                    call.argument<String>("title")!!,
-                    call.argument<Number>("now")!!.toLong(),
-                    call.argument<Boolean>("private")!!,
-                )
-            }
-            "db.updateConversation" -> onDb(result) {
-                db.updateConversation(call.argument<String>("id")!!, call.argument<Map<String, Any?>>("fields")!!)
-            }
-            "db.deleteConversation" -> onDb(result) { db.deleteConversation(call.argument<String>("id")!!) }
-            "db.messages" -> onDb(result) {
-                db.messages(call.argument<String>("convId")!!, call.argument<Int>("beforeSeq")!!, call.argument<Int>("limit")!!)
-            }
-            "db.messageRange" -> onDb(result) {
-                db.messageRange(call.argument<String>("convId")!!, call.argument<Int>("fromSeq")!!, call.argument<Int>("toSeq")!!)
-            }
-            "db.addMessage" -> onDb(result) {
-                db.addMessage(
-                    call.argument<String>("convId")!!,
-                    call.argument<String>("role")!!,
-                    call.argument<String>("content")!!,
-                    call.argument<List<String>>("images")!!,
-                    call.argument<String>("stats"),
-                    call.argument<Number>("now")!!.toLong(),
-                )
-            }
-            "db.updateMessage" -> onDb(result) {
-                db.updateMessage(call.argument<Number>("id")!!.toLong(), call.argument<String>("content")!!, call.argument<String>("stats"))
-            }
-            "db.setTokens" -> onDb(result) {
-                val counts = (call.argument<Map<String, Int>>("counts")!!).mapKeys { it.key.toLong() }
-                db.setTokens(counts, call.argument<String>("model")!!)
-            }
-            "db.truncate" -> onDb(result) {
-                db.truncate(
-                    call.argument<String>("convId")!!,
-                    call.argument<Int>("fromSeq")!!,
-                    call.argument<List<String>>("keepImages")!!.toSet(),
-                    call.argument<Boolean>("archive")!!,
-                )
-            }
-            "db.messageVersions" -> onDb(result) {
-                db.messageVersions(call.argument<String>("convId")!!, call.argument<Int>("seq")!!)
-            }
-            "db.selectVersion" -> onDb(result) {
-                db.selectVersion(call.argument<String>("convId")!!, call.argument<Int>("seq")!!, call.argument<Int>("ord")!!)
-            }
-            "db.putImage" -> onDb(result) {
-                val jpeg = call.argument<ByteArray>("jpeg")!!
-                db.putImage(call.argument<String>("id")!!, jpeg, Media.thumbnail(jpeg))
-            }
-            "db.image" -> onDb(result) { db.image(call.argument<String>("id")!!, call.argument<Boolean>("thumb")!!) }
-            "db.search" -> onDb(result) { db.search(call.argument<String>("query")!!, call.argument<Int>("limit")!!) }
-            "db.searchText" -> onDb(result) { db.searchText(call.argument<String>("query")!!, call.argument<Int>("limit")!!) }
-            "db.findInChat" -> onDb(result) { db.findInChat(call.argument<String>("convId")!!, call.argument<String>("query")!!) }
-            "db.recall" -> onEmbed(result) {
-                db.recall(
-                    embedder,
-                    call.argument<String>("modelPath")!!,
-                    call.argument<String>("query")!!,
-                    call.argument<String>("excludeConv"),
-                    call.argument<Int>("limit")!!,
-                )
-            }
-            "db.searchMessages" -> onEmbed(result) {
-                db.searchMessages(
-                    embedder,
-                    call.argument<String>("modelPath")!!,
-                    call.argument<String>("query")!!,
-                    call.argument<Int>("limit")!!,
-                )
-            }
-            "db.vectorStatus" -> onDb(result) { db.vectorStatus() }
-            "embed.texts" -> onEmbed(result) {
-                val query = call.argument<Boolean>("query")!!
-                embedder.embed(
-                    call.argument<String>("modelPath")!!,
-                    call.argument<List<String>>("texts")!!.map { if (query) Embedder.query(it) else Embedder.document(it) },
-                )
-            }
-            "db.indexVectors" -> onEmbed(result) {
-                db.indexVectors(embedder, call.argument<String>("modelPath")!!, call.argument<Int>("limit")!!)
-            }
-            "db.selfTest" -> onDb(result) { db.selfTest(call.argument<Int>("messages")!!) }
-
-            "device.info" -> onIo(result) { DeviceInfo.collect(this) }
-            "device.runsLlama" -> result.success(CpuFeatures.runsLlama)
-
-            "crash.read" -> result.success(CrashLog.read(this))
-            "crash.record" -> onIo(result) {
-                CrashLog.record(this, call.argument<String>("title")!!, call.argument<String>("detail")!!)
-            }
-            "crash.clear" -> onIo(result) { CrashLog.clear(this) }
-
-            // Internal storage: always present, so startup never depends on
-            // shared storage being mounted.
-            "storage.dataDir" -> result.success(filesDir.path)
-            "storage.info" -> onIo(result) { Storage.info(this) }
-            "storage.hasData" -> onIo(result) { Storage.hasData(this) }
-            "storage.erase" -> onIo(result) { Storage.erase(this) }
-
-            "download.start" -> {
-                if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                    askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
-                startDownload(call, result)
-            }
-            "download.query" -> onIo(result) { ModelDownloads.query(this) }
-            "download.remove" -> onIo(result) { ModelDownloads.remove(this, (call.argument<Number>("id")!!).toLong()) }
-            "file.delete" -> onIo(result) {
-                val path = call.argument<String>("path")!!
-                EngineCache.forget(this, path)
-                File(path).delete()
-            }
-            // Complete files only, named relative to the models folder
-            // ("imported/x.gguf" for imports).
-            "file.list" -> onIo(result) {
-                val root = modelsDir(this)
-                root.walk()
-                    .filter {
-                        it.isFile && !it.name.endsWith(Media.PARTIAL_SUFFIX) &&
-                            !it.name.endsWith(ModelDownloads.PART_SUFFIX)
-                    }
-                    .map { mapOf("path" to it.path, "name" to it.relativeTo(root).path, "size" to it.length()) }
-                    .toList()
-            }
-
-            // Model files have no registered MIME type; Media.importModel
-            // checks the extension.
-            "import.model" -> claim(pendingModel, result) {
-                pendingModel = result
-                pickModel.launch(arrayOf("*/*"))
-            }
-            "media.pickImage" -> claim(pendingImage, result) {
-                pendingImage = result
-                pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            }
-            "media.capture" -> claim(pendingImage, result) {
-                pendingImage = result
-                val file = File(cacheDir, "capture/photo.jpg").apply { parentFile!!.mkdirs() }
-                captureFile = file
-                takePicture.launch(FileProvider.getUriForFile(this, "$packageName.files", file))
-            }
-            "export.markdown" -> onIo(result) {
-                ChatExport.markdown(this, call.argument<String>("name")!!, call.argument<String>("text")!!)
-            }
-            "export.pdf" -> onIo(result) {
-                ChatExport.pdf(
-                    this,
-                    call.argument<String>("name")!!,
-                    call.argument<String>("title")!!,
-                    call.argument<List<Map<String, Any?>>>("entries")!!,
-                )
-            }
-            "share.file" -> {
-                val file = File(call.argument<String>("path")!!)
-                val send = Intent(Intent.ACTION_SEND).apply {
-                    type = call.argument<String>("mime")!!
-                    putExtra(Intent.EXTRA_STREAM, FileProvider.getUriForFile(this@MainActivity, "$packageName.files", file))
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                startActivity(Intent.createChooser(send, null))
-                result.success(null)
-            }
-            "share.text" -> {
-                val send = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, call.argument<String>("text"))
-                }
-                startActivity(Intent.createChooser(send, null))
-                result.success(null)
-            }
-            "clipboard.copy" -> {
-                RichOutput.copy(this, call.argument<String>("text")!!, call.argument<String>("html"))
-                result.success(null)
-            }
-            "share.image" -> {
-                val png = call.argument<ByteArray>("png")!!
-                val name = call.argument<String>("name")!!
-                io.execute {
-                    val staged = runCatching { RichOutput.stageImage(this, png, name) }
-                    runOnUiThread {
-                        staged.fold(
-                            {
-                                RichOutput.shareImage(this, it)
-                                result.success(null)
-                            },
-                            { result.error("share", it.message ?: it.javaClass.simpleName, null) },
-                        )
-                    }
-                }
-            }
-            "media.saveImage" -> onIo(result) {
-                RichOutput.saveImage(this, call.argument<ByteArray>("png")!!, call.argument<String>("name")!!)
-            }
-            "url.open" -> result.success(RichOutput.openUrl(this, call.argument<String>("url")!!))
-
-            "permission.microphone" -> {
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    result.success("granted")
-                } else {
-                    claim(pendingPermission, result) {
-                        pendingPermission = result
-                        askPermission.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                }
-            }
-            "permission.openSettings" -> {
-                startActivity(
-                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)),
-                )
-                result.success(null)
-            }
-            "speech.status" -> speech.status { result.success(it) }
-            "speech.start" -> {
-                speech.start(call.argument<Boolean>("continuous")!!)
-                result.success(null)
-            }
-            "speech.stop" -> {
-                speech.stop()
-                result.success(null)
-            }
-            "speech.cancel" -> {
-                speech.cancel()
-                result.success(null)
-            }
-            "speech.downloadModel" -> result.success(speech.downloadModel())
-            "speech.openSettings" -> {
-                startActivity(speech.settingsIntent())
-                result.success(null)
-            }
-            "tts.speak" -> {
-                tts.speak(
-                    Utterance(
-                        text = call.argument<String>("text")!!,
-                        id = call.argument<String>("id")!!,
-                        language = call.argument<String>("language"),
-                        voice = call.argument<String>("voice"),
-                        rate = call.argument<Double>("rate")!!.toFloat(),
-                    ),
-                )
-                result.success(null)
-            }
-            "tts.voices" -> tts.voices { result.success(it) }
-            "quickAction.take" -> result.success(QuickActions.take())
-            "tts.detectLanguage" -> onIo(result) { TtsBridge.detectLanguage(this, call.argument<String>("text")!!) }
-            "tts.stop" -> {
-                tts.stop()
-                result.success(null)
-            }
-            else -> result.notImplemented()
         }
     }
 }

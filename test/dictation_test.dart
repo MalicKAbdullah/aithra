@@ -202,7 +202,6 @@ void main() {
                   controller: controller,
                   speech: speech,
                   busy: false,
-                  canAttachImages: true,
                   onSend: () {},
                   onStop: () {},
                   onFocus: () {},
@@ -306,7 +305,7 @@ void main() {
       tester,
     ) async {
       await pumpComposer(tester);
-      final attach = tester.getRect(find.byTooltip('Add image'));
+      final attach = tester.getRect(find.byTooltip('Add photos and files'));
       final mic = tester.getRect(find.byTooltip('Dictate'));
       final send = tester.getRect(find.byTooltip('Send'));
       for (final r in [attach, mic, send]) {

@@ -39,6 +39,39 @@ final Uint8List tinyJpeg = base64Decode(
   'AOTooor+Tz+7D//Z',
 );
 
+/// A two-page PDF: a text page, and a blank page standing in for a scan,
+/// which has no text layer and goes to the vision model. Built by hand so
+/// the byte offsets in its cross-reference table are exact.
+Uint8List twoPagePdf(String text) {
+  final content = 'BT /F1 18 Tf 20 70 Td ($text) Tj ET';
+  final objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R '
+        '/Resources << /Font << /F1 5 0 R >> >> >>',
+    '<< /Length ${content.length} >>\nstream\n$content\nendstream',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 7 0 R >>',
+    '<< /Length 0 >>\nstream\n\nendstream',
+  ];
+  final out = StringBuffer('%PDF-1.4\n');
+  final offsets = <int>[];
+  for (final (i, o) in objects.indexed) {
+    offsets.add(out.length);
+    out.write('${i + 1} 0 obj\n$o\nendobj\n');
+  }
+  final xref = out.length;
+  out.write('xref\n0 ${objects.length + 1}\n0000000000 65535 f \n');
+  for (final o in offsets) {
+    out.write('${o.toString().padLeft(10, '0')} 00000 n \n');
+  }
+  out.write(
+    'trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\n'
+    'startxref\n$xref\n%%EOF\n',
+  );
+  return Uint8List.fromList(latin1.encode(out.toString()));
+}
+
 /// Pumps frames until [finder] matches; the app keeps animations running,
 /// so pumpAndSettle would never return.
 Future<void> pumpUntil(WidgetTester tester, Finder finder) async {
@@ -162,6 +195,104 @@ void main() {
       expect(await native.dbMessages(id, 1 << 30, 10), isEmpty);
       expect(await native.dbImage('$id-photo', thumb: true), isNotNull);
       await native.dbDeleteConversation(id);
+    });
+
+    testWidgets('a PDF is read page by page, a scan kept for vision', (
+      _,
+    ) async {
+      final dir = Directory('${await native.dataDir()}/it');
+      await dir.create(recursive: true);
+      final file = File('${dir.path}/ferry.pdf');
+      await file.writeAsBytes(twoPagePdf('The ferry leaves at nine'));
+      final doc = await native.importDocumentUri(file.uri.toString());
+      await file.delete();
+      expect(doc['name'], 'ferry.pdf');
+      expect(doc['mime'], 'application/pdf');
+      expect(doc['pages'], 2);
+      expect(doc['paged'], isTrue);
+      expect(doc['unreadPages'], 1);
+      final id = doc['id']! as String;
+      final pages = await native.documentPages(id);
+      expect(pages.single['page'], 1);
+      expect(pages.single['text'], contains('ferry leaves at nine'));
+      final scans = await native.unreadPages(id);
+      expect(scans.single['page'], 2);
+      expect(
+        await native.dbImage(scans.single['image']! as String, thumb: true),
+        isNotEmpty,
+      );
+      await native.setPageText(id, 2, 'Return ferry at six');
+      expect((await native.document(id))!['unreadPages'], 0);
+      expect(await native.documentPages(id), hasLength(2));
+      await native.deleteDocument(id);
+      expect(await native.document(id), isNull);
+    });
+
+    testWidgets('documents attach, cite, summarise and go with their chat', (
+      _,
+    ) async {
+      final convId = 'it-doc-${Random().nextInt(1 << 31)}';
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await native.dbCreateConversation(convId, 'Ferry notes', now);
+      final text = List.generate(
+        200,
+        (i) => 'Line $i of the ferry timetable notes.',
+      ).join(' ');
+      final doc = await native.importTextDocument('notes.txt', text);
+      final id = doc['id']! as String;
+      expect(doc['paged'], isFalse);
+      expect(doc['chars'], text.length);
+      final first = await native.passage(id, 0);
+      expect(first!['text'], startsWith('Line 0 of'));
+      expect((await native.passagesInOrder([id], 50)).length, greaterThan(1));
+
+      final user = await native.dbAddMessage(
+        convId: convId,
+        role: 'user',
+        content: 'What do the notes say?',
+        images: const [],
+        stats: null,
+        now: now,
+      );
+      await native.attachDocuments(convId, user['id']! as int, [id]);
+      final attached = (await native.documentsOf(convId)).single;
+      expect(attached['msgId'], user['id']);
+      expect(attached['name'], 'notes.txt');
+
+      final reply = await native.dbAddMessage(
+        convId: convId,
+        role: 'model',
+        content: 'They list the timetable.',
+        images: const [],
+        stats: null,
+        now: now + 1,
+      );
+      await native.putCitations(reply['id']! as int, [
+        {'docId': id, 'ord': 0},
+      ]);
+      final cite = (await native.citations(convId)).single;
+      expect(cite['name'], 'notes.txt');
+      expect(cite['page'], 0);
+
+      await native.setDocumentSummary(id, parts: '{"groups":[],"parts":[]}');
+      expect(
+        (await native.pendingSummaries()).map((d) => d['id']),
+        contains(id),
+      );
+      await native.setDocumentSummary(id, summary: 'A timetable.');
+      expect((await native.document(id))!['summary'], 'A timetable.');
+
+      // Regenerating the reply drops its citation, not the document.
+      await native.dbTruncate(convId, 1);
+      expect(await native.citations(convId), isEmpty);
+      expect(await native.documentsOf(convId), hasLength(1));
+      // Editing the question keeps the document it sent.
+      await native.dbTruncate(convId, 0, keepDocs: [id]);
+      expect(await native.document(id), isNotNull);
+
+      await native.attachDocuments(convId, user['id']! as int, [id]);
+      await native.dbDeleteConversation(convId);
+      expect(await native.document(id), isNull);
     });
 
     testWidgets('the message index finds word prefixes and follows edits', (
