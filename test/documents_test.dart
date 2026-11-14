@@ -1,4 +1,5 @@
 import 'package:aithra/src/chat/templates.dart';
+import 'package:aithra/src/data/prompt_shortcut.dart';
 import 'package:aithra/src/docs/doc_summarizer.dart';
 import 'package:aithra/src/docs/documents.dart';
 import 'package:aithra/src/platform/native.dart';
@@ -221,6 +222,19 @@ void main() {
       for (final t in rewriteTones) {
         expect(t.prompt('x'), contains('Keep its meaning and its language'));
       }
+    });
+
+    test('prompt shortcuts become chips, built-in names left to the '
+        'built-in chips', () {
+      final chips = userTemplates(const [
+        PromptShortcut('Explain', 'Explain this simply: '),
+        PromptShortcut('Brainstorm', 'Give me ten ideas for '),
+      ]);
+      expect([for (final c in chips) c.label], ['Brainstorm']);
+      expect(
+        chips.single.prompt('a picnic'),
+        'Give me ten ideas for\n\n"""\na picnic\n"""',
+      );
     });
 
     test('a question about the text keeps the question first', () {

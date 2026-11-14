@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../data/prompt_shortcut.dart';
+
 /// A fixed request the user picks from a chip: the Ask sheet over selected
 /// text, chips over a shared text, over an attached photo or document. The
 /// model does all the understanding; a template only says what was asked.
@@ -171,6 +173,15 @@ String _keyPoints(String name, String _) => 'List the key points of $name.';
 String _questions(String name, String _) =>
     'What questions does $name leave open, or should I ask about it?';
 
-/// The user's own templates, shown after the built-in chips. Empty until
-/// prompt shortcuts can be edited in Settings.
-List<PromptTemplate> userTemplates() => const [];
+/// The user's prompt shortcuts as chips after the built-in ones, each
+/// applied to the text; one named like a built-in chip is left to it.
+List<PromptTemplate> userTemplates(List<PromptShortcut> shortcuts) => [
+  for (final s in shortcuts)
+    if (!textTemplates.any((t) => t.label == s.label))
+      PromptTemplate(
+        'user.${s.label}',
+        s.label,
+        Icons.bolt_rounded,
+        (text, _) => '${s.prompt.trimRight()}\n\n${quoted(text)}',
+      ),
+];

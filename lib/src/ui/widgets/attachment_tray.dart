@@ -51,7 +51,7 @@ class AttachmentTray extends StatelessWidget {
     onSend();
   }
 
-  List<PromptTemplate> _chips() {
+  List<PromptTemplate> _chips(BuildContext context) {
     final c = controller;
     final empty = c.text.text.trim().isEmpty;
     if (empty && c.docs.value.isNotEmpty) return documentTemplates;
@@ -60,7 +60,7 @@ class AttachmentTray extends StatelessWidget {
       return [
         for (final t in textTemplates)
           if (t.id != 'rewrite' && t.id != 'ask') t,
-        ...userTemplates(),
+        ...userTemplates(context.services.settings.promptShortcuts),
       ];
     }
     return const [];
@@ -78,7 +78,7 @@ class AttachmentTray extends StatelessWidget {
         c.shared,
       ]),
       builder: (context, _) {
-        final chips = _chips();
+        final chips = _chips(context);
         final reading = c.reading.value;
         final docs = c.docs.value;
         if (chips.isEmpty && reading == null && docs.isEmpty) {

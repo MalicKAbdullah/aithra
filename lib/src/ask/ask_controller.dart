@@ -12,6 +12,7 @@ import '../chat/chat_models.dart';
 import '../chat/chat_session.dart';
 import '../chat/context_builder.dart';
 import '../chat/templates.dart';
+import '../data/prompt_shortcut.dart';
 import '../data/settings_store.dart';
 import '../data/vault.dart';
 import '../engine/engine_service.dart';
@@ -134,6 +135,10 @@ class AskController extends ChangeNotifier {
   }
 
   bool get canAsk => _ready && blocker == null;
+
+  /// The user's prompt shortcuts, offered after the built-in chips.
+  List<PromptShortcut> get shortcuts =>
+      _ready ? _settings.promptShortcuts : const [];
 
   void setLanguage(String name) {
     language = name;

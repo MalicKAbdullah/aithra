@@ -292,7 +292,7 @@ class _AskSheetState extends State<AskSheet>
     spacing: AppSpacing.sm,
     runSpacing: AppSpacing.sm,
     children: [
-      for (final t in [...textTemplates, ...userTemplates()])
+      for (final t in [...textTemplates, ...userTemplates(_c.shortcuts)])
         TemplateChip(
           template: t,
           selected:
