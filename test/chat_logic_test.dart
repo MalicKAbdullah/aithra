@@ -118,14 +118,13 @@ void main() {
       expect(messagesToSummarize(history.take(5).toList()), isEmpty);
     });
 
-    test('system prompt includes instructions, memories, recall, summary', () {
+    test('system prompt includes instructions, memories, summary', () {
       final p = buildSystemPrompt(
         SystemContext(
           now: DateTime(2026, 3, 4),
           aboutUser: 'I teach physics.',
           replyStyle: 'Be brief.',
           memories: ["User's name is Sam"],
-          recalled: ['We discussed tide tables'],
           summary: 'Sam is planning a trip.',
         ),
       );
@@ -134,34 +133,33 @@ void main() {
       expect(p, contains('know about them:\nI teach physics.'));
       expect(p, contains('respond:\nBe brief.'));
       expect(p, contains("- User's name is Sam"));
-      expect(p, contains('- We discussed tide tables'));
       expect(p, endsWith('Sam is planning a trip.'));
       final bare = buildSystemPrompt(SystemContext(now: DateTime(2026)));
       expect(bare, isNot(contains('know about the user')));
       expect(bare, isNot(contains('custom instructions')));
     });
 
-    test('an over-budget system prompt sheds recall, then memories, then '
-        'shortens instructions, and keeps the summary', () async {
+    test('an over-budget system prompt sheds memories, then shortens '
+        'instructions, and keeps the summary', () async {
       final full = SystemContext(
         now: DateTime(2026),
         aboutUser: 'a' * 1000,
         replyStyle: 'b' * 1000,
         memories: [for (var i = 0; i < 8; i++) 'Memory $i'],
-        recalled: const ['Recalled'],
         summary: 'The summary.',
       );
       Future<int> cost(String s) async => s.length;
       final first = buildSystemPrompt(full);
 
-      final noRecall = await fitSystemPrompt(
+      final halved = await fitSystemPrompt(
         full,
         budget: first.length - 5,
         firstCost: first.length,
         cost: cost,
       );
-      expect(noRecall, isNot(contains('Recalled')));
-      expect(noRecall, contains('Memory 7'));
+      expect(halved, contains('Memory 3'));
+      expect(halved, isNot(contains('Memory 4')));
+      expect(halved, contains('a' * 1000));
 
       final tight = await fitSystemPrompt(
         full,
@@ -193,6 +191,27 @@ void main() {
       expect(c.shed()!.shed()!.memories, ['new']);
       expect(c.shed()!.shed()!.shed()!.memories, isEmpty);
       expect(c.shed()!.shed()!.shed()!.shed(), isNull);
+    });
+
+    test('recalled snippets ride with the newest turn, most relevant kept '
+        'when room is short', () async {
+      expect(buildTurnContext(const []), isEmpty);
+      final all = buildTurnContext(const ['Tide tables', 'Ferry times']);
+      expect(all, contains('- Tide tables\n- Ferry times'));
+      Future<int> cost(String s) async => s.length;
+      final one = buildTurnContext(const ['Tide tables']);
+      expect(
+        await fitTurnContext(
+          const ['Tide tables', 'Ferry times'],
+          room: one.length,
+          cost: cost,
+        ),
+        (text: one, tokens: one.length),
+      );
+      expect(await fitTurnContext(const ['Tide tables'], room: 3, cost: cost), (
+        text: '',
+        tokens: 0,
+      ));
     });
 
     test('summarize prompt labels speakers', () {

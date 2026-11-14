@@ -42,14 +42,16 @@ class PromptPlan {
   final int promptTokens;
 }
 
-/// Everything the hidden system message carries besides who Aithra is.
+/// Everything the hidden system message carries besides who Aithra is. It
+/// holds only what stays the same from turn to turn, so the engine can keep
+/// the processed conversation and prefill just the new message; material
+/// retrieved per turn goes with that turn (see [buildTurnContext]).
 class SystemContext {
   const SystemContext({
     required this.now,
     this.aboutUser = '',
     this.replyStyle = '',
     this.memories = const [],
-    this.recalled = const [],
     this.summary,
   });
 
@@ -62,18 +64,14 @@ class SystemContext {
   /// Long-term memories, most important first.
   final List<String> memories;
 
-  /// Snippets recalled from other chats.
-  final List<String> recalled;
-
   /// The summary of this chat's earlier turns.
   final String? summary;
 
   /// A smaller version for a system message over its budget, or null when
-  /// nothing optional is left. Recalled snippets go first, then memories
-  /// from the end of the list (half at a time), then the custom
-  /// instructions are shortened; this chat's own summary is always kept.
+  /// nothing optional is left. Memories go first, from the end of the list
+  /// (half at a time), then the custom instructions are shortened; this
+  /// chat's own summary is always kept.
   SystemContext? shed() {
-    if (recalled.isNotEmpty) return _copy(recalled: const []);
     if (memories.isNotEmpty) {
       return _copy(memories: memories.sublist(0, memories.length ~/ 2));
     }
@@ -92,13 +90,11 @@ class SystemContext {
     String? aboutUser,
     String? replyStyle,
     List<String>? memories,
-    List<String>? recalled,
   }) => SystemContext(
     now: now,
     aboutUser: aboutUser ?? this.aboutUser,
     replyStyle: replyStyle ?? this.replyStyle,
     memories: memories ?? this.memories,
-    recalled: recalled ?? this.recalled,
     summary: summary,
   );
 }
@@ -131,17 +127,11 @@ Future<String> fitSystemPrompt(
 }
 
 /// The system message: who Aithra is, the user's custom instructions, what
-/// it remembers about the user, snippets recalled from other chats, and the
-/// summary of this chat's earlier turns.
+/// it remembers about the user, and the summary of this chat's earlier
+/// turns.
 String buildSystemPrompt(SystemContext context) {
-  final SystemContext(
-    :now,
-    :aboutUser,
-    :replyStyle,
-    :memories,
-    :recalled,
-    :summary,
-  ) = context;
+  final SystemContext(:now, :aboutUser, :replyStyle, :memories, :summary) =
+      context;
   final b = StringBuffer()
     ..writeln(
       'You are Aithra, a helpful assistant that runs entirely on the '
@@ -172,12 +162,6 @@ String buildSystemPrompt(SystemContext context) {
       b.writeln('- $m');
     }
   }
-  if (recalled.isNotEmpty) {
-    b.writeln('\nPossibly relevant notes from earlier chats:');
-    for (final r in recalled) {
-      b.writeln('- $r');
-    }
-  }
   if (summary != null && summary.isNotEmpty) {
     b
       ..writeln('\nSummary of the earlier part of this conversation:')
@@ -187,6 +171,38 @@ String buildSystemPrompt(SystemContext context) {
 }
 
 String _two(int v) => v.toString().padLeft(2, '0');
+
+/// Material for the newest user turn only: snippets [recalled] from other
+/// chats. Empty when there is none.
+String buildTurnContext(List<String> recalled) {
+  if (recalled.isEmpty) return '';
+  final b = StringBuffer()
+    ..writeln(
+      '(Possibly relevant notes from earlier chats, for context only; '
+      'the user has not repeated them:',
+    );
+  for (final r in recalled) {
+    b.writeln('- $r');
+  }
+  b.write(')');
+  return b.toString();
+}
+
+/// The longest prefix of [recalled] whose [buildTurnContext] costs at most
+/// [room] tokens by [cost], and that cost; the user's message is fitted
+/// first, so snippets only use what it leaves.
+Future<({String text, int tokens})> fitTurnContext(
+  List<String> recalled, {
+  required int room,
+  required Future<int> Function(String text) cost,
+}) async {
+  for (var n = recalled.length; n > 0; n--) {
+    final text = buildTurnContext(recalled.sublist(0, n));
+    final tokens = await cost(text);
+    if (tokens <= room) return (text: text, tokens: tokens);
+  }
+  return (text: '', tokens: 0);
+}
 
 /// Prompt tokens per UTF-8 byte when nothing has been measured: tokenizers
 /// with byte fallback (SentencePiece, BPE) never produce more tokens than a
@@ -281,6 +297,15 @@ List<T> messagesToSummarize<T>(List<T> history, {int keepRecent = 6}) =>
     history.length <= keepRecent
     ? const []
     : history.sublist(0, history.length - keepRecent);
+
+/// The hidden user turn that asks for the rest of a reply cut off at the
+/// reply-token limit. What it writes is appended to the stored reply as is,
+/// so the model is the one to decide how the two join.
+const continuePrompt =
+    'Your last reply was cut off by a length limit. Continue it exactly '
+    'where it stopped: start with the very next characters (a leading '
+    'space only if one belongs there), do not repeat anything, and add no '
+    'preamble.';
 
 String summarizePrompt(
   String? previous,

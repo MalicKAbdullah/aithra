@@ -60,7 +60,7 @@ class FakeNative extends NativeBridge {
   void finish(String text, {bool cancelled = false}) {
     final (id, _, done) = replies.removeAt(0);
     _events.add({'type': 'token', 'requestId': id, 'text': text});
-    done.complete({'cancelled': cancelled});
+    done.complete({'cancelled': cancelled, 'stopped': false});
   }
 
   @override
@@ -85,6 +85,7 @@ class FakeNative extends NativeBridge {
     required int maxTokens,
     required double temperature,
     required bool ignoreEos,
+    bool keepContext = false,
   }) {
     if (!_isChat(turns)) {
       background.add(turns);
@@ -93,7 +94,7 @@ class FakeNative extends NativeBridge {
         'requestId': requestId,
         'text': backgroundReply(turns),
       });
-      return Future.value({'cancelled': false});
+      return Future.value({'cancelled': false, 'stopped': false});
     }
     final done = Completer<Map<String, Object?>>();
     replies.add((requestId, turns, done));
@@ -104,7 +105,7 @@ class FakeNative extends NativeBridge {
   Future<void> cancel(int requestId) async {
     final i = replies.indexWhere((r) => r.$1 == requestId);
     if (i < 0) return;
-    replies.removeAt(i).$3.complete({'cancelled': true});
+    replies.removeAt(i).$3.complete({'cancelled': true, 'stopped': false});
   }
 
   @override
@@ -155,7 +156,12 @@ class FakeNative extends NativeBridge {
       conversations.containsKey(id) ? _row(id) : null;
 
   @override
-  Future<void> dbCreateConversation(String id, String title, int now) async {
+  Future<void> dbCreateConversation(
+    String id,
+    String title,
+    int now, {
+    bool private = false,
+  }) async {
     conversations[id] = {
       'id': id,
       'title': title,
@@ -166,6 +172,7 @@ class FakeNative extends NativeBridge {
       'summarizedUpto': 0,
       'draft': null,
       'scroll': 0.0,
+      'private': private,
     };
     messages[id] = [];
   }
@@ -205,6 +212,8 @@ class FakeNative extends NativeBridge {
       'images': images,
       'created': now,
       'stats': stats,
+      'version': 0,
+      'versionCount': 1,
     });
     return {'id': id, 'seq': seq};
   }
@@ -571,6 +580,7 @@ void main() {
             'summarizedUpto': 0,
             'scroll': 0.0,
             'messageCount': 0,
+            'private': false,
           });
       expect(ChatGroup.of(at(DateTime(2026, 11, 14, 9)), now), ChatGroup.today);
       expect(

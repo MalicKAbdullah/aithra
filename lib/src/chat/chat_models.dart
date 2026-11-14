@@ -17,6 +17,7 @@ class ConversationInfo {
     required this.messageCount,
     required this.preview,
     required this.previewFromUser,
+    required this.private,
   });
 
   factory ConversationInfo.fromMap(Map<String, Object?> m) => ConversationInfo(
@@ -35,6 +36,7 @@ class ConversationInfo {
       null => null,
     },
     previewFromUser: m['previewRole'] == 'user',
+    private: m['private']! as bool,
   );
 
   final String id;
@@ -57,21 +59,30 @@ class ConversationInfo {
   final String? preview;
   final bool previewFromUser;
 
-  ConversationInfo copyWith({String? title, bool? pinned, DateTime? updated}) =>
-      ConversationInfo(
-        id: id,
-        title: title ?? this.title,
-        created: created,
-        updated: updated ?? this.updated,
-        pinned: pinned ?? this.pinned,
-        summary: summary,
-        summarizedUpto: summarizedUpto,
-        draft: draft,
-        scroll: scroll,
-        messageCount: messageCount,
-        preview: preview,
-        previewFromUser: previewFromUser,
-      );
+  /// A private chat: no long-term memory is read into it or learned from
+  /// it, nothing is recalled into it, and it is never recalled elsewhere.
+  final bool private;
+
+  ConversationInfo copyWith({
+    String? title,
+    bool? pinned,
+    DateTime? updated,
+    bool? private,
+  }) => ConversationInfo(
+    id: id,
+    title: title ?? this.title,
+    created: created,
+    updated: updated ?? this.updated,
+    pinned: pinned ?? this.pinned,
+    summary: summary,
+    summarizedUpto: summarizedUpto,
+    draft: draft,
+    scroll: scroll,
+    messageCount: messageCount,
+    preview: preview,
+    previewFromUser: previewFromUser,
+    private: private ?? this.private,
+  );
 }
 
 enum Role {
@@ -92,6 +103,8 @@ class ChatMessage {
     this.stats,
     this.tokens,
     this.tokensModel,
+    this.version = 0,
+    this.versionCount = 1,
   });
 
   factory ChatMessage.fromMap(Map<String, Object?> m) => ChatMessage(
@@ -108,6 +121,8 @@ class ChatMessage {
           ),
     tokens: m['tokens'] as int?,
     tokensModel: m['tokensModel'] as String?,
+    version: m['version']! as int,
+    versionCount: m['versionCount']! as int,
   );
 
   final int id;
@@ -122,6 +137,45 @@ class ChatMessage {
   /// cached in the database; null until counted.
   final int? tokens;
   final String? tokensModel;
+
+  /// Which of this reply's regenerated versions it is, by [MessageVersion.ord].
+  final int version;
+
+  /// How many versions the reply has, this one included; more than one
+  /// after a regenerate (see ChatSession.messageVersions).
+  final int versionCount;
+}
+
+/// One version of a regenerated reply.
+class MessageVersion {
+  const MessageVersion({
+    required this.ord,
+    required this.content,
+    required this.stats,
+    required this.created,
+    required this.current,
+  });
+
+  factory MessageVersion.fromMap(Map<String, Object?> m) => MessageVersion(
+    ord: m['ord']! as int,
+    content: m['content']! as String,
+    stats: m['stats'] == null
+        ? null
+        : RunMetrics.fromMap(
+            Map<String, Object?>.from(jsonDecode(m['stats']! as String) as Map),
+          ),
+    created: DateTime.fromMillisecondsSinceEpoch(m['created']! as int),
+    current: m['current']! as bool,
+  );
+
+  /// Its place in the order the versions were written, from 0.
+  final int ord;
+  final String content;
+  final RunMetrics? stats;
+  final DateTime created;
+
+  /// Whether this is the version the chat shows.
+  final bool current;
 }
 
 /// Title for a new chat: the first line of its first message, shortened.

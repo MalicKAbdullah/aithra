@@ -24,6 +24,13 @@ import java.util.concurrent.CountDownLatch
  * which some Mali drivers need for correct output), `npu` (LiteRT dispatch
  * library bundled from litert-npu-runtime-google-tensor) or `tensor`
  * (LiteRT-LM's Google Tensor backend).
+ *
+ * A Conversation is stateful: each sendMessage appends to the history it
+ * has already prefilled. The last chat reply's Conversation is kept in
+ * [kept], so the next message in that chat prefills only itself. Requests
+ * that do not keep context (titles, memory, calibration) open a
+ * Conversation of their own beside it; LiteRT-LM 0.19 holds a processed
+ * context (KV cache) per live session, so neither disturbs the other.
  */
 class LiteRtEngine(
     path: String,
@@ -36,6 +43,7 @@ class LiteRtEngine(
     private val engine: Engine
     @Volatile private var active: Conversation? = null
     private val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val kept = ConversationCache<Conversation>()
 
     override val contextSize: Int
 
@@ -66,16 +74,13 @@ class LiteRtEngine(
     }
 
     override fun generate(request: GenerateRequest, onText: (String) -> Boolean): GenerateStats {
-        val history = request.turns.dropLast(1).map(::toMessage)
+        val prefix = request.turns.dropLast(1)
         val last = toMessage(request.turns.last())
-        val sampler = if (request.temperature <= 0f) {
-            SamplerConfig(topK = 1, topP = 1.0, temperature = 1.0, seed = 0)
-        } else {
-            SamplerConfig(topK = 40, topP = 0.95, temperature = request.temperature.toDouble(), seed = 0)
-        }
-        val conversation = engine.createConversation(
-            ConversationConfig(initialMessages = history, samplerConfig = sampler),
+        val reused = if (request.keepContext) kept.take(prefix, request.temperature) else null
+        val conversation = reused ?: engine.createConversation(
+            ConversationConfig(initialMessages = prefix.map(::toMessage), samplerConfig = sampler(request.temperature)),
         )
+        val reusedTokens = reused?.getTokenCount() ?: 0
         active = conversation
         // A cancel that arrived before [active] was set only raised the flag.
         if (cancelled.get()) {
@@ -86,6 +91,9 @@ class LiteRtEngine(
         val start = System.nanoTime()
         var firstTokenNs = 0L
         var failure: Throwable? = null
+        var stoppedEarly = false
+        val reply = StringBuilder()
+        var complete = false
         val done = CountDownLatch(1)
         try {
             conversation.sendMessageAsync(
@@ -96,7 +104,11 @@ class LiteRtEngine(
                         val text = message.contents.contents
                             .filterIsInstance<Content.Text>()
                             .joinToString("") { it.text }
-                        if (text.isNotEmpty() && !onText(text)) conversation.cancelProcess()
+                        reply.append(text)
+                        if (text.isNotEmpty() && !onText(text)) {
+                            stoppedEarly = true
+                            conversation.cancelProcess()
+                        }
                     }
 
                     override fun onDone() = done.countDown()
@@ -110,6 +122,9 @@ class LiteRtEngine(
             )
             done.await()
             failure?.let { if (it !is java.util.concurrent.CancellationException) throw it }
+            // A cut-off reply leaves the Conversation's history in a state
+            // the stored chat does not describe.
+            complete = failure == null && !stoppedEarly && !cancelled.get()
 
             val ttftMs = if (firstTokenNs == 0L) null else (firstTokenNs - start) / 1e6
             return try {
@@ -123,14 +138,25 @@ class LiteRtEngine(
                     contextTokens = conversation.getTokenCount(),
                     note = null,
                     cancelled = cancelled.get(),
+                    reusedTokens = reusedTokens,
                 )
             } catch (e: Exception) {
-                GenerateStats(null, null, ttftMs, null, null, null, "benchmark info: ${e.message}", cancelled.get())
+                GenerateStats(null, null, ttftMs, null, null, null, "benchmark info: ${e.message}", cancelled.get(), reusedTokens)
             }
         } finally {
             active = null
-            conversation.close()
+            if (request.keepContext && complete) {
+                kept.keep(conversation, request.turns + ChatTurn("model", reply.toString(), emptyList()), request.temperature)
+            } else {
+                conversation.close()
+            }
         }
+    }
+
+    private fun sampler(temperature: Float) = if (temperature <= 0f) {
+        SamplerConfig(topK = 1, topP = 1.0, temperature = 1.0, seed = 0)
+    } else {
+        SamplerConfig(topK = 40, topP = 0.95, temperature = temperature.toDouble(), seed = 0)
     }
 
     override fun cancel() {
@@ -146,13 +172,16 @@ class LiteRtEngine(
 
     override val promptOverhead: Int? = null
 
-    override fun close() = engine.close()
+    override fun close() {
+        kept.clear()
+        engine.close()
+    }
 
     private fun msFor(tokens: Int, perSecond: Double): Double? =
         if (tokens <= 0 || perSecond <= 0.0) null else tokens / perSecond * 1000.0
 
     private fun toMessage(turn: ChatTurn): Message {
-        val parts = turn.images.map { Content.ImageBytes(it) } + Content.Text(turn.text)
+        val parts = turn.images.map { Content.ImageBytes(it) } + Content.Text(turn.prompt)
         val contents = Contents.of(parts)
         return when (turn.role) {
             "user" -> Message.user(contents)

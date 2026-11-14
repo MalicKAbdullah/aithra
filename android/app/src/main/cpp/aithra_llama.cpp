@@ -1,8 +1,9 @@
 // JNI bridge between dev.abdullah.aithra.engine.LlamaNative and llama.cpp.
 //
-// One Session owns a model, a context and a sampler-free state; every
-// generate() call clears the KV cache and prefills the whole conversation, so
-// the Kotlin side never has to track positions.
+// One Session owns a model, a context and a sampler-free state. The Kotlin
+// side always sends the whole conversation; the session remembers which
+// tokens its KV cache holds, and a chat reply (keep_context) prefills only
+// what follows the longest prefix it shares with them.
 
 #include <jni.h>
 #include <android/log.h>
@@ -32,7 +33,32 @@ struct Session {
     // Set from any thread to stop the running generation. ggml polls it
     // inside llama_decode, so a long prefill stops too.
     std::atomic<bool> abort{false};
+    // The tokens whose keys and values sit in the context, at positions
+    // 0..n-1 of sequence 0. Empty whenever that is not known exactly.
+    std::vector<llama_token> cached;
 };
+
+// Drops everything in the context.
+void forget(Session *s) {
+    llama_memory_clear(llama_get_memory(s->ctx), true);
+    s->cached.clear();
+}
+
+// Keeps the longest cached prefix of [tokens] (always leaving at least one
+// token to decode, whose logits start the reply) and returns its length.
+// Memories that cannot drop a tail (recurrent layers, sliding windows that
+// already evicted it) refuse the removal; then nothing is kept.
+size_t reuse_prefix(Session *s, const std::vector<llama_token> &tokens) {
+    size_t keep = 0;
+    while (keep < s->cached.size() && keep < tokens.size() && s->cached[keep] == tokens[keep]) ++keep;
+    if (keep == tokens.size()) --keep;
+    if (keep == 0 || !llama_memory_seq_rm(llama_get_memory(s->ctx), 0, (llama_pos) keep, -1)) {
+        forget(s);
+        return 0;
+    }
+    s->cached.resize(keep);
+    return keep;
+}
 
 void throw_java(JNIEnv *env, const std::string &msg) {
     jclass cls = env->FindClass("java/lang/IllegalStateException");
@@ -212,11 +238,12 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeCountTokens(JNIEnv *env, jobje
     return (jint) tokenize(llama_model_get_vocab(s->model), to_utf8(env, text), false).size();
 }
 
-// Returns [promptTokens, prefillMs, ttftMs, decodeTokens, decodeMs].
+// Returns [promptTokens, prefillMs, ttftMs, decodeTokens, decodeMs,
+// aborted, reusedTokens]; promptTokens counts the reused ones too.
 extern "C" JNIEXPORT jdoubleArray JNICALL
 Java_dev_abdullah_aithra_engine_LlamaNative_nativeGenerate(
         JNIEnv *env, jobject, jlong handle, jobjectArray roles, jobjectArray contents,
-        jint max_tokens, jboolean ignore_eos, jfloat temperature, jobject callback) {
+        jint max_tokens, jboolean ignore_eos, jfloat temperature, jboolean keep_context, jobject callback) {
     auto *s = reinterpret_cast<Session *>(handle);
     const llama_vocab *vocab = llama_model_get_vocab(s->model);
 
@@ -245,16 +272,27 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeGenerate(
         llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
     }
 
-    llama_memory_clear(llama_get_memory(s->ctx), true);
+    // Calibration and background work prefill in full: their timings must
+    // measure a whole prompt.
+    size_t reused = 0;
+    if (keep_context) {
+        reused = reuse_prefix(s, tokens);
+    } else {
+        forget(s);
+    }
     auto t0 = std::chrono::steady_clock::now();
 
-    for (size_t i = 0; i < tokens.size() && !s->abort; i += s->n_batch) {
+    for (size_t i = reused; i < tokens.size() && !s->abort; i += s->n_batch) {
         int n = (int) std::min((size_t) s->n_batch, tokens.size() - i);
-        if (llama_decode(s->ctx, llama_batch_get_one(tokens.data() + i, n)) != 0 && !s->abort) {
+        if (llama_decode(s->ctx, llama_batch_get_one(tokens.data() + i, n)) != 0) {
+            // A failed or aborted batch may have stored part of itself.
+            forget(s);
+            if (s->abort) break;
             llama_sampler_free(smpl);
             throw_java(env, "llama_decode failed during prefill");
             return nullptr;
         }
+        s->cached.insert(s->cached.end(), tokens.begin() + (long) i, tokens.begin() + (long) i + n);
     }
     double prefill_ms = ms_since(t0);
     double ttft_ms = 0;
@@ -283,16 +321,20 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeGenerate(
                 if (!keep) stop = true;
             }
         }
-        if (llama_decode(s->ctx, llama_batch_get_one(&tok, 1)) != 0) break;
+        if (llama_decode(s->ctx, llama_batch_get_one(&tok, 1)) != 0) {
+            forget(s);
+            break;
+        }
+        s->cached.push_back(tok);
         ++decoded;
     }
     double decode_ms = ms_since(t_decode);
     llama_sampler_free(smpl);
 
-    double out[6] = {(double) tokens.size(), prefill_ms, ttft_ms, (double) decoded, decode_ms,
-                     s->abort ? 1.0 : 0.0};
-    jdoubleArray result = env->NewDoubleArray(6);
-    env->SetDoubleArrayRegion(result, 0, 6, out);
+    double out[7] = {(double) tokens.size(), prefill_ms, ttft_ms, (double) decoded, decode_ms,
+                     s->abort ? 1.0 : 0.0, (double) reused};
+    jdoubleArray result = env->NewDoubleArray(7);
+    env->SetDoubleArrayRegion(result, 0, 7, out);
     return result;
 }
 

@@ -22,15 +22,19 @@ import javax.crypto.spec.SecretKeySpec
  * decrypt the same bytes. The key lives in core_storage (Android Keystore
  * backed) and is handed over by Dart on [open]; it is never written here.
  *
- * The chat-list search box matches word prefixes of titles through a blind
- * index: each prefix is stored only as a keyed HMAC. Message text is found
- * by decrypting and scanning ([searchText]), newest chats first. Cross-chat
- * recall is
- * semantic: each message's EmbeddingGemma vector is stored encrypted and
- * compared by cosine similarity at query time (see [indexVectors] and
- * [recall]); without the embedding model, recall is off.
+ * The chat-list search box matches word prefixes of titles and of message
+ * text through blind indexes: each prefix is stored only as a keyed HMAC
+ * (see [MessageTerms] for messages). Cross-chat recall is semantic: each
+ * message's EmbeddingGemma vector is stored encrypted and compared by cosine
+ * similarity at query time (see [indexVectors] and [recall]); without the
+ * embedding model, recall is off. A private conversation is never embedded,
+ * so it neither feeds recall nor is recalled into.
+ *
+ * A regenerated reply keeps its earlier versions in `message_versions`,
+ * numbered by `ord` in the order they were written; the `messages` row holds
+ * the version on show (its `version` is that version's ord).
  */
-class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3) {
+class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4) {
     private companion object {
         /** Enough for two lines of preview after Markdown is stripped. */
         const val PREVIEW_CHARS = 240
@@ -71,6 +75,29 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         db.execSQL("CREATE UNIQUE INDEX messages_conv_seq ON messages(conv_id, seq)")
         db.execSQL("CREATE TABLE media(id TEXT PRIMARY KEY, data BLOB NOT NULL, thumb BLOB NOT NULL)")
         createSearchTables(db)
+        addFindPrivateAndVersions(db)
+    }
+
+    /**
+     * Version 4: the blind message-text index, private conversations and
+     * regenerated reply versions. Existing messages are indexed here, which
+     * needs the data key; [open] sets it before the database is opened.
+     */
+    private fun addFindPrivateAndVersions(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE conversations ADD COLUMN private INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE messages ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("CREATE TABLE message_terms(hash INTEGER NOT NULL, msg_id INTEGER NOT NULL, conv_id TEXT NOT NULL)")
+        db.execSQL("CREATE INDEX message_terms_hash ON message_terms(hash, conv_id)")
+        db.execSQL("CREATE INDEX message_terms_msg ON message_terms(msg_id)")
+        db.execSQL(
+            """CREATE TABLE message_versions(
+                conv_id TEXT NOT NULL, seq INTEGER NOT NULL, ord INTEGER NOT NULL,
+                content BLOB NOT NULL, stats TEXT, created INTEGER NOT NULL)""",
+        )
+        db.execSQL("CREATE UNIQUE INDEX message_versions_key ON message_versions(conv_id, seq, ord)")
+        db.rawQuery("SELECT id, conv_id, content FROM messages", null).use { c ->
+            while (c.moveToNext()) indexMessage(db, c.getLong(0), c.getString(1), openText(c.getBlob(2)))
+        }
     }
 
     private fun createSearchTables(db: SQLiteDatabase) {
@@ -98,6 +125,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
                 while (c.moveToNext()) indexTitle(db, c.getString(0), openText(c.getBlob(1)))
             }
         }
+        if (oldVersion < 4) addFindPrivateAndVersions(db)
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -132,9 +160,23 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
 
     // -- Blind keyword index ----------------------------------------------------
 
-    private fun termHash(term: String): Long {
-        val mac = Mac.getInstance("HmacSHA256").apply { init(termKey!!) }
-        return ByteBuffer.wrap(mac.doFinal(term.toByteArray(Charsets.UTF_8)), 0, 8).long
+    // One Mac per thread: indexing a long message hashes dozens of terms,
+    // and the db and embed threads both reach this.
+    private val termMac = ThreadLocal.withInitial { Mac.getInstance("HmacSHA256").apply { init(termKey!!) } }
+
+    private fun termHash(term: String): Long =
+        ByteBuffer.wrap(termMac.get()!!.doFinal(term.toByteArray(Charsets.UTF_8)), 0, 8).long
+
+    /** Replaces message [msgId]'s entries in the text index. */
+    private fun indexMessage(db: SQLiteDatabase, msgId: Long, convId: String, text: String) {
+        db.delete("message_terms", "msg_id = ?", arrayOf(msgId.toString()))
+        val stmt = db.compileStatement("INSERT INTO message_terms(hash, msg_id, conv_id) VALUES(?,?,?)")
+        for (term in MessageTerms.indexTerms(text)) {
+            stmt.bindLong(1, termHash(term))
+            stmt.bindLong(2, msgId)
+            stmt.bindString(3, convId)
+            stmt.executeInsert()
+        }
     }
 
     private fun indexTitle(db: SQLiteDatabase, convId: String, title: String) {
@@ -162,6 +204,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         "messageCount" to c.getInt(9),
         "preview" to if (c.isNull(10)) null else openText(c.getBlob(10)).take(PREVIEW_CHARS),
         "previewRole" to c.getString(11),
+        "private" to (c.getInt(12) == 1),
     )
 
     // The latest message rides along for the list preview; the
@@ -169,7 +212,8 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
     private val conversationColumns =
         "id, title, created, updated, pinned, summary, summarized_upto, draft, scroll, message_count, " +
             "(SELECT content FROM messages m WHERE m.conv_id = conversations.id ORDER BY m.seq DESC LIMIT 1), " +
-            "(SELECT role FROM messages m WHERE m.conv_id = conversations.id ORDER BY m.seq DESC LIMIT 1)"
+            "(SELECT role FROM messages m WHERE m.conv_id = conversations.id ORDER BY m.seq DESC LIMIT 1), " +
+            "private"
 
     /** Pinned first, then most recently updated. */
     fun listConversations(offset: Int, limit: Int): List<Map<String, Any?>> =
@@ -182,13 +226,14 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         readableDatabase.rawQuery("SELECT $conversationColumns FROM conversations WHERE id = ?", arrayOf(id))
             .use { c -> if (c.moveToFirst()) conversationRow(c) else null }
 
-    fun createConversation(id: String, title: String, now: Long) {
+    fun createConversation(id: String, title: String, now: Long, private: Boolean) {
         writableDatabase.transaction {
             insertOrThrow("conversations", null, ContentValues().apply {
                 put("id", id)
                 put("title", sealText(title))
                 put("created", now)
                 put("updated", now)
+                put("private", if (private) 1 else 0)
             })
             indexTitle(this, id, title)
         }
@@ -213,8 +258,15 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
                 if (d.isNullOrEmpty()) values.putNull("draft") else values.put("draft", sealText(d))
             }
             fields["scroll"]?.let { values.put("scroll", (it as Number).toDouble()) }
+            fields["private"]?.let {
+                values.put("private", if (it as Boolean) 1 else 0)
+                // Recall reads only stored vectors, so a chat made private
+                // stops being recalled the moment they are gone.
+                if (it) delete("vectors", "conv_id = ?", arrayOf(id))
+            }
             if (values.size() > 0) update("conversations", values, "id = ?", arrayOf(id))
         }
+        if (fields["private"] == true) dropVectorCache()
     }
 
     fun deleteConversation(id: String) {
@@ -225,6 +277,8 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
             imageIds.forEach { delete("media", "id = ?", arrayOf(it)) }
             delete("title_terms", "conv_id = ?", arrayOf(id))
             delete("vectors", "conv_id = ?", arrayOf(id))
+            execSQL("DELETE FROM message_terms WHERE msg_id IN (SELECT id FROM messages WHERE conv_id = ?)", arrayOf(id))
+            delete("message_versions", "conv_id = ?", arrayOf(id))
             delete("messages", "conv_id = ?", arrayOf(id))
             delete("conversations", "id = ?", arrayOf(id))
         }
@@ -243,19 +297,25 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         "stats" to c.getString(6),
         "tokens" to if (c.isNull(7)) null else c.getInt(7),
         "tokensModel" to c.getString(8),
+        "version" to c.getInt(9),
+        "versionCount" to c.getInt(10) + 1,
     )
+
+    private val messageColumns =
+        "id, seq, role, content, images, created, stats, tokens, tokens_model, version, " +
+            "(SELECT COUNT(*) FROM message_versions v WHERE v.conv_id = messages.conv_id AND v.seq = messages.seq)"
 
     /** The newest [limit] messages with seq < [beforeSeq], newest first. */
     fun messages(convId: String, beforeSeq: Int, limit: Int): List<Map<String, Any?>> =
         readableDatabase.rawQuery(
-            "SELECT id, seq, role, content, images, created, stats, tokens, tokens_model FROM messages WHERE conv_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
+            "SELECT $messageColumns FROM messages WHERE conv_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?",
             arrayOf(convId, beforeSeq.toString(), limit.toString()),
         ).use { c -> buildList { while (c.moveToNext()) add(messageRow(c)) } }
 
     /** Messages with seq in [fromSeq, toSeq), oldest first. */
     fun messageRange(convId: String, fromSeq: Int, toSeq: Int): List<Map<String, Any?>> =
         readableDatabase.rawQuery(
-            "SELECT id, seq, role, content, images, created, stats, tokens, tokens_model FROM messages WHERE conv_id = ? AND seq >= ? AND seq < ? ORDER BY seq ASC",
+            "SELECT $messageColumns FROM messages WHERE conv_id = ? AND seq >= ? AND seq < ? ORDER BY seq ASC",
             arrayOf(convId, fromSeq.toString(), toSeq.toString()),
         ).use { c -> buildList { while (c.moveToNext()) add(messageRow(c)) } }
 
@@ -265,6 +325,11 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         writableDatabase.transaction {
             val seq = rawQuery("SELECT COALESCE(MAX(seq), -1) + 1 FROM messages WHERE conv_id = ?", arrayOf(convId))
                 .use { c -> c.moveToFirst(); c.getInt(0) }
+            // A regenerated reply follows the versions archived at its seq.
+            val version = rawQuery(
+                "SELECT COALESCE(MAX(ord), -1) + 1 FROM message_versions WHERE conv_id = ? AND seq = ?",
+                arrayOf(convId, seq.toString()),
+            ).use { c -> c.moveToFirst(); c.getInt(0) }
             val id = insertOrThrow("messages", null, ContentValues().apply {
                 put("conv_id", convId)
                 put("seq", seq)
@@ -273,7 +338,9 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
                 put("images", images.joinToString(","))
                 put("created", now)
                 put("stats", stats)
+                put("version", version)
             })
+            indexMessage(this, id, convId, content)
             execSQL(
                 "UPDATE conversations SET updated = ?, message_count = message_count + 1 WHERE id = ?",
                 arrayOf<Any>(now, convId),
@@ -293,6 +360,9 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
                 putNull("tokens")
                 putNull("tokens_model")
             }, "id = ?", arrayOf(id.toString()))
+            val convId = rawQuery("SELECT conv_id FROM messages WHERE id = ?", arrayOf(id.toString()))
+                .use { c -> c.moveToFirst(); c.getString(0) }
+            indexMessage(this, id, convId, content)
         }
         dropVectorCache()
     }
@@ -313,14 +383,30 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
     /**
      * Deletes every message with seq >= [fromSeq] (edit and regenerate) and
      * their images, except [keepImages], which an edited message carries
-     * over.
+     * over. With [archive] (regenerate) the reply at [fromSeq] is kept as an
+     * earlier version, and the next message added there follows it; without,
+     * the versions at [fromSeq] go too, since a different message takes
+     * that place.
      */
-    fun truncate(convId: String, fromSeq: Int, keepImages: Set<String>) {
+    fun truncate(convId: String, fromSeq: Int, keepImages: Set<String>, archive: Boolean) {
         writableDatabase.transaction {
+            if (archive) {
+                execSQL(
+                    "INSERT INTO message_versions(conv_id, seq, ord, content, stats, created) " +
+                        "SELECT conv_id, seq, version, content, stats, created FROM messages WHERE conv_id = ? AND seq = ?",
+                    arrayOf<Any>(convId, fromSeq),
+                )
+            }
+            delete(
+                "message_versions",
+                "conv_id = ? AND seq >= ?",
+                arrayOf(convId, (if (archive) fromSeq + 1 else fromSeq).toString()),
+            )
             val ids = rawQuery("SELECT id, images FROM messages WHERE conv_id = ? AND seq >= ?", arrayOf(convId, fromSeq.toString()))
                 .use { c -> buildList { while (c.moveToNext()) add(c.getLong(0) to c.getString(1)) } }
             for ((id, images) in ids) {
                 delete("vectors", "msg_id = ?", arrayOf(id.toString()))
+                delete("message_terms", "msg_id = ?", arrayOf(id.toString()))
                 images.split(',').filter { it.isNotEmpty() && it !in keepImages }
                     .forEach { delete("media", "id = ?", arrayOf(it)) }
             }
@@ -329,6 +415,70 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
                 "UPDATE conversations SET message_count = (SELECT COUNT(*) FROM messages WHERE conv_id = ?), summarized_upto = MIN(summarized_upto, ?) WHERE id = ?",
                 arrayOf<Any>(convId, fromSeq, convId),
             )
+        }
+        dropVectorCache()
+    }
+
+    /**
+     * Every version of the message at [seq], in the order they were written:
+     * `ord`, `content`, `stats`, `created`, and `current` for the one on
+     * show.
+     */
+    fun messageVersions(convId: String, seq: Int): List<Map<String, Any?>> {
+        val db = readableDatabase
+        val archived = db.rawQuery(
+            "SELECT ord, content, stats, created FROM message_versions WHERE conv_id = ? AND seq = ?",
+            arrayOf(convId, seq.toString()),
+        ).use { c -> buildList { while (c.moveToNext()) add(versionRow(c, current = false)) } }
+        val current = db.rawQuery(
+            "SELECT version, content, stats, created FROM messages WHERE conv_id = ? AND seq = ?",
+            arrayOf(convId, seq.toString()),
+        ).use { c -> if (c.moveToFirst()) versionRow(c, current = true) else null }
+        return (archived + listOfNotNull(current)).sortedBy { it["ord"] as Int }
+    }
+
+    private fun versionRow(c: android.database.Cursor, current: Boolean) = mapOf(
+        "ord" to c.getInt(0),
+        "content" to openText(c.getBlob(1)),
+        "stats" to c.getString(2),
+        "created" to c.getLong(3),
+        "current" to current,
+    )
+
+    /**
+     * Shows version [ord] of the message at [seq]: it trades places with the
+     * version on show, which is archived under its own ord.
+     */
+    fun selectVersion(convId: String, seq: Int, ord: Int) {
+        writableDatabase.transaction {
+            val (msgId, shown) = rawQuery(
+                "SELECT id, version FROM messages WHERE conv_id = ? AND seq = ?",
+                arrayOf(convId, seq.toString()),
+            ).use { c -> check(c.moveToFirst()) { "No message at $seq" }; c.getLong(0) to c.getInt(1) }
+            if (shown == ord) return@transaction
+            val (content, stats, created) = rawQuery(
+                "SELECT content, stats, created FROM message_versions WHERE conv_id = ? AND seq = ? AND ord = ?",
+                arrayOf(convId, seq.toString(), ord.toString()),
+            ).use { c ->
+                check(c.moveToFirst()) { "No version $ord at $seq" }
+                Triple(c.getBlob(0), c.getString(1), c.getLong(2))
+            }
+            execSQL(
+                "INSERT INTO message_versions(conv_id, seq, ord, content, stats, created) " +
+                    "SELECT conv_id, seq, version, content, stats, created FROM messages WHERE id = ?",
+                arrayOf<Any>(msgId),
+            )
+            delete("message_versions", "conv_id = ? AND seq = ? AND ord = ?", arrayOf(convId, seq.toString(), ord.toString()))
+            update("messages", ContentValues().apply {
+                put("content", content)
+                put("stats", stats)
+                put("created", created)
+                put("version", ord)
+                putNull("tokens")
+                putNull("tokens_model")
+            }, "id = ?", arrayOf(msgId.toString()))
+            delete("vectors", "msg_id = ?", arrayOf(msgId.toString()))
+            indexMessage(this, msgId, convId, openText(content))
         }
         dropVectorCache()
     }
@@ -371,32 +521,56 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
     }
 
     /**
-     * Conversations (as [listConversations] rows) with a message containing
-     * [query], ignoring case, most recently updated first, each with its
-     * newest matching message cut around the match as `snippet`. Message text is encrypted, so it is decrypted as
-     * the scan goes; the scan visits newest chats first, skips the rest of a
-     * chat once it matched and stops at [limit] chats.
+     * Messages that [MessageTerms.match] [query], newest chat first and
+     * newest message first within a chat, as (conversation id, seq, text,
+     * match). Only messages the index lists under every query word's prefix
+     * are decrypted.
      */
-    fun searchText(query: String, limit: Int): List<Map<String, Any?>> {
-        val needle = query.trim()
-        if (needle.isEmpty()) return emptyList()
-        val found = LinkedHashMap<String, String>()
+    private fun textMatches(query: String, convId: String?): Sequence<TextMatch> = sequence {
+        val words = MessageTerms.words(query)
+        if (words.isEmpty()) return@sequence
+        val hashes = words.map { termHash(MessageTerms.lookupTerm(it)) }.distinct()
+        val inConv = if (convId == null) "" else " AND conv_id = ?"
+        val args = hashes.map(Long::toString) + listOfNotNull(convId)
         readableDatabase.rawQuery(
-            "SELECT m.conv_id, m.content FROM messages m JOIN conversations c ON c.id = m.conv_id " +
+            "SELECT m.conv_id, m.seq, m.content FROM messages m JOIN conversations c ON c.id = m.conv_id " +
+                "WHERE m.id IN (SELECT msg_id FROM message_terms WHERE hash IN (${hashes.joinToString(",") { "?" }})$inConv " +
+                "GROUP BY msg_id HAVING COUNT(DISTINCT hash) = ${hashes.size}) " +
                 "ORDER BY c.updated DESC, m.conv_id, m.seq DESC",
-            null,
+            args.toTypedArray(),
         ).use { c ->
-            while (found.size < limit && c.moveToNext()) {
-                val conv = c.getString(0)
-                if (conv in found) continue
-                val text = openText(c.getBlob(1))
-                val at = text.indexOf(needle, ignoreCase = true)
-                if (at >= 0) found[conv] = snippet(text, at, needle.length)
+            while (c.moveToNext()) {
+                val text = openText(c.getBlob(2))
+                val at = MessageTerms.match(text, words) ?: continue
+                yield(TextMatch(c.getString(0), c.getInt(1), text, at))
             }
         }
-        // Every id came from the join above, on this same db thread.
-        return found.map { (conv, text) -> getConversation(conv)!! + ("snippet" to text) }
     }
+
+    private class TextMatch(val convId: String, val seq: Int, val text: String, val at: IntRange)
+
+    /**
+     * Conversations (as [listConversations] rows) with a message matching
+     * [query] (every query word starts a word of it, ignoring case), most
+     * recently updated first, each with its newest matching message cut
+     * around the match as `snippet` and that message's `seq`.
+     */
+    fun searchText(query: String, limit: Int): List<Map<String, Any?>> {
+        val found = LinkedHashMap<String, TextMatch>()
+        for (m in textMatches(query, null)) {
+            if (m.convId in found) continue
+            found[m.convId] = m
+            if (found.size == limit) break
+        }
+        // Every id came from the join in textMatches, on this same db thread.
+        return found.values.map { m ->
+            getConversation(m.convId)!! + mapOf("snippet" to snippet(m.text, m.at.first, m.at.count()), "seq" to m.seq)
+        }
+    }
+
+    /** Seqs of [convId]'s messages matching [query], newest first. */
+    fun findInChat(convId: String, query: String): List<Int> =
+        textMatches(query, convId).map { it.seq }.toList()
 
     private fun snippet(text: String, at: Int, length: Int): String {
         val start = maxOf(0, at - SNIPPET_BEFORE)
@@ -452,7 +626,8 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
     fun indexVectors(embedder: Embedder, modelPath: String, limit: Int): Int {
         val pending = readableDatabase.rawQuery(
             "SELECT m.id, m.conv_id, m.content FROM messages m LEFT JOIN vectors v ON v.msg_id = m.id " +
-                "WHERE v.msg_id IS NULL ORDER BY m.id DESC LIMIT ?",
+                "JOIN conversations c ON c.id = m.conv_id " +
+                "WHERE v.msg_id IS NULL AND c.private = 0 ORDER BY m.id DESC LIMIT ?",
             arrayOf(limit.toString()),
         ).use { c ->
             buildList { while (c.moveToNext()) add(Triple(c.getLong(0), c.getString(1), openText(c.getBlob(2)).trim())) }
@@ -461,8 +636,14 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         val texts = pending.filter { it.third.isNotEmpty() }
         val vecs = embedder.embed(modelPath, texts.map { Embedder.document(it.third.take(EMBED_CHARS)) })
         val byId = texts.map { it.first }.zip(vecs).toMap()
+        var stored = pending
         writableDatabase.transaction {
-            for ((id, conv, _) in pending) {
+            // A chat made private while its messages were being embedded
+            // must not get their vectors.
+            val private = rawQuery("SELECT id FROM conversations WHERE private = 1", null)
+                .use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
+            stored = pending.filter { it.second !in private }
+            for ((id, conv, _) in stored) {
                 val v = byId[id]
                 insertWithOnConflict("vectors", null, ContentValues().apply {
                     put("msg_id", id)
@@ -471,7 +652,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
                 }, SQLiteDatabase.CONFLICT_REPLACE)
             }
         }
-        for ((id, conv, _) in pending) byId[id]?.let { cacheVector(Vec(id, conv, it)) }
+        for ((id, conv, _) in stored) byId[id]?.let { cacheVector(Vec(id, conv, it)) }
         return pending.size
     }
 
@@ -496,7 +677,9 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
 
     /** How many messages have a vector, of all messages. */
     fun vectorStatus(): Map<String, Any?> = readableDatabase.rawQuery(
-        "SELECT (SELECT COUNT(*) FROM vectors), (SELECT COUNT(*) FROM messages)", null,
+        "SELECT (SELECT COUNT(*) FROM vectors), " +
+            "(SELECT COUNT(*) FROM messages m JOIN conversations c ON c.id = m.conv_id WHERE c.private = 0)",
+        null,
     ).use { c ->
         c.moveToFirst()
         mapOf("indexed" to c.getInt(0), "total" to c.getInt(1))
@@ -543,7 +726,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         val conv = "selftest-" + System.nanoTime()
         val random = java.util.Random(7)
         val t0 = System.nanoTime()
-        createConversation(conv, "Self test harbour lights", System.currentTimeMillis())
+        createConversation(conv, "Self test harbour lights", System.currentTimeMillis(), private = false)
         writableDatabase.transaction {
             for (i in 0 until messages) {
                 val id = (addMessage(conv, if (i % 2 == 0) "user" else "model",
@@ -566,10 +749,14 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         val t2 = System.nanoTime()
         search("harb", 20)
         val searchMs = (System.nanoTime() - t2) / 1e6
-        // A miss scans every message, the slowest a text search can be.
+        // A miss across all chats, and a find that matches (and so
+        // decrypts) every message of one chat, the slowest a find can be.
         val t4 = System.nanoTime()
         searchText("no message says this", 20)
         val textSearchMs = (System.nanoTime() - t4) / 1e6
+        val t5 = System.nanoTime()
+        findInChat(conv, "harbour")
+        val findMs = (System.nanoTime() - t5) / 1e6
         val q = FloatArray(Embedder.DIMS) { if (it == 0) 1f else 0f }
         val t3 = System.nanoTime()
         rankAndLoad(q, null, 3, -1f)
@@ -577,7 +764,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         deleteConversation(conv)
         return mapOf(
             "messages" to messages, "insertMs" to insertMs, "pageMs" to pageMs, "searchMs" to searchMs,
-            "textSearchMs" to textSearchMs, "recallMs" to recallMs,
+            "textSearchMs" to textSearchMs, "findMs" to findMs, "recallMs" to recallMs,
         )
     }
 }

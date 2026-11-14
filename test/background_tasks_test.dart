@@ -44,6 +44,7 @@ class FakeEngine extends NativeBridge {
     required int maxTokens,
     required double temperature,
     required bool ignoreEos,
+    bool keepContext = false,
   }) {
     started.add(requestId);
     _events.add({'type': 'token', 'requestId': requestId, 'text': reply});
@@ -51,7 +52,7 @@ class FakeEngine extends NativeBridge {
   }
 
   void finish({bool cancelled = false}) =>
-      _running?.complete({'cancelled': cancelled});
+      _running?.complete({'cancelled': cancelled, 'stopped': false});
 
   @override
   Future<void> unload() async {}
