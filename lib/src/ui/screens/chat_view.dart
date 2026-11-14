@@ -9,10 +9,12 @@ import '../../memory/profile.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
 import '../widgets/composer.dart';
+import '../widgets/find_bar.dart';
 import '../widgets/greeting.dart';
 import '../widgets/message_actions.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/perf_hud.dart';
+import '../widgets/reveal.dart';
 import 'memories_screen.dart';
 import 'models_screen.dart';
 
@@ -33,6 +35,7 @@ class _ChatViewState extends State<ChatView> {
   final _scroll = ScrollController();
   final _composer = ComposerController();
   final _greetedAt = DateTime.now();
+  final _reveal = RevealController();
   Timer? _draftTimer;
 
   /// The user message being rewritten in the composer.
@@ -46,6 +49,8 @@ class _ChatViewState extends State<ChatView> {
   @override
   void initState() {
     super.initState();
+    _session.addListener(_takeReveal);
+    _session.finding.addListener(_findToggled);
     _composer.text.text = _session.conversation?.draft ?? '';
     _composer.text.addListener(_onDraftChanged);
     _scroll.addListener(() {
@@ -60,8 +65,28 @@ class _ChatViewState extends State<ChatView> {
         if (offset > 0 && _scroll.hasClients) {
           _scroll.jumpTo(offset.clamp(0, _scroll.position.maxScrollExtent));
         }
+        _takeReveal();
       });
+    } else {
+      _takeReveal();
     }
+  }
+
+  /// Shows the message a search asked for (see [ChatSession.reveal]).
+  void _takeReveal() {
+    final seq = _session.takeReveal();
+    if (seq != null) unawaited(_show(seq));
+  }
+
+  Future<void> _show(int seq) async {
+    await _session.loadThrough(seq);
+    // The loaded page is laid out before the list can scroll into it.
+    await WidgetsBinding.instance.endOfFrame;
+    if (mounted) await _reveal.reveal(seq, _scroll);
+  }
+
+  void _findToggled() {
+    if (!_session.finding.value) _reveal.clear();
   }
 
   void _onDraftChanged() {
@@ -74,6 +99,9 @@ class _ChatViewState extends State<ChatView> {
 
   @override
   void dispose() {
+    _session.removeListener(_takeReveal);
+    _session.finding.removeListener(_findToggled);
+    _reveal.dispose();
     _draftTimer?.cancel();
     if (_session.conversation != null) {
       _session.saveDraft(_composer.text.text);
@@ -119,6 +147,12 @@ class _ChatViewState extends State<ChatView> {
       children: [
         Column(
           children: [
+            ValueListenableBuilder(
+              valueListenable: _session.finding,
+              builder: (context, open, _) => open
+                  ? FindBar(session: _session, onShow: _show)
+                  : const SizedBox.shrink(),
+            ),
             Expanded(
               child: ListenableBuilder(
                 listenable: _session,
@@ -168,9 +202,9 @@ class _ChatViewState extends State<ChatView> {
     // A reply is saved under the next seq of its chat (the store appends at
     // its highest seq + 1), so the reply in progress takes the key it will
     // have once saved and keeps its element, laid-out text and all.
-    final Key streamingKey = newest != null && newest.seq >= 0
-        ? ValueKey(newest.seq + 1)
-        : const ValueKey('reply');
+    final streamingSeq = newest != null && newest.seq >= 0
+        ? newest.seq + 1
+        : null;
     // The newest item has a sliver of its own (see SliverKeepReadingPlace);
     // the rest follow in a lazy list.
     final older = busy ? messages : messages.skip(1).toList();
@@ -186,7 +220,14 @@ class _ChatViewState extends State<ChatView> {
               child: Padding(
                 padding: const EdgeInsets.only(bottom: AppSpacing.sm),
                 child: busy
-                    ? ModelTurn(key: streamingKey, session: _session)
+                    ? RevealAnchor(
+                        key: streamingSeq == null
+                            ? const ValueKey('reply')
+                            : ValueKey(streamingSeq),
+                        controller: _reveal,
+                        seq: streamingSeq ?? -1,
+                        child: ModelTurn(session: _session),
+                      )
                     : _item(newest!, newest),
               ),
             ),
@@ -203,11 +244,20 @@ class _ChatViewState extends State<ChatView> {
     );
   }
 
-  Widget _item(ChatMessage m, ChatMessage? newest) {
+  /// A saved message, anchored for search (see [RevealController]) under
+  /// its seq; the reply in progress is anchored the same way, so it keeps
+  /// its element once saved.
+  Widget _item(ChatMessage m, ChatMessage? newest) => RevealAnchor(
+    key: ValueKey(m.seq),
+    controller: _reveal,
+    seq: m.seq,
+    child: _message(m, newest),
+  );
+
+  Widget _message(ChatMessage m, ChatMessage? newest) {
     final busy = _session.busy;
     if (m.role == Role.user) {
       return MessageBubble(
-        key: ValueKey(m.seq),
         message: m,
         onTap: () =>
             setState(() => _actionsFor = _actionsFor == m.seq ? null : m.seq),
@@ -223,7 +273,6 @@ class _ChatViewState extends State<ChatView> {
     }
     final notice = _session.notices[m.seq];
     return ModelTurn(
-      key: ValueKey(m.seq),
       session: _session,
       message: m,
       footer: [
@@ -232,6 +281,8 @@ class _ChatViewState extends State<ChatView> {
           session: _session,
           canRegenerate: identical(m, newest),
         ),
+        if (_session.canContinue(m))
+          _ContinueRow(onContinue: _session.continueReply),
         if (_session.memoryUpdates[m.seq] case final update?)
           _MemoryHint(
             update: update,
@@ -261,6 +312,43 @@ class _ChatViewState extends State<ChatView> {
             ),
           ),
           TextButton(onPressed: _session.retry, child: const Text('Retry')),
+        ],
+      ),
+    );
+  }
+}
+
+/// Under a reply that stopped at the reply length limit: writes the rest
+/// onto it.
+class _ContinueRow extends StatelessWidget {
+  const _ContinueRow({required this.onContinue});
+
+  final VoidCallback onContinue;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.gutter,
+        0,
+        AppSpacing.gutter,
+        AppSpacing.sm,
+      ),
+      child: Row(
+        children: [
+          Flexible(
+            child: Text(
+              'Reply reached its length limit',
+              style: AithraType.caption.copyWith(color: c.textTertiary),
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          TextButton.icon(
+            onPressed: onContinue,
+            icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+            label: const Text('Continue'),
+          ),
         ],
       ),
     );

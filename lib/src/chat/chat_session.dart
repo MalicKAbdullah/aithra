@@ -7,12 +7,12 @@ import 'package:flutter/services.dart';
 
 import '../assistant.dart';
 import '../engine/engine_service.dart';
-import '../engine/run_metrics.dart';
 import '../memory/memory_keeper.dart';
 import '../memory/profile.dart';
 import '../memory/recall_index.dart';
 import '../models/catalog.dart';
 import '../platform/native.dart';
+import 'chat_export.dart';
 import 'chat_models.dart';
 import 'chat_titler.dart';
 import 'chat_store.dart';
@@ -67,13 +67,6 @@ class ReplyNotice {
 
   /// A recall failure, which the user can retry.
   final bool recall;
-}
-
-/// One answer to a message that has been regenerated.
-class ReplyVersion {
-  const ReplyVersion(this.content, this.stats);
-  final String content;
-  final RunMetrics? stats;
 }
 
 /// An image attached in the composer, before it is stored.
@@ -145,12 +138,84 @@ class ChatSession extends ChangeNotifier {
   final Map<int, MemoryUpdate> memoryUpdates = {};
 
   /// Leaves memory out of this chat: the profile and other chats are not
-  /// used in its prompts, and nothing said in it is learned.
-  bool skipMemory = false;
+  /// used in its prompts, and nothing said in it is learned. A private
+  /// chat (see [setPrivate]) skips memory.
+  bool get skipMemory => private;
 
   bool get _remembering => _assistant.settings.memoryEnabled && !skipMemory;
 
   ConversationInfo? get conversation => _conversation;
+
+  /// Set before the first message for a chat that starts private.
+  bool _startPrivate = false;
+
+  /// Whether this chat is private (see [ConversationInfo.private]).
+  bool get private => switch (_conversation) {
+    final c? => c.private,
+    null => _startPrivate,
+  };
+
+  /// Makes this chat private or not; a chat not yet saved becomes so when
+  /// its first message is.
+  Future<void> setPrivate(bool value) async {
+    final conv = _conversation;
+    if (conv == null) {
+      _startPrivate = value;
+    } else {
+      await _native.dbUpdateConversation(conv.id, {'private': value});
+      _conversation = conv.copyWith(private: value);
+    }
+    notifyListeners();
+  }
+
+  /// A message the screen should scroll to and highlight (a search hit),
+  /// until it takes it with [takeReveal].
+  int? _reveal;
+
+  void reveal(int seq) {
+    _reveal = seq;
+    notifyListeners();
+  }
+
+  int? takeReveal() {
+    final seq = _reveal;
+    _reveal = null;
+    return seq;
+  }
+
+  /// Loads older pages until the message at [seq] is among [messages].
+  Future<void> loadThrough(int seq) async {
+    while (hasMore && (_messages.isEmpty || _messages.last.seq > seq)) {
+      final before = _messages.length;
+      await loadMore();
+      if (_messages.length == before) return;
+    }
+  }
+
+  /// Seqs of this chat's messages matching [query], newest first.
+  Future<List<int>> find(String query) async {
+    final conv = _conversation;
+    if (conv == null || query.trim().isEmpty) return const [];
+    return _native.dbFindInChat(conv.id, query);
+  }
+
+  /// Whether the find bar shows over this chat.
+  final ValueNotifier<bool> finding = ValueNotifier(false);
+
+  /// Writes the whole chat as a PDF or as Markdown and offers it through
+  /// the share sheet.
+  Future<void> export({required bool pdf}) async {
+    final conv = _conversation!;
+    final title = (await _native.dbConversation(conv.id))!['title']! as String;
+    final all = [
+      for (final r in await _native.dbMessageRange(conv.id, 0, 1 << 30))
+        ChatMessage.fromMap(r),
+    ];
+    final path = pdf
+        ? await _native.exportPdf(title, title, chatPdfEntries(all))
+        : await _native.exportMarkdown(title, chatMarkdown(title, all));
+    await _native.shareFile(path, pdf ? 'application/pdf' : 'text/markdown');
+  }
 
   /// Newest first (the list view is reversed).
   List<ChatMessage> get messages => _messages;
@@ -255,7 +320,12 @@ class ChatSession extends ChangeNotifier {
     if (existing != null) return existing.id;
     final id = DateTime.now().microsecondsSinceEpoch.toString();
     final now = DateTime.now().millisecondsSinceEpoch;
-    await _native.dbCreateConversation(id, titleFrom(firstText), now);
+    await _native.dbCreateConversation(
+      id,
+      titleFrom(firstText),
+      now,
+      private: _startPrivate,
+    );
     _conversation = ConversationInfo.fromMap(
       (await _native.dbConversation(id))!,
     );
@@ -263,17 +333,23 @@ class ChatSession extends ChangeNotifier {
     return id;
   }
 
-  Future<void> _reply({required String recallQuery}) async {
+  Future<void> _reply({String? recallQuery, ChatMessage? continuing}) async {
     final done = _replying = Completer<void>();
     try {
-      await _replyIn(_conversation!, recallQuery);
+      await _replyIn(_conversation!, recallQuery, continuing);
     } finally {
       _replying = null;
       done.complete();
     }
   }
 
-  Future<void> _replyIn(ConversationInfo conv, String recallQuery) async {
+  /// Answers the latest message, or with [continuing] (the newest reply,
+  /// cut off at [replyTokens]) writes the rest of that reply onto it.
+  Future<void> _replyIn(
+    ConversationInfo conv,
+    String? recallQuery,
+    ChatMessage? continuing,
+  ) async {
     phase = _queue.busy ? ReplyPhase.queued : ReplyPhase.preparing;
     lastReply = '';
     _stopRequested = false;
@@ -309,21 +385,26 @@ class ChatSession extends ChangeNotifier {
       ];
       final settings = _assistant.settings;
       final remembering = _remembering;
-      final recall = remembering
+      final recall = remembering && recallQuery != null
           ? await _recallIndex.recall(recallQuery, conv.id)
           : const RecallOff();
       final recalled = switch (recall) {
         Recalled(:final messages) => messages,
         RecallOff() || RecallFailed() => const <RecalledMessage>[],
       };
+      // A continuation picks the profile lines its question did.
+      final profile = remembering
+          ? await _keeper.forPrompt(
+              recallQuery ??
+                  history.lastWhere((m) => m.role == Role.user).content,
+              rank: recall is Recalled || continuing != null,
+            )
+          : (stable: const <String>[], related: const <String>[]);
       final context = SystemContext(
         now: DateTime.now(),
         aboutUser: settings.aboutUser,
         replyStyle: settings.replyStyle,
-        memories: remembering
-            ? await _keeper.forPrompt(recallQuery, rank: recall is Recalled)
-            : const [],
-        recalled: recalled,
+        memories: profile.stable,
         summary: fresh.summary,
       );
       final full = buildSystemPrompt(context);
@@ -346,12 +427,26 @@ class ChatSession extends ChangeNotifier {
             imageCount: spec.vision ? _imagesSent(history, m) : 0,
             tokens: counted.messages[m.id]!,
           ),
+        if (continuing != null)
+          PromptMessage(
+            seq: continuing.seq + 1,
+            isUser: true,
+            text: continuePrompt,
+            tokens: await counted.cost(continuePrompt),
+          ),
       ];
       final latest = messages.last;
-      final newest = await fitMessage(
-        latest,
-        room: contextSize - replyTokens - systemTokens - counted.overhead,
+      final room = contextSize - replyTokens - systemTokens - counted.overhead;
+      final fitted = await fitMessage(latest, room: room, cost: counted.cost);
+      final turnContext = await fitTurnContext(
+        related: profile.related,
+        recalled: recalled,
+        room: room - fitted.tokens,
         cost: counted.cost,
+      );
+      final newest = fitted.withText(
+        fitted.text,
+        fitted.tokens + turnContext.tokens,
       );
       messages.last = newest;
       final plan = planPrompt(
@@ -364,15 +459,22 @@ class ChatSession extends ChangeNotifier {
       );
       final turns = <EngineTurn>[EngineTurn('system', plan.system)];
       for (final p in plan.messages) {
-        final m = history.firstWhere((h) => h.seq == p.seq);
         final images = <Uint8List>[];
         if (p.imageCount > 0) {
+          final m = history.firstWhere((h) => h.seq == p.seq);
           for (final id in m.imageIds) {
             final bytes = await _native.dbImage(id, thumb: false);
             if (bytes != null) images.add(bytes);
           }
         }
-        turns.add(EngineTurn(p.isUser ? 'user' : 'model', p.text, images));
+        turns.add(
+          EngineTurn(
+            p.isUser ? 'user' : 'model',
+            p.text,
+            images,
+            identical(p, newest) ? turnContext.text : '',
+          ),
+        );
       }
 
       // Stop pressed while the model loaded or the prompt was assembled.
@@ -380,6 +482,7 @@ class ChatSession extends ChangeNotifier {
       final generation = _assistant.engine.generate(
         turns,
         maxTokens: replyTokens,
+        keepContext: true,
       );
       _generation = generation;
       final sub = generation.text.listen((chunk) {
@@ -391,20 +494,54 @@ class ChatSession extends ChangeNotifier {
       });
       final metrics = await generation.done;
       await sub.cancel();
-      if (counted.estimated && turns.every((t) => t.images.isEmpty)) {
+      // Only a prompt prefilled in full measures the whole prompt's ratio.
+      if (counted.estimated &&
+          metrics.reusedTokens == 0 &&
+          turns.every((t) => t.images.isEmpty)) {
         if (metrics.promptTokens case final tokens?) {
-          final bytes = turns.fold(0, (n, t) => n + utf8.encode(t.text).length);
+          final bytes = turns.fold(
+            0,
+            (n, t) =>
+                n + utf8.encode(t.text).length + utf8.encode(t.context).length,
+          );
           unawaited(_assistant.observeTokensPerByte(spec, tokens / bytes));
         }
       }
-      final interrupted = generation.cancelled && !_stopRequested;
-      final text = streaming.full.trim();
-      if (text.isEmpty) {
+      final interrupted =
+          generation.cancelled && !_stopRequested && !generation.stoppedByUser;
+      // A continuation keeps its leading space: it joins the stored reply.
+      final text = continuing == null
+          ? streaming.full.trim()
+          : streaming.full.trimRight();
+      if (text.trim().isEmpty) {
         if (interrupted) {
           error =
               'Android needed memory back before Aithra could answer. '
               'Try again.';
         }
+        return;
+      }
+      if (continuing != null) {
+        final content = continuing.content + text;
+        await _native.dbUpdateMessage(
+          continuing.id,
+          content,
+          jsonEncode(metrics.toJson()),
+        );
+        _messages[_messages.indexOf(continuing)] = ChatMessage(
+          id: continuing.id,
+          seq: continuing.seq,
+          role: Role.model,
+          content: content,
+          imageIds: const [],
+          created: continuing.created,
+          stats: metrics,
+          version: continuing.version,
+          versionCount: continuing.versionCount,
+        );
+        unawaited(HapticFeedback.selectionClick());
+        unawaited(_store.upsert(conv.id));
+        if (!fresh.private) _recallIndex.indexInBackground();
         return;
       }
       final saved = await _native.dbAddMessage(
@@ -425,6 +562,8 @@ class ChatSession extends ChangeNotifier {
           imageIds: const [],
           created: DateTime.now(),
           stats: metrics,
+          version: saved['version']! as int,
+          versionCount: saved['versionCount']! as int,
         ),
       );
       unawaited(HapticFeedback.selectionClick());
@@ -440,7 +579,7 @@ class ChatSession extends ChangeNotifier {
               'reply stopped early. Regenerate it for a full answer.',
         );
       }
-      if (!identical(newest, latest)) {
+      if (!identical(fitted, latest)) {
         notices[replySeq] = ReplyNotice(
           'Your message was shortened',
           "It was too long for ${spec.name}'s memory, so Aithra read its "
@@ -603,7 +742,10 @@ class ChatSession extends ChangeNotifier {
   }
 
   /// Folds older turns into the conversation summary so the chat keeps its
-  /// meaning while staying inside the model's context.
+  /// meaning while staying inside the model's context. It prefills most of
+  /// a context, so it yields to the user's next message like other
+  /// background work; until a later turn completes it, the prompt drops
+  /// the oldest turns instead (see [planPrompt]).
   Future<void> _summarize({
     required Future<int> Function(String text) cost,
     required int contextTokens,
@@ -633,13 +775,13 @@ class ChatSession extends ChangeNotifier {
       room: contextTokens - summaryTokens,
       cost: cost,
     );
-    final g = _assistant.engine.generate(
+    final raw = await _assistant.engine.backgroundRun().generate(
       [EngineTurn('user', request.text)],
       maxTokens: summaryTokens,
       temperature: 0.2,
     );
-    final summary = (await g.text.join()).trim();
-    await g.done;
+    if (raw == null) return;
+    final summary = raw.trim();
     if (summary.isEmpty) return;
     await _native.dbUpdateConversation(conv.id, {
       'summary': summary,
@@ -657,95 +799,54 @@ class ChatSession extends ChangeNotifier {
     await _generation?.cancel();
   }
 
-  /// Answers to the same message kept across regenerations, by the seq of
-  /// the reply that answers it, oldest first. Only one is stored in the
-  /// chat; the others live for this session.
-  final Map<int, List<ReplyVersion>> _versions = {};
-
-  /// Which of [_versions] each reply shows.
-  final Map<int, int> _shownVersion = {};
-
-  /// Every answer [reply] has had and which one it shows, or null when it
-  /// was never regenerated.
-  ({List<ReplyVersion> versions, int shown})? versionsOf(ChatMessage reply) {
-    final versions = _versions[reply.seq];
-    if (versions == null) return null;
-    return (versions: versions, shown: _shownVersion[reply.seq]!);
-  }
-
-  /// Makes answer [index] of [versionsOf] the one [reply] shows and the one
-  /// the model sees from now on.
-  Future<void> showVersion(ChatMessage reply, int index) async {
-    final v = _versions[reply.seq]![index];
-    final stats = v.stats == null ? null : jsonEncode(v.stats!.toJson());
-    await _native.dbUpdateMessage(reply.id, v.content, stats);
-    final at = _messages.indexWhere((m) => m.id == reply.id);
-    if (at < 0) return;
-    _messages[at] = ChatMessage(
-      id: reply.id,
-      seq: reply.seq,
-      role: Role.model,
-      content: v.content,
-      imageIds: const [],
-      created: reply.created,
-      stats: v.stats,
-    );
-    _shownVersion[reply.seq] = index;
-    notifyListeners();
-  }
-
-  /// Answers the last message again, keeping the answer it replaces as an
-  /// earlier version.
+  /// Replaces the last reply with a new one; the old one stays among the
+  /// reply's versions (see [messageVersions]).
   Future<void> regenerate() async {
     if (busy || _messages.isEmpty) return;
     final last = _messages.first;
     if (last.role != Role.model) return;
-    final versions =
-        _versions.remove(last.seq) ?? [ReplyVersion(last.content, last.stats)];
-    _shownVersion.remove(last.seq);
     _messages.removeAt(0);
     notifyListeners();
-    await _native.dbTruncate(_conversation!.id, last.seq);
+    await _native.dbTruncate(_conversation!.id, last.seq, archive: true);
     final lastUser = _messages.firstWhere((m) => m.role == Role.user);
     await _reply(recallQuery: lastUser.content);
-    final fresh = _messages.firstOrNull;
-    if (fresh != null && fresh.role == Role.model && fresh.seq == last.seq) {
-      _versions[fresh.seq] = [
-        ...versions,
-        ReplyVersion(fresh.content, fresh.stats),
-      ];
-      _shownVersion[fresh.seq] = versions.length;
-      notifyListeners();
-    } else if (!_disposed) {
-      // No new answer arrived (stopped before the first word, or an
-      // error): the one it was meant to replace comes back.
-      final shown = versions.last;
-      final saved = await _native.dbAddMessage(
-        convId: _conversation!.id,
-        role: 'model',
-        content: shown.content,
-        images: const [],
-        stats: shown.stats == null ? null : jsonEncode(shown.stats!.toJson()),
-        now: last.created.millisecondsSinceEpoch,
-      );
-      _messages.insert(
-        0,
-        ChatMessage(
-          id: saved['id']! as int,
-          seq: saved['seq']! as int,
-          role: Role.model,
-          content: shown.content,
-          imageIds: const [],
-          created: last.created,
-          stats: shown.stats,
-        ),
-      );
-      if (versions.length > 1) {
-        _versions[last.seq] = versions;
-        _shownVersion[last.seq] = versions.length - 1;
-      }
-      notifyListeners();
-    }
+  }
+
+  /// Whether [m] is the newest reply and stopped because it reached
+  /// [replyTokens], so [continueReply] can write the rest.
+  bool canContinue(ChatMessage m) =>
+      !busy &&
+      _messages.isNotEmpty &&
+      identical(_messages.first, m) &&
+      m.role == Role.model &&
+      switch (m.stats?.decodeTokens) {
+        final n? => n >= replyTokens,
+        null => false,
+      };
+
+  /// Writes the rest of the newest reply, which reached [replyTokens].
+  Future<void> continueReply() async {
+    if (_messages.isEmpty || !canContinue(_messages.first)) return;
+    _assistant.engine.preemptBackground();
+    error = null;
+    await _reply(continuing: _messages.first);
+  }
+
+  /// Every version of the reply at [seq], oldest first.
+  Future<List<MessageVersion>> messageVersions(int seq) async => [
+    for (final v in await _native.dbMessageVersions(_conversation!.id, seq))
+      MessageVersion.fromMap(v),
+  ];
+
+  /// Shows version [ord] of the reply at [seq].
+  Future<void> selectVersion(int seq, int ord) async {
+    if (busy) return;
+    final conv = _conversation!;
+    await _native.dbSelectVersion(conv.id, seq, ord);
+    final row = (await _native.dbMessageRange(conv.id, seq, seq + 1)).single;
+    final at = _messages.indexWhere((m) => m.seq == seq);
+    if (at >= 0) _messages[at] = ChatMessage.fromMap(row);
+    notifyListeners();
   }
 
   /// Rewrites [message], a user message, and answers it again; everything
@@ -753,8 +854,6 @@ class ChatSession extends ChangeNotifier {
   Future<void> edit(ChatMessage message, String text) async {
     if (busy || message.role != Role.user) return;
     _messages.removeWhere((m) => m.seq >= message.seq);
-    _versions.removeWhere((seq, _) => seq >= message.seq);
-    _shownVersion.removeWhere((seq, _) => seq >= message.seq);
     await _native.dbTruncate(
       _conversation!.id,
       message.seq,
@@ -786,6 +885,7 @@ class ChatSession extends ChangeNotifier {
     _stopRequested = true;
     _queue.withdraw(this);
     _generation?.cancel();
+    finding.dispose();
     super.dispose();
   }
 }

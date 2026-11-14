@@ -108,24 +108,25 @@ class ReplyActions extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = SuiteColors.of(context);
-    final versions = session.versionsOf(message);
     final busy = session.busy;
+    final version = message.version;
+    final count = message.versionCount;
     return Transform.translate(
       // The first icon's glyph lines up with the reply's text.
       offset: const Offset(-9, 0),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (versions != null) ...[
+          if (count > 1) ...[
             _ActionIcon(
               icon: Icons.chevron_left_rounded,
               label: 'Previous answer',
-              onPressed: busy || versions.shown == 0
+              onPressed: busy || version == 0
                   ? null
-                  : () => session.showVersion(message, versions.shown - 1),
+                  : () => session.selectVersion(message.seq, version - 1),
             ),
             Text(
-              '${versions.shown + 1}/${versions.versions.length}',
+              '${version + 1}/$count',
               style: AithraType.caption.copyWith(
                 color: c.textSecondary,
                 fontFeatures: const [FontFeature.tabularFigures()],
@@ -134,9 +135,9 @@ class ReplyActions extends StatelessWidget {
             _ActionIcon(
               icon: Icons.chevron_right_rounded,
               label: 'Next answer',
-              onPressed: busy || versions.shown == versions.versions.length - 1
+              onPressed: busy || version == count - 1
                   ? null
-                  : () => session.showVersion(message, versions.shown + 1),
+                  : () => session.selectVersion(message.seq, version + 1),
             ),
           ],
           _ActionIcon(

@@ -88,6 +88,7 @@ class FakeModel extends NativeBridge {
     required int maxTokens,
     required double temperature,
     required bool ignoreEos,
+    bool keepContext = false,
   }) async {
     final kind = kindOf(turns);
     prompts.add((kind, turns));
@@ -99,7 +100,7 @@ class FakeModel extends NativeBridge {
       'requestId': requestId,
       'text': answer(turns),
     });
-    return {'cancelled': false};
+    return {'cancelled': false, 'stopped': false};
   }
 
   @override
@@ -668,7 +669,7 @@ void main() {
       expect(await h.learn('Another weekend of fell walking!'), isNull);
       expect(h.memories.suggested.single.text, 'Enjoys fell walking');
       expect(h.memories.count, 0);
-      expect(await h.keeper.forPrompt('hello', rank: false), isEmpty);
+      expect((await h.keeper.forPrompt('hello', rank: false)).stable, isEmpty);
 
       final update = await h.learn('More fell walking this Sunday');
       expect(update, isNotNull);
@@ -806,7 +807,7 @@ void main() {
       await h.memories.add(ProfileSection.preferences, 'Metric units');
       await h.memories.add(ProfileSection.work, 'Nurse');
       await h.memories.add(ProfileSection.about, 'Name is Sam');
-      expect(await h.keeper.forPrompt('hi', rank: true), [
+      expect((await h.keeper.forPrompt('hi', rank: true)).stable, [
         'Name is Sam',
         'Metric units',
         'Nurse',
@@ -831,9 +832,11 @@ void main() {
         'How long to proof dough?',
         rank: true,
       );
-      expect(lines.first, 'Name is Sam');
-      expect(lines[1], 'Bakes bread for a living');
-      expect(lines, hasLength(1 + MemoryKeeper.picked));
+      // The picks change with each message, so they ride with it and the
+      // system prompt keeps only what stays.
+      expect(lines.stable, ['Name is Sam']);
+      expect(lines.related.first, 'Bakes bread for a living');
+      expect(lines.related, hasLength(MemoryKeeper.picked));
     });
   });
 
@@ -981,7 +984,7 @@ void main() {
       h.model.whileGenerating = (_) => h.engine.preemptBackground();
       await h.catchUp();
       expect(h.memories.tidying, isTrue);
-      expect(await h.keeper.forPrompt('hi', rank: false), [
+      expect((await h.keeper.forPrompt('hi', rank: false)).stable, [
         'Old note 1',
         'Old note 2',
         'Old note 3',

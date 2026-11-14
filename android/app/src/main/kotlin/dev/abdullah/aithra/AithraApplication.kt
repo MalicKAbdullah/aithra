@@ -38,6 +38,8 @@ class AithraApplication : Application() {
         io.execute {
             sweepPartialImports()
             EngineCache.migrate(this)
+            ChatExport.clear(this)
+
         }
     }
 

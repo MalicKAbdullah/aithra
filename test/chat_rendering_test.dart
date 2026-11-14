@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:aithra/src/chat/chat_models.dart';
 import 'package:aithra/src/ui/aithra_type.dart';
+import 'package:aithra/src/ui/widgets/message_actions.dart';
 import 'package:aithra/src/ui/widgets/markdown_view.dart';
 import 'package:aithra/src/ui/widgets/message_bubble.dart';
 import 'package:flutter/material.dart';
@@ -142,5 +144,27 @@ void main() {
     expect(find.byType(Table), findsOneWidget);
     expect(find.text('Copy table'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a regenerated reply shows its version pager', (tester) async {
+    final h = await tester.runAsync(Harness.start);
+    final session = h!.sessions.current;
+    final reply = ChatMessage(
+      id: 1,
+      seq: 1,
+      role: Role.model,
+      content: 'Blue.',
+      imageIds: const [],
+      created: DateTime(2026),
+      version: 1,
+      versionCount: 3,
+    );
+    await tester.pumpWidget(
+      app(ReplyActions(message: reply, session: session, canRegenerate: true)),
+    );
+    expect(find.text('2/3'), findsOneWidget);
+    expect(find.byTooltip('Previous answer'), findsOneWidget);
+    expect(find.byTooltip('Next answer'), findsOneWidget);
+    expect(find.byTooltip('Regenerate'), findsOneWidget);
   });
 }

@@ -20,9 +20,14 @@ class Generation {
   final int _id;
   bool _cancelRequested = false;
 
-  /// Whether the reply stopped before it was complete: [cancel], or Android
-  /// reclaiming the model's memory. Set when [done] completes.
+  /// Whether the reply stopped before it was complete: [cancel], the
+  /// notification's Stop, or Android reclaiming the model's memory. Set
+  /// when [done] completes.
   bool cancelled = false;
+
+  /// Whether the user stopped it from the "Aithra is thinking"
+  /// notification. Set when [done] completes.
+  bool stoppedByUser = false;
 
   /// Stops this reply whether it is still queued, in prefill or decoding.
   Future<void> cancel() {
@@ -152,11 +157,14 @@ class EngineService extends ChangeNotifier {
   }
 
   /// Streams a reply from the loaded model. Call [ensureLoaded] first.
+  /// [keepContext] is for chat replies: the engine keeps what it processed,
+  /// so a next request that extends [turns] prefills only its new turn.
   Generation generate(
     List<EngineTurn> turns, {
     required int maxTokens,
     double temperature = 0.7,
     bool ignoreEos = false,
+    bool keepContext = false,
   }) {
     preemptBackground();
     final id = _nextRequest++;
@@ -180,8 +188,11 @@ class EngineService extends ChangeNotifier {
           maxTokens: maxTokens,
           temperature: temperature,
           ignoreEos: ignoreEos,
+          keepContext: keepContext,
         );
         generation.cancelled = m['cancelled']! as bool;
+        generation.stoppedByUser = m['stopped']! as bool;
+
         return lastRun.value = RunMetrics.fromMap(m);
       } finally {
         // Token events are posted before the method result on the same

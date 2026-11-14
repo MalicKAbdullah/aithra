@@ -4,6 +4,7 @@ import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -21,13 +22,35 @@ class InferenceService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            (application as AithraApplication).engineHost.stopRunning()
+            // A running service is stopped by its holders' release as
+            // usual; one this tap created (the notification outlived it)
+            // has nothing to do.
+            if (!foreground) stopSelf(startId)
+            return START_NOT_STICKY
+        }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL, "Thinking", NotificationManager.IMPORTANCE_LOW),
         )
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val stop = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, InferenceService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Aithra is thinking")
+            .setContentIntent(open)
+            .addAction(Notification.Action.Builder(null, "Stop", stop).build())
             .setOngoing(true)
             .build()
         startForeground(ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
@@ -46,6 +69,7 @@ class InferenceService : Service() {
     companion object {
         private const val CHANNEL = "inference"
         private const val ID = 1
+        private const val ACTION_STOP = "dev.abdullah.aithra.STOP_GENERATION"
 
         // Calibration is many engine jobs in a row; stopping between them
         // would need a restart, which Android refuses from the background.

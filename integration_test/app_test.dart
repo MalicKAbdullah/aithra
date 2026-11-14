@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:aithra/main.dart' as app;
@@ -131,6 +132,7 @@ void main() {
       final hit = hits.singleWhere((h) => h['id'] == id);
       expect(hit['snippet'], 'When does the ferry sail?');
       expect(hit['title'], 'Harbour plans');
+      expect(hit['seq'], 0);
       expect(await native.dbSearchText('no message says this', 10), isEmpty);
 
       await native.dbTruncate(id, 1);
@@ -160,6 +162,135 @@ void main() {
       expect(await native.dbMessages(id, 1 << 30, 10), isEmpty);
       expect(await native.dbImage('$id-photo', thumb: true), isNotNull);
       await native.dbDeleteConversation(id);
+    });
+
+    testWidgets('the message index finds word prefixes and follows edits', (
+      _,
+    ) async {
+      final id = 'it-find-${Random().nextInt(1 << 31)}';
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await native.dbCreateConversation(id, 'Trip', now);
+      Future<int> add(String text) async =>
+          (await native.dbAddMessage(
+                convId: id,
+                role: 'user',
+                content: text,
+                images: const [],
+                stats: null,
+                now: now,
+              ))['id']!
+              as int;
+      final first = await add('Pack the telescope');
+      await add('The ferry leaves at nine');
+      await add('Ferret racing on Sunday');
+
+      expect(await native.dbFindInChat(id, 'ferr'), [2, 1]);
+      expect(await native.dbFindInChat(id, 'FERRY nine'), [1]);
+      // A word's inside is not its start.
+      expect(await native.dbFindInChat(id, 'erry'), isEmpty);
+
+      await native.dbUpdateMessage(first, 'Pack the binoculars', null);
+      expect(await native.dbFindInChat(id, 'telescope'), isEmpty);
+      expect(await native.dbFindInChat(id, 'binoc'), [0]);
+
+      await native.dbTruncate(id, 2);
+      expect(await native.dbFindInChat(id, 'ferr'), [1]);
+      await native.dbDeleteConversation(id);
+      expect(await native.dbFindInChat(id, 'ferr'), isEmpty);
+    });
+
+    testWidgets('a regenerated reply keeps its versions', (_) async {
+      final id = 'it-versions-${Random().nextInt(1 << 31)}';
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await native.dbCreateConversation(id, 'Colours', now);
+      Future<Map<String, Object?>> add(String role, String text) =>
+          native.dbAddMessage(
+            convId: id,
+            role: role,
+            content: text,
+            images: const [],
+            stats: null,
+            now: now,
+          );
+      await add('user', 'Name a colour');
+      await add('model', 'Blue.');
+      await native.dbTruncate(id, 1, archive: true);
+      final green = await add('model', 'Green.');
+      expect(green['version'], 1);
+      expect(green['versionCount'], 2);
+
+      final reply = (await native.dbMessageRange(id, 1, 2)).single;
+      expect(reply['version'], 1);
+      expect(reply['versionCount'], 2);
+      var versions = await native.dbMessageVersions(id, 1);
+      expect([for (final v in versions) v['content']], ['Blue.', 'Green.']);
+      expect([for (final v in versions) v['current']], [false, true]);
+
+      await native.dbSelectVersion(id, 1, 0);
+      expect(
+        (await native.dbMessageRange(id, 1, 2)).single['content'],
+        'Blue.',
+      );
+      versions = await native.dbMessageVersions(id, 1);
+      expect([for (final v in versions) v['content']], ['Blue.', 'Green.']);
+      expect([for (final v in versions) v['current']], [true, false]);
+      expect(await native.dbFindInChat(id, 'blue'), [1]);
+      expect(await native.dbFindInChat(id, 'green'), isEmpty);
+
+      // A failed regenerate followed by a new question drops the versions.
+      await native.dbTruncate(id, 1, archive: true);
+      expect((await add('user', 'And another?'))['versionCount'], 1);
+      expect(await native.dbMessageVersions(id, 1), hasLength(1));
+
+      // An edit replaces the question, and with it every version after.
+      await native.dbTruncate(id, 0);
+      await add('user', 'Name a fruit');
+      await add('model', 'Apple.');
+      expect((await native.dbMessageRange(id, 1, 2)).single['versionCount'], 1);
+      expect(await native.dbMessageVersions(id, 1), hasLength(1));
+      await native.dbDeleteConversation(id);
+    });
+
+    testWidgets('a private chat is stored private and can be made normal', (
+      _,
+    ) async {
+      final id = 'it-private-${Random().nextInt(1 << 31)}';
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await native.dbCreateConversation(id, 'Secret', now, private: true);
+      expect((await native.dbConversation(id))!['private'], isTrue);
+      await native.dbUpdateConversation(id, {'private': false});
+      expect((await native.dbConversation(id))!['private'], isFalse);
+      await native.dbDeleteConversation(id);
+    });
+
+    testWidgets('a chat exports as Markdown and as PDF', (_) async {
+      final md = await native.exportMarkdown('Harbour/plans', '# Plans\n');
+      expect(md, endsWith('Harbour_plans.md'));
+      expect(await File(md).readAsString(), '# Plans\n');
+
+      final pdf = await native.exportPdf('Harbour plans', 'Harbour plans', [
+        for (var i = 0; i < 40; i++)
+          {
+            'role': i.isEven ? 'user' : 'model',
+            'created': DateTime(2026, 11, 15).millisecondsSinceEpoch,
+            'blocks': [
+              {'kind': 'heading', 'text': 'Day $i'},
+              {'kind': 'text', 'text': 'The ferry leaves at nine. ' * 20},
+              {'kind': 'item', 'text': '•  Pack the telescope'},
+              {'kind': 'code', 'text': 'tide(t) = sin(t)'},
+              {'kind': 'rule', 'text': ''},
+            ],
+          },
+      ]);
+      final bytes = await File(pdf).readAsBytes();
+      expect(ascii.decode(bytes.sublist(0, 5)), '%PDF-');
+      // Forty long messages cannot fit one page.
+      expect(
+        RegExp(r'/Type\s*/Page\b').allMatches(latin1.decode(bytes)).length,
+        greaterThan(1),
+      );
+      // Each export clears the last: the files are plaintext.
+      expect(File(md).existsSync(), isFalse);
     });
 
     testWidgets('images store and come back as thumbnails', (_) async {
