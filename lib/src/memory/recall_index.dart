@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../chat/context_builder.dart';
 import '../engine/engine_service.dart';
 import '../model_output.dart';
 import '../models/catalog.dart';
@@ -21,8 +22,8 @@ class RecallOff extends RecallOutcome {
 }
 
 class Recalled extends RecallOutcome {
-  const Recalled(this.snippets);
-  final List<String> snippets;
+  const Recalled(this.messages);
+  final List<RecalledMessage> messages;
 }
 
 /// Recall is not working; the reply goes ahead without it and says so.
@@ -117,7 +118,10 @@ class RecallIndex extends ChangeNotifier {
       final rows = await _native.dbRecall(path, query, excludeConv, maxResults);
       return Recalled([
         for (final r in rows)
-          clipChars(oneLine(r['content']! as String) ?? '', maxChars),
+          RecalledMessage(
+            fromUser: r['role'] == 'user',
+            text: clipChars(oneLine(r['content']! as String) ?? '', maxChars),
+          ),
       ]);
     } on PlatformException catch (e) {
       _fail(e);

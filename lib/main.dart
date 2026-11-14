@@ -15,7 +15,7 @@ import 'src/chat/chat_store.dart';
 import 'src/data/settings_store.dart';
 import 'src/data/vault.dart';
 import 'src/engine/engine_service.dart';
-import 'src/memory/memory_curator.dart';
+import 'src/memory/memory_keeper.dart';
 import 'src/memory/memory_store.dart';
 import 'src/memory/recall_index.dart';
 import 'src/models/model_manager.dart';
@@ -152,6 +152,7 @@ Future<Services> start(NativeBridge native) async {
     assistant: Assistant(engine: engine, models: models, settings: settings),
     keeper: MemoryKeeper(
       native: native,
+      engine: engine,
       memories: memories,
       models: models,
       settings: settings,

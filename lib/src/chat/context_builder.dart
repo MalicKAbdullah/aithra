@@ -42,6 +42,15 @@ class PromptPlan {
   final int promptTokens;
 }
 
+/// A message from another chat, recalled for its meaning.
+class RecalledMessage {
+  const RecalledMessage({required this.fromUser, required this.text});
+
+  /// Whether the user wrote it; otherwise it is one of Aithra's replies.
+  final bool fromUser;
+  final String text;
+}
+
 /// Everything the hidden system message carries besides who Aithra is.
 class SystemContext {
   const SystemContext({
@@ -62,8 +71,8 @@ class SystemContext {
   /// Long-term memories, most important first.
   final List<String> memories;
 
-  /// Snippets recalled from other chats.
-  final List<String> recalled;
+  /// Messages recalled from other chats.
+  final List<RecalledMessage> recalled;
 
   /// The summary of this chat's earlier turns.
   final String? summary;
@@ -92,7 +101,7 @@ class SystemContext {
     String? aboutUser,
     String? replyStyle,
     List<String>? memories,
-    List<String>? recalled,
+    List<RecalledMessage>? recalled,
   }) => SystemContext(
     now: now,
     aboutUser: aboutUser ?? this.aboutUser,
@@ -173,9 +182,11 @@ String buildSystemPrompt(SystemContext context) {
     }
   }
   if (recalled.isNotEmpty) {
-    b.writeln('\nPossibly relevant notes from earlier chats:');
+    b.writeln('\nPossibly relevant messages from earlier chats:');
     for (final r in recalled) {
-      b.writeln('- $r');
+      b.writeln(
+        '- ${r.fromUser ? 'The user wrote' : 'You replied'}: ${r.text}',
+      );
     }
   }
   if (summary != null && summary.isNotEmpty) {
