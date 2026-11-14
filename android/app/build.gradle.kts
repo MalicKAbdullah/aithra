@@ -116,6 +116,8 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.11.0")
     implementation("androidx.core:core-ktx:1.17.0")
     testImplementation("junit:junit:4.13.2")
+    // A real XmlPullParser for DocxText on the JVM; Android's is a stub there.
+    testImplementation("net.sf.kxml:kxml2:2.3.0")
 
     // integration_test pins these through the debug runtime classpath, and
     // AGP resolves the test classpath consistently with it.

@@ -30,7 +30,7 @@ import javax.crypto.spec.SecretKeySpec
  * compared by cosine similarity at query time (see [indexVectors] and
  * [recall]); without the embedding model, recall is off.
  */
-class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3) {
+class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4) {
     private companion object {
         /** Enough for two lines of preview after Markdown is stripped. */
         const val PREVIEW_CHARS = 240
@@ -48,6 +48,8 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         const val SNIPPET_BEFORE = 40
         const val SNIPPET_AFTER = 110
     }
+
+    val documents = DocumentStore(this)
 
     private var key: SecretKeySpec? = null
     private var termKey: SecretKeySpec? = null
@@ -71,6 +73,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         db.execSQL("CREATE UNIQUE INDEX messages_conv_seq ON messages(conv_id, seq)")
         db.execSQL("CREATE TABLE media(id TEXT PRIMARY KEY, data BLOB NOT NULL, thumb BLOB NOT NULL)")
         createSearchTables(db)
+        DocumentStore.createTables(db)
     }
 
     private fun createSearchTables(db: SQLiteDatabase) {
@@ -83,6 +86,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 4) DocumentStore.createTables(db)
         if (oldVersion < 3) {
             // The token count of each message under the model that counted
             // it, so prompts are planned on exact counts without recounting.
@@ -108,7 +112,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         key = SecretKeySpec(dataKey, "AES")
         val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(dataKey, "HmacSHA256")) }
         termKey = SecretKeySpec(mac.doFinal("aithra-terms".toByteArray()), "HmacSHA256")
-        writableDatabase
+        documents.sweepAbandoned(System.currentTimeMillis())
     }
 
     // -- Crypto ---------------------------------------------------------------
@@ -127,8 +131,8 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         return cipher.doFinal(sealed, 44, sealed.size - 44)
     }
 
-    private fun sealText(text: String) = seal(text.toByteArray(Charsets.UTF_8))
-    private fun openText(bytes: ByteArray) = String(unseal(bytes), Charsets.UTF_8)
+    internal fun sealText(text: String) = seal(text.toByteArray(Charsets.UTF_8))
+    internal fun openText(bytes: ByteArray) = String(unseal(bytes), Charsets.UTF_8)
 
     // -- Blind keyword index ----------------------------------------------------
 
@@ -223,6 +227,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
                 buildList { while (c.moveToNext()) addAll(c.getString(0).split(',').filter { it.isNotEmpty() }) }
             }
             imageIds.forEach { delete("media", "id = ?", arrayOf(it)) }
+            DocumentStore.deleteIn(this, DocumentStore.idsOfConversation(this, id))
             delete("title_terms", "conv_id = ?", arrayOf(id))
             delete("vectors", "conv_id = ?", arrayOf(id))
             delete("messages", "conv_id = ?", arrayOf(id))
@@ -312,15 +317,17 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
 
     /**
      * Deletes every message with seq >= [fromSeq] (edit and regenerate) and
-     * their images, except [keepImages], which an edited message carries
-     * over.
+     * their images and documents, except [keepImages] and [keepDocs], which
+     * an edited message carries over.
      */
-    fun truncate(convId: String, fromSeq: Int, keepImages: Set<String>) {
+    fun truncate(convId: String, fromSeq: Int, keepImages: Set<String>, keepDocs: Set<String> = emptySet()) {
         writableDatabase.transaction {
+            DocumentStore.deleteIn(this, DocumentStore.idsFromSeq(this, convId, fromSeq, keepDocs))
             val ids = rawQuery("SELECT id, images FROM messages WHERE conv_id = ? AND seq >= ?", arrayOf(convId, fromSeq.toString()))
                 .use { c -> buildList { while (c.moveToNext()) add(c.getLong(0) to c.getString(1)) } }
             for ((id, images) in ids) {
                 delete("vectors", "msg_id = ?", arrayOf(id.toString()))
+                delete("citations", "msg_id = ?", arrayOf(id.toString()))
                 images.split(',').filter { it.isNotEmpty() && it !in keepImages }
                     .forEach { delete("media", "id = ?", arrayOf(it)) }
             }
@@ -335,8 +342,10 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
 
     // -- Media ------------------------------------------------------------------
 
-    fun putImage(id: String, jpeg: ByteArray, thumb: ByteArray) {
-        writableDatabase.insertOrThrow("media", null, ContentValues().apply {
+    fun putImage(id: String, jpeg: ByteArray, thumb: ByteArray) = putImageIn(writableDatabase, id, jpeg, thumb)
+
+    internal fun putImageIn(db: SQLiteDatabase, id: String, jpeg: ByteArray, thumb: ByteArray) {
+        db.insertOrThrow("media", null, ContentValues().apply {
             put("id", id)
             put("data", seal(jpeg))
             put("thumb", seal(thumb))
@@ -405,13 +414,13 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
         return (if (start > 0) "…" else "") + body + (if (end < text.length) "…" else "")
     }
 
-    private fun packVector(v: FloatArray): ByteArray {
+    internal fun packVector(v: FloatArray): ByteArray {
         val buf = ByteBuffer.allocate(v.size * 4).order(ByteOrder.LITTLE_ENDIAN)
         v.forEach { buf.putFloat(it) }
         return seal(buf.array())
     }
 
-    private fun unpackVector(sealed: ByteArray): FloatArray {
+    internal fun unpackVector(sealed: ByteArray): FloatArray {
         val buf = ByteBuffer.wrap(unseal(sealed)).order(ByteOrder.LITTLE_ENDIAN)
         return FloatArray(buf.remaining() / 4) { buf.getFloat() }
     }
@@ -582,7 +591,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 3)
     }
 }
 
-private inline fun SQLiteDatabase.transaction(block: SQLiteDatabase.() -> Unit) {
+internal inline fun SQLiteDatabase.transaction(block: SQLiteDatabase.() -> Unit) {
     beginTransaction()
     try {
         block()
