@@ -12,6 +12,7 @@ import '../widgets/composer.dart';
 import '../widgets/greeting.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/perf_hud.dart';
+import '../widgets/prompt_shortcut_chips.dart';
 import 'memories_screen.dart';
 import 'models_screen.dart';
 
@@ -91,7 +92,14 @@ class _ChatViewState extends State<ChatView> {
         ),
       );
     }
-    await _session.send(text, images);
+    final sending = _session.send(text, images);
+    _readReplyAloud();
+    await sending;
+  }
+
+  void _readReplyAloud() {
+    final s = context.services;
+    if (s.settings.speakReplies) s.readAloud.followReply(_session);
   }
 
   Future<void> _messageActions(ChatMessage m) async {
@@ -194,6 +202,7 @@ class _ChatViewState extends State<ChatView> {
                       final text = _composer.text.text;
                       _composer.clear();
                       _session.editLast(text);
+                      _readReplyAloud();
                     } else {
                       _send();
                     }
@@ -215,7 +224,15 @@ class _ChatViewState extends State<ChatView> {
     final extra = (_session.busy ? 1 : 0) + (_session.error != null ? 1 : 0);
     if (messages.isEmpty && extra == 0) {
       return _session.conversation == null
-          ? Greeting(now: _greetedAt)
+          ? Greeting(
+              now: _greetedAt,
+              below: PromptShortcutChips(
+                onPick: (p) {
+                  _composer.setText(p.prompt);
+                  _composer.focus.requestFocus();
+                },
+              ),
+            )
           : const SizedBox.shrink();
     }
     return ListView.builder(
