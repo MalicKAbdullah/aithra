@@ -213,7 +213,11 @@ class _ChatViewState extends State<ChatView> {
             setState(() => _actionsFor = _actionsFor == m.seq ? null : m.seq),
         footer: [
           if (_actionsFor == m.seq)
-            UserActions(message: m, onEdit: busy ? null : () => _edit(m)),
+            UserActions(
+              message: m,
+              session: _session,
+              onEdit: busy ? null : () => _edit(m),
+            ),
         ],
       );
     }

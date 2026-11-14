@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
 import '../../chat/markdown.dart';
+import '../../memory/memory_keeper.dart';
 import '../../services.dart';
 import '../../voice/sentence_splitter.dart';
 import '../aithra_type.dart';
@@ -241,34 +242,56 @@ Widget _sheetItem(
   onTap: () => Navigator.pop(context, value),
 );
 
-/// The row a tap on a user message reveals: Copy, Edit, Remember this and
-/// Share.
+/// The row a tap on a user message reveals: Copy, Edit, Remember this
+/// (while memory is on for the chat) and Share.
 class UserActions extends StatelessWidget {
-  const UserActions({required this.message, required this.onEdit, super.key});
+  const UserActions({
+    required this.message,
+    required this.session,
+    required this.onEdit,
+    super.key,
+  });
 
   final ChatMessage message;
+  final ChatSession session;
 
   /// Null while a reply is running, since editing restarts the chat there.
   final VoidCallback? onEdit;
 
   Future<void> _remember(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
-    await context.services.explicitMemory!.rememberExplicit(message.content);
-    unawaited(HapticFeedback.selectionClick());
-    messenger.showSnackBar(
-      const SnackBar(content: Text('Aithra will remember this')),
+    final memories = context.services.memories;
+    final result = await context.services.keeper.rememberExplicit(
+      message.content,
     );
+    unawaited(HapticFeedback.selectionClick());
+    messenger.showSnackBar(switch (result) {
+      Remembered(:final update) => SnackBar(
+        content: const Text('Aithra will remember this'),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () => memories.undo(update),
+        ),
+      ),
+      AlreadyRemembered() => const SnackBar(
+        content: Text('Aithra already remembers this'),
+      ),
+      RememberLater() => const SnackBar(
+        content: Text('Aithra will remember this once the model is free'),
+      ),
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final s = context.services;
+    final hasText = message.content.isNotEmpty;
     return Transform.translate(
       offset: const Offset(9, 0),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (message.content.isNotEmpty)
+          if (hasText)
             _ActionIcon(
               icon: Icons.content_copy_rounded,
               label: 'Copy',
@@ -279,13 +302,13 @@ class UserActions extends StatelessWidget {
             label: 'Edit',
             onPressed: onEdit,
           ),
-          if (s.explicitMemory != null && message.content.isNotEmpty)
+          if (hasText && s.settings.memoryEnabled && !session.skipMemory)
             _ActionIcon(
               icon: Icons.bookmark_add_outlined,
               label: 'Remember this',
               onPressed: () => _remember(context),
             ),
-          if (message.content.isNotEmpty)
+          if (hasText)
             _ActionIcon(
               icon: Icons.ios_share_rounded,
               label: 'Share',

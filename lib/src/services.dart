@@ -6,7 +6,6 @@ import 'assistant.dart';
 import 'chat/chat_session.dart';
 import 'chat/chat_sessions.dart';
 import 'chat/chat_store.dart';
-import 'chat/explicit_memory.dart';
 import 'chat/reply_queue.dart';
 import 'data/settings_store.dart';
 import 'engine/engine_service.dart';
@@ -34,7 +33,6 @@ class Services {
     required this.appearance,
     required this.speech,
     required this.tts,
-    this.explicitMemory,
   });
 
   final NativeBridge native;
@@ -50,9 +48,6 @@ class Services {
   final AppearanceController appearance;
   final SpeechService speech;
   final TtsService tts;
-
-  /// "Remember this" on a user message; the action shows only when set.
-  final ExplicitMemory? explicitMemory;
 
   /// The chat on screen and every chat still replying; one reply runs on
   /// the engine at a time.
