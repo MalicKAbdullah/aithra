@@ -74,6 +74,8 @@ class AithraApplication : Application() {
             // has none waiting, so any copy left is from a process that died.
             Inbox.sharedDir(this).listFiles()!!.forEach { it.delete() }
             EngineCache.migrate(this)
+            ChatExport.clear(this)
+
         }
     }
 

@@ -148,18 +148,6 @@ void main() {
       );
     });
 
-    test('the block precedes the user\'s words', () {
-      const r = DocumentContext(
-        text: 'BLOCK',
-        tokens: 1,
-        cited: [],
-        whole: true,
-        searched: false,
-      );
-      expect(withDocuments(r, 'Question?'), 'BLOCK\n\n---\n\nQuestion?');
-      expect(withDocuments(null, 'Question?'), 'Question?');
-    });
-
     test('sources name pages, or passages when there are none', () {
       expect(
         const Source(docId: 'd', ord: 4, page: 3, name: 'a.pdf').label,

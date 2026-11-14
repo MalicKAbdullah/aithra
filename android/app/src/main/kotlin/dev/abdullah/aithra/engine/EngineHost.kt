@@ -27,6 +27,7 @@ class EngineHost(private val context: Context) {
     private val queued = HashSet<Long>()
     private val cancelled = HashSet<Long>()
     private val background = HashSet<Long>()
+    private val stoppedByUser = HashSet<Long>()
     private var running: Long? = null
 
     /** What the loaded [engine] was loaded with, and what that load measured. */
@@ -68,6 +69,19 @@ class EngineHost(private val context: Context) {
         if (requestId !in queued) return@synchronized
         cancelled += requestId
         if (running == requestId) engine?.cancel()
+    }
+
+    /**
+     * Stops the running generation because the user asked to (the "Aithra
+     * is thinking" notification's Stop). Its result says `stopped`, so the
+     * app keeps the partial reply as it does for its own Stop button rather
+     * than reporting it as cut short by Android.
+     */
+    fun stopRunning() = synchronized(lock) {
+        val id = running ?: return@synchronized
+        stoppedByUser += id
+        cancelled += id
+        engine?.cancel()
     }
 
     /**
@@ -137,7 +151,9 @@ class EngineHost(private val context: Context) {
             synchronized(lock) {
                 running = requestId
                 current.resetCancel()
-                if (requestId in cancelled) return GenerateStats.cancelledBeforeStart.toMap()
+                if (requestId in cancelled) {
+                    return GenerateStats.cancelledBeforeStart.toMap() + ("stopped" to (requestId in stoppedByUser))
+                }
             }
             val sampler = RssSampler().also { it.start() }
             val stats = try {
@@ -145,13 +161,15 @@ class EngineHost(private val context: Context) {
             } finally {
                 sampler.stop()
             }
-            return stats.toMap() + ("peakRssMb" to sampler.peakMb)
+            val stopped = synchronized(lock) { requestId in stoppedByUser }
+            return stats.toMap() + ("peakRssMb" to sampler.peakMb) + ("stopped" to stopped)
         } finally {
             synchronized(lock) {
                 running = null
                 queued -= requestId
                 cancelled -= requestId
                 background -= requestId
+                stoppedByUser -= requestId
             }
         }
     }

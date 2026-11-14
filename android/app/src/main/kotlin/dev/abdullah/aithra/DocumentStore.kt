@@ -236,15 +236,13 @@ class DocumentStore(private val chat: ChatDb) {
             .use { c -> if (c.moveToFirst()) passage(c, null) else null }
 
     /**
-     * Embeds up to [limit] passages that have no vector yet, of [ids] or of
-     * every document when null; returns how many (0 once all are done).
+     * Embeds up to [limit] passages of [ids] that have no vector yet;
+     * returns how many (0 once all are done).
      */
-    fun index(embedder: Embedder, modelPath: String, ids: List<String>?, limit: Int): Int {
-        val (where, args) = if (ids == null) "" to emptyArray() else
-            " AND doc_id IN (${ids.joinToString(",") { "?" }})" to ids.toTypedArray()
+    private fun index(embedder: Embedder, modelPath: String, ids: List<String>, limit: Int): Int {
         val pending = readable.rawQuery(
-            "SELECT doc_id, ord, text FROM doc_chunks WHERE vec IS NULL$where LIMIT $limit",
-            args,
+            "SELECT doc_id, ord, text FROM doc_chunks WHERE vec IS NULL AND doc_id IN (${ids.joinToString(",") { "?" }}) LIMIT $limit",
+            ids.toTypedArray(),
         ).use { c -> buildList { while (c.moveToNext()) add(Triple(c.getString(0), c.getInt(1), chat.openText(c.getBlob(2)))) } }
         if (pending.isEmpty()) return 0
         val vecs = embedder.embed(modelPath, pending.map { Embedder.document(it.third) })

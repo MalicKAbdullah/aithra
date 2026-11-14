@@ -244,6 +244,7 @@ class NativeChannels(
                         role = it["role"] as String,
                         text = it["text"] as String,
                         images = (it["images"] as List<ByteArray>?) ?: emptyList(),
+                        context = it["context"] as String,
                     )
                 }
                 val request = GenerateRequest(
@@ -251,6 +252,7 @@ class NativeChannels(
                     maxTokens = call.argument<Int>("maxTokens")!!,
                     temperature = call.argument<Double>("temperature")!!.toFloat(),
                     ignoreEos = call.argument<Boolean>("ignoreEos")!!,
+                    keepContext = call.argument<Boolean>("keepContext")!!,
                 )
                 engineHost.enqueue(id, call.argument<Boolean>("background") == true)
                 onEngineHeld(result) {
@@ -278,7 +280,12 @@ class NativeChannels(
             }
             "db.conversation" -> onDb(result) { db.getConversation(call.argument<String>("id")!!) }
             "db.createConversation" -> onDb(result) {
-                db.createConversation(call.argument<String>("id")!!, call.argument<String>("title")!!, call.argument<Number>("now")!!.toLong())
+                db.createConversation(
+                    call.argument<String>("id")!!,
+                    call.argument<String>("title")!!,
+                    call.argument<Number>("now")!!.toLong(),
+                    call.argument<Boolean>("private")!!,
+                )
             }
             "db.updateConversation" -> onDb(result) {
                 db.updateConversation(call.argument<String>("id")!!, call.argument<Map<String, Any?>>("fields")!!)
@@ -313,7 +320,14 @@ class NativeChannels(
                     call.argument<Int>("fromSeq")!!,
                     call.argument<List<String>>("keepImages")!!.toSet(),
                     call.argument<List<String>>("keepDocs")!!.toSet(),
+                    call.argument<Boolean>("archive")!!,
                 )
+            }
+            "db.messageVersions" -> onDb(result) {
+                db.messageVersions(call.argument<String>("convId")!!, call.argument<Int>("seq")!!)
+            }
+            "db.selectVersion" -> onDb(result) {
+                db.selectVersion(call.argument<String>("convId")!!, call.argument<Int>("seq")!!, call.argument<Int>("ord")!!)
             }
             "db.putImage" -> onDb(result) {
                 val jpeg = call.argument<ByteArray>("jpeg")!!
@@ -322,6 +336,7 @@ class NativeChannels(
             "db.image" -> onDb(result) { db.image(call.argument<String>("id")!!, call.argument<Boolean>("thumb")!!) }
             "db.search" -> onDb(result) { db.search(call.argument<String>("query")!!, call.argument<Int>("limit")!!) }
             "db.searchText" -> onDb(result) { db.searchText(call.argument<String>("query")!!, call.argument<Int>("limit")!!) }
+            "db.findInChat" -> onDb(result) { db.findInChat(call.argument<String>("convId")!!, call.argument<String>("query")!!) }
             "db.recall" -> onEmbed(result) {
                 db.recall(
                     embedder,
@@ -400,9 +415,6 @@ class NativeChannels(
                 docs.passagesInOrder(call.argument<List<String>>("ids")!!, call.argument<Int>("limit")!!)
             }
             "doc.passage" -> onDb(result) { docs.passage(call.argument<String>("docId")!!, call.argument<Int>("ord")!!) }
-            "doc.index" -> onEmbed(result) {
-                docs.index(embedder, call.argument<String>("modelPath")!!, null, call.argument<Int>("limit")!!)
-            }
             "doc.search" -> onEmbed(result) {
                 docs.search(
                     embedder,
@@ -485,6 +497,27 @@ class NativeChannels(
                 val file = File(activity.cacheDir, "capture/photo.jpg").apply { parentFile!!.mkdirs() }
                 captureFile = file
                 takePicture.launch(FileProvider.getUriForFile(activity, "${activity.packageName}.files", file))
+            }
+            "export.markdown" -> onIo(result) {
+                ChatExport.markdown(activity, call.argument<String>("name")!!, call.argument<String>("text")!!)
+            }
+            "export.pdf" -> onIo(result) {
+                ChatExport.pdf(
+                    activity,
+                    call.argument<String>("name")!!,
+                    call.argument<String>("title")!!,
+                    call.argument<List<Map<String, Any?>>>("entries")!!,
+                )
+            }
+            "share.file" -> {
+                val file = File(call.argument<String>("path")!!)
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = call.argument<String>("mime")!!
+                    putExtra(Intent.EXTRA_STREAM, FileProvider.getUriForFile(activity, "${activity.packageName}.files", file))
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                activity.startActivity(Intent.createChooser(send, null))
+                result.success(null)
             }
             "share.text" -> {
                 val send = Intent(Intent.ACTION_SEND).apply {

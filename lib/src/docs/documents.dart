@@ -152,7 +152,7 @@ class DocumentContext {
     required this.searched,
   });
 
-  /// The block put before the user's words.
+  /// The block the newest turn carries as its context.
   final String text;
   final int tokens;
 
@@ -188,10 +188,6 @@ String documentBlock(List<({String header, String text})> parts) {
   }
   return b.toString().trimRight();
 }
-
-/// [userText] after the document block, as the newest turn's text.
-String withDocuments(DocumentContext? docs, String userText) =>
-    docs == null ? userText : '${docs.text}\n\n---\n\n$userText';
 
 /// Chooses what of [docs] goes into the prompt for [question] within
 /// [budget] tokens: every page when they all fit, otherwise the passages

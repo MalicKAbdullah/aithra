@@ -27,6 +27,7 @@ object LlamaNative {
         maxTokens: Int,
         ignoreEos: Boolean,
         temperature: Float,
+        keepContext: Boolean,
         callback: TokenCallback,
     ): DoubleArray
 
@@ -47,12 +48,13 @@ class LlamaEngine(path: String, threads: Int, nCtx: Int) : LlmEngine {
 
     override fun generate(request: GenerateRequest, onText: (String) -> Boolean): GenerateStats {
         val roles = request.turns.map { it.role }.toTypedArray()
-        val contents = request.turns.map { it.text }.toTypedArray()
+        val contents = request.turns.map { it.prompt }.toTypedArray()
         val r = LlamaNative.nativeGenerate(
-            handle, roles, contents, request.maxTokens, request.ignoreEos, request.temperature,
+            handle, roles, contents, request.maxTokens, request.ignoreEos, request.temperature, request.keepContext,
         ) { bytes -> onText(String(bytes, Charsets.UTF_8)) && !cancelled.get() }
+        val reused = r[6].toInt()
         return GenerateStats(
-            promptTokens = r[0].toInt(),
+            promptTokens = r[0].toInt() - reused,
             prefillMs = r[1],
             ttftMs = r[2],
             decodeTokens = r[3].toInt(),
@@ -60,6 +62,7 @@ class LlamaEngine(path: String, threads: Int, nCtx: Int) : LlmEngine {
             contextTokens = r[0].toInt() + r[3].toInt(),
             note = null,
             cancelled = r[5] != 0.0,
+            reusedTokens = reused,
         )
     }
 

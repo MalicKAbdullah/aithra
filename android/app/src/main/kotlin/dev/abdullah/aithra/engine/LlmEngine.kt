@@ -1,7 +1,21 @@
 package dev.abdullah.aithra.engine
 
-/** One message of a conversation as the engines see it. */
-data class ChatTurn(val role: String, val text: String, val images: List<ByteArray>)
+/**
+ * One message of a conversation as the engines see it. [context] is
+ * material retrieved for this turn only (recalled snippets), read in front
+ * of [text]. It is not part of the turn's identity: a kept conversation
+ * whose earlier turns carried context still matches a history that no
+ * longer repeats it (see [ConversationCache]).
+ */
+data class ChatTurn(
+    val role: String,
+    val text: String,
+    val images: List<ByteArray>,
+    val context: String = "",
+) {
+    /** What the model reads for this turn. */
+    val prompt: String get() = if (context.isEmpty()) text else "$context\n\n$text"
+}
 
 data class GenerateRequest(
     val turns: List<ChatTurn>,
@@ -10,6 +24,13 @@ data class GenerateRequest(
     val temperature: Float,
     /** Keep decoding past end-of-sequence so speed runs always produce [maxTokens]. */
     val ignoreEos: Boolean,
+    /**
+     * A chat reply: the engine keeps the conversation's processed state
+     * afterwards, so a next request that extends these turns prefills only
+     * its new turn. Other requests (titles, memory, calibration) run on a
+     * state of their own and leave the kept one alone.
+     */
+    val keepContext: Boolean = false,
 )
 
 /**
@@ -17,6 +38,7 @@ data class GenerateRequest(
  * report it; Dart shows that as "not measured" rather than guessing.
  */
 data class GenerateStats(
+    /** Prompt tokens prefilled by this run; reused ones are [reusedTokens]. */
     val promptTokens: Int?,
     val prefillMs: Double?,
     val ttftMs: Double?,
@@ -26,6 +48,8 @@ data class GenerateStats(
     val note: String?,
     /** Stopped by [LlmEngine.cancel] before the reply was complete. */
     val cancelled: Boolean,
+    /** Prompt tokens already processed by the kept state and not prefilled again. */
+    val reusedTokens: Int? = null,
 ) {
     companion object {
         /** A request cancelled before the engine started on it. */
@@ -41,6 +65,7 @@ data class GenerateStats(
         "contextTokens" to contextTokens,
         "note" to note,
         "cancelled" to cancelled,
+        "reusedTokens" to reusedTokens,
     )
 }
 
