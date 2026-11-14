@@ -319,17 +319,23 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
             arrayOf(convId, fromSeq.toString(), toSeq.toString()),
         ).use { c -> buildList { while (c.moveToNext()) add(messageRow(c)) } }
 
-    /** Appends a message at the end of the conversation; returns its id and seq. */
+    /** Appends a message at the end of the conversation; returns its id, seq, version and versionCount. */
+
     fun addMessage(convId: String, role: String, content: String, images: List<String>, stats: String?, now: Long): Map<String, Any?> {
         var result: Map<String, Any?> = emptyMap()
         writableDatabase.transaction {
             val seq = rawQuery("SELECT COALESCE(MAX(seq), -1) + 1 FROM messages WHERE conv_id = ?", arrayOf(convId))
                 .use { c -> c.moveToFirst(); c.getInt(0) }
-            // A regenerated reply follows the versions archived at its seq.
-            val version = rawQuery(
-                "SELECT COALESCE(MAX(ord), -1) + 1 FROM message_versions WHERE conv_id = ? AND seq = ?",
+            // A regenerated reply follows the versions archived at its seq;
+            // a message from the user there (the regenerate failed and the
+            // user moved on) replaces that reply, versions and all.
+            if (role != "model") {
+                delete("message_versions", "conv_id = ? AND seq = ?", arrayOf(convId, seq.toString()))
+            }
+            val (version, versionCount) = rawQuery(
+                "SELECT COALESCE(MAX(ord), -1) + 1, COUNT(*) + 1 FROM message_versions WHERE conv_id = ? AND seq = ?",
                 arrayOf(convId, seq.toString()),
-            ).use { c -> c.moveToFirst(); c.getInt(0) }
+            ).use { c -> c.moveToFirst(); c.getInt(0) to c.getInt(1) }
             val id = insertOrThrow("messages", null, ContentValues().apply {
                 put("conv_id", convId)
                 put("seq", seq)
@@ -345,7 +351,7 @@ class ChatDb(context: Context) : SQLiteOpenHelper(context, "aithra.db", null, 4)
                 "UPDATE conversations SET updated = ?, message_count = message_count + 1 WHERE id = ?",
                 arrayOf<Any>(now, convId),
             )
-            result = mapOf("id" to id, "seq" to seq)
+            result = mapOf("id" to id, "seq" to seq, "version" to version, "versionCount" to versionCount)
         }
         return result
     }

@@ -256,7 +256,7 @@ class FakeNative extends NativeBridge {
       'version': 0,
       'versionCount': 1,
     });
-    return {'id': id, 'seq': seq};
+    return {'id': id, 'seq': seq, 'version': 0, 'versionCount': 1};
   }
 
   @override

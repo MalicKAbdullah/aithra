@@ -233,7 +233,7 @@ class FakeNative extends NativeBridge {
         : list.map((m) => m['seq']! as int).reduce(math.max) + 1;
     final id = _nextMessageId++;
     list.add(msg(id, seq, role, content, now, images: images, stats: stats));
-    return {'id': id, 'seq': seq};
+    return {'id': id, 'seq': seq, 'version': 0, 'versionCount': 1};
   }
 
   @override

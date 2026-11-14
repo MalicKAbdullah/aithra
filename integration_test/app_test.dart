@@ -203,18 +203,21 @@ void main() {
       final id = 'it-versions-${Random().nextInt(1 << 31)}';
       final now = DateTime.now().millisecondsSinceEpoch;
       await native.dbCreateConversation(id, 'Colours', now);
-      Future<void> add(String role, String text) => native.dbAddMessage(
-        convId: id,
-        role: role,
-        content: text,
-        images: const [],
-        stats: null,
-        now: now,
-      );
+      Future<Map<String, Object?>> add(String role, String text) =>
+          native.dbAddMessage(
+            convId: id,
+            role: role,
+            content: text,
+            images: const [],
+            stats: null,
+            now: now,
+          );
       await add('user', 'Name a colour');
       await add('model', 'Blue.');
       await native.dbTruncate(id, 1, archive: true);
-      await add('model', 'Green.');
+      final green = await add('model', 'Green.');
+      expect(green['version'], 1);
+      expect(green['versionCount'], 2);
 
       final reply = (await native.dbMessageRange(id, 1, 2)).single;
       expect(reply['version'], 1);
@@ -233,6 +236,11 @@ void main() {
       expect([for (final v in versions) v['current']], [true, false]);
       expect(await native.dbFindInChat(id, 'blue'), [1]);
       expect(await native.dbFindInChat(id, 'green'), isEmpty);
+
+      // A failed regenerate followed by a new question drops the versions.
+      await native.dbTruncate(id, 1, archive: true);
+      expect((await add('user', 'And another?'))['versionCount'], 1);
+      expect(await native.dbMessageVersions(id, 1), hasLength(1));
 
       // An edit replaces the question, and with it every version after.
       await native.dbTruncate(id, 0);

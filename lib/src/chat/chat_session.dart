@@ -14,7 +14,6 @@ import '../models/catalog.dart';
 import '../platform/native.dart';
 import 'chat_export.dart';
 import 'chat_models.dart';
-
 import 'chat_titler.dart';
 import 'chat_store.dart';
 import 'context_builder.dart';
@@ -556,6 +555,8 @@ class ChatSession extends ChangeNotifier {
           imageIds: const [],
           created: DateTime.now(),
           stats: metrics,
+          version: saved['version']! as int,
+          versionCount: saved['versionCount']! as int,
         ),
       );
       unawaited(HapticFeedback.selectionClick());
@@ -781,7 +782,6 @@ class ChatSession extends ChangeNotifier {
     if (raw == null) return;
     final summary = raw.trim();
     if (summary.isEmpty) return;
-
     await _native.dbUpdateConversation(conv.id, {
       'summary': summary,
       'summarizedUpto': fold.last.seq + 1,

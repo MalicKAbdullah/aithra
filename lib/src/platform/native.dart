@@ -183,6 +183,8 @@ class NativeBridge {
     'toSeq': toSeq,
   });
 
+  /// Appends a message; returns its `id`, `seq`, `version` and
+  /// `versionCount` (a regenerated reply follows its earlier versions).
   Future<Map<String, Object?>> dbAddMessage({
     required String convId,
     required String role,
