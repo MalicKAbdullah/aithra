@@ -272,14 +272,28 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeGenerate(
         llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
     }
 
-    // Calibration and background work prefill in full: their timings must
-    // measure a whole prompt.
+    // Work that does not keep context (titles, memory, calibration) runs on
+    // a cleared context, so its timings measure a whole prompt; the chat's
+    // state is set aside in memory meanwhile and put back afterwards, so
+    // the chat's next turn still prefills only its new message.
+    std::vector<uint8_t> stash;
+    std::vector<llama_token> stashed;
     size_t reused = 0;
     if (keep_context) {
         reused = reuse_prefix(s, tokens);
     } else {
+        if (!s->cached.empty()) {
+            stash.resize(llama_state_seq_get_size(s->ctx, 0));
+            stash.resize(llama_state_seq_get_data(s->ctx, stash.data(), stash.size(), 0));
+            stashed = s->cached;
+        }
         forget(s);
     }
+    auto restore = [&] {
+        if (stashed.empty()) return;
+        forget(s);
+        if (llama_state_seq_set_data(s->ctx, stash.data(), stash.size(), 0) > 0) s->cached = stashed;
+    };
     auto t0 = std::chrono::steady_clock::now();
 
     for (size_t i = reused; i < tokens.size() && !s->abort; i += s->n_batch) {
@@ -288,6 +302,7 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeGenerate(
             // A failed or aborted batch may have stored part of itself.
             forget(s);
             if (s->abort) break;
+            restore();
             llama_sampler_free(smpl);
             throw_java(env, "llama_decode failed during prefill");
             return nullptr;
@@ -330,6 +345,7 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeGenerate(
     }
     double decode_ms = ms_since(t_decode);
     llama_sampler_free(smpl);
+    restore();
 
     double out[7] = {(double) tokens.size(), prefill_ms, ttft_ms, (double) decoded, decode_ms,
                      s->abort ? 1.0 : 0.0, (double) reused};
