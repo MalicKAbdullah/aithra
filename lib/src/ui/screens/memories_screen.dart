@@ -21,7 +21,13 @@ class MemoriesScreen extends StatefulWidget {
 
 class _MemoriesScreenState extends State<MemoriesScreen> {
   bool _showArchived = false;
-  final _archivedKey = GlobalKey();
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
 
   MemoryStore get _store => context.services.memories;
 
@@ -82,14 +88,14 @@ class _MemoriesScreenState extends State<MemoriesScreen> {
   Future<void> _review() async {
     setState(() => _showArchived = true);
     await WidgetsBinding.instance.endOfFrame;
-    final target = _archivedKey.currentContext;
-    if (target != null && target.mounted) {
-      await Scrollable.ensureVisible(
-        target,
-        duration: AppMotion.slow,
-        curve: AppMotion.standard,
-      );
-    }
+    // Set aside is the last group, and the list builds lazily, so the end
+    // of the list is where it is.
+    if (!_scroll.hasClients) return;
+    await _scroll.animateTo(
+      _scroll.position.maxScrollExtent,
+      duration: AppMotion.slow,
+      curve: AppMotion.standard,
+    );
   }
 
   @override
@@ -123,6 +129,7 @@ class _MemoriesScreenState extends State<MemoriesScreen> {
               waiting.isEmpty &&
               untidied == 0;
           return ListView(
+            controller: _scroll,
             padding: const EdgeInsets.fromLTRB(
               AppSpacing.gutter,
               0,
@@ -255,7 +262,6 @@ class _MemoriesScreenState extends State<MemoriesScreen> {
               if (store.archived.isNotEmpty) ...[
                 SectionLabel(
                   'Set aside',
-                  key: _archivedKey,
                   trailing: TextButton(
                     onPressed: () =>
                         setState(() => _showArchived = !_showArchived),
