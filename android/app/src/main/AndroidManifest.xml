@@ -34,8 +34,30 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+        <!-- Its own task, so a shortcut's FLAG_ACTIVITY_CLEAR_TASK clears
+             only this activity (see QuickActionActivity). -->
+        <activity
+            android:name=".QuickActionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity="dev.abdullah.aithra.quick"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <service
+            android:name=".VoiceTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_qs_aithra"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
         <service
             android:name=".DownloadService"
             android:exported="false"

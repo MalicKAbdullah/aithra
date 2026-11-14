@@ -6,9 +6,11 @@ import 'package:flutter/services.dart';
 
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
+import '../../quick_actions.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
 import '../widgets/composer.dart';
+import '../widgets/composer_attach.dart';
 import '../widgets/greeting.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/perf_hud.dart';
@@ -34,6 +36,7 @@ class _ChatViewState extends State<ChatView> {
   final _composer = ComposerController();
   final _greetedAt = DateTime.now();
   Timer? _draftTimer;
+  late final QuickActions _quickActions;
 
   ChatSession get _session => widget.session;
 
@@ -48,6 +51,8 @@ class _ChatViewState extends State<ChatView> {
     });
     // A session still held for its reply already has its messages and the
     // reader's place in them is the newest end.
+    _quickActions = context.services.quickActions..addListener(_onQuickAction);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onQuickAction());
     if (_session.messages.isEmpty) {
       _session.loadMore().then((_) {
         final offset = _session.conversation?.scroll ?? 0;
@@ -55,6 +60,15 @@ class _ChatViewState extends State<ChatView> {
           _scroll.jumpTo(offset.clamp(0, _scroll.position.maxScrollExtent));
         }
       });
+    }
+  }
+
+  /// "Ask about a photo" opened this new chat to pick the photo in it.
+  void _onQuickAction() {
+    final s = context.services;
+    if (!mounted || !identical(s.sessions.current, _session)) return;
+    if (s.quickActions.takePhotoRequest()) {
+      showAttachMenu(context, _composer);
     }
   }
 
@@ -68,6 +82,7 @@ class _ChatViewState extends State<ChatView> {
 
   @override
   void dispose() {
+    _quickActions.removeListener(_onQuickAction);
     _draftTimer?.cancel();
     if (_session.conversation != null) {
       _session.saveDraft(_composer.text.text);

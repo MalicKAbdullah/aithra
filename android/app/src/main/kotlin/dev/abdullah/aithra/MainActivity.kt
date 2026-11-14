@@ -57,6 +57,12 @@ class MainActivity : FlutterFragmentActivity() {
         speech = SpeechBridge(this)
         tts = TtsBridge(this)
         super.onCreate(savedInstanceState)
+        // Started by QuickActionActivity with no task to bring forward. A
+        // relaunch from Recents carries the same intent and must not
+        // repeat it.
+        if (savedInstanceState == null && intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0) {
+            QuickActions.offer(intent)
+        }
         pickImage = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
             deliverImage(uri)
         }
@@ -421,6 +427,7 @@ class MainActivity : FlutterFragmentActivity() {
                 result.success(null)
             }
             "tts.voices" -> tts.voices { result.success(it) }
+            "quickAction.take" -> result.success(QuickActions.take())
             "tts.detectLanguage" -> onIo(result) { TtsBridge.detectLanguage(this, call.argument<String>("text")!!) }
             "tts.stop" -> {
                 tts.stop()

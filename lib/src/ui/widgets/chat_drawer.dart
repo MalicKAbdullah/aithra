@@ -8,6 +8,7 @@ import '../../chat/chat_models.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
 import '../screens/settings_screen.dart';
+import '../screens/voice_note_screen.dart';
 import 'aithra_mark.dart';
 
 /// One line of the drawer's list: a group heading or a chat.
@@ -146,9 +147,34 @@ class _ChatDrawerState extends State<ChatDrawer> {
             ),
             Divider(height: 1, color: c.hairline),
             Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.sm,
-                vertical: AppSpacing.xs,
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.sm,
+                AppSpacing.xs,
+                AppSpacing.sm,
+                0,
+              ),
+              child: ListTile(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(AppSpacing.radiusSm),
+                ),
+                leading: Icon(Icons.mic_none_rounded, color: c.textSecondary),
+                title: const Text('Voice note'),
+                onTap: () {
+                  _close();
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const VoiceNoteScreen(),
+                    ),
+                  );
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.sm,
+                0,
+                AppSpacing.sm,
+                AppSpacing.xs,
               ),
               child: ListTile(
                 shape: RoundedRectangleBorder(

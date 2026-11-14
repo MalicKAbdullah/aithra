@@ -402,6 +402,11 @@ class NativeBridge {
       Map<String, Object?>.from(v! as Map),
   ];
 
+  /// The launcher shortcut or Quick Settings tile action waiting to be
+  /// handled (`newChat`, `voiceMode`, `askPhoto`, `voiceNote`), once.
+  Future<String?> takeQuickAction() =>
+      _channel.invokeMethod<String>('quickAction.take');
+
   /// The language [text] is written in (BCP 47), from Android's on-device
   /// TextClassifier; null when it cannot tell.
   Future<String?> detectLanguage(String text) =>

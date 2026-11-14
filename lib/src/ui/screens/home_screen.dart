@@ -9,6 +9,7 @@ import '../../models/download_state.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
 import '../widgets/chat_drawer.dart';
+import '../widgets/quick_action_handler.dart';
 import 'chat_view.dart';
 import 'models_screen.dart';
 import 'voice_mode_screen.dart';
@@ -22,67 +23,69 @@ class HomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = context.services;
-    return ListenableBuilder(
-      listenable: s.sessions,
-      builder: (context, _) {
-        final session = s.sessions.current;
-        return Scaffold(
-          drawer: const ChatDrawer(),
-          drawerEdgeDragWidth: 32,
-          appBar: AppBar(
-            titleSpacing: 0,
-            leading: Builder(
-              builder: (context) => IconButton(
-                tooltip: 'Chats',
-                icon: const Icon(Icons.menu_rounded),
-                onPressed: () {
-                  HapticFeedback.selectionClick();
-                  Scaffold.of(context).openDrawer();
-                },
+    return QuickActionHandler(
+      child: ListenableBuilder(
+        listenable: s.sessions,
+        builder: (context, _) {
+          final session = s.sessions.current;
+          return Scaffold(
+            drawer: const ChatDrawer(),
+            drawerEdgeDragWidth: 32,
+            appBar: AppBar(
+              titleSpacing: 0,
+              leading: Builder(
+                builder: (context) => IconButton(
+                  tooltip: 'Chats',
+                  icon: const Icon(Icons.menu_rounded),
+                  onPressed: () {
+                    HapticFeedback.selectionClick();
+                    Scaffold.of(context).openDrawer();
+                  },
+                ),
               ),
-            ),
-            title: _Title(session),
-            actions: [
-              IconButton(
-                tooltip: 'Voice mode',
-                icon: const Icon(Icons.graphic_eq_rounded),
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const VoiceModeScreen(),
+              title: _Title(session),
+              actions: [
+                IconButton(
+                  tooltip: 'Voice mode',
+                  icon: const Icon(Icons.graphic_eq_rounded),
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const VoiceModeScreen(),
+                    ),
                   ),
                 ),
-              ),
-              ListenableBuilder(
-                listenable: session,
-                builder: (context, _) => session.conversation == null
-                    ? const SizedBox.shrink()
-                    : IconButton(
-                        tooltip: 'New chat',
-                        icon: const Icon(Icons.edit_square),
-                        onPressed: () {
-                          HapticFeedback.selectionClick();
-                          s.sessions.startNew();
-                        },
-                      ),
-              ),
-              _ChatMenu(session),
-            ],
-          ),
-          body: Column(
-            children: [
-              const _StatusBanner(),
-              Expanded(
-                child: AnimatedSwitcher(
-                  duration: AppMotion.fast,
-                  switchInCurve: AppMotion.standard,
-                  switchOutCurve: AppMotion.standard,
-                  child: ChatView(key: ObjectKey(session), session: session),
+                ListenableBuilder(
+                  listenable: session,
+                  builder: (context, _) => session.conversation == null
+                      ? const SizedBox.shrink()
+                      : IconButton(
+                          tooltip: 'New chat',
+                          icon: const Icon(Icons.edit_square),
+                          onPressed: () {
+                            HapticFeedback.selectionClick();
+                            s.sessions.startNew();
+                          },
+                        ),
                 ),
-              ),
-            ],
-          ),
-        );
-      },
+                _ChatMenu(session),
+              ],
+            ),
+            body: Column(
+              children: [
+                const _StatusBanner(),
+                Expanded(
+                  child: AnimatedSwitcher(
+                    duration: AppMotion.fast,
+                    switchInCurve: AppMotion.standard,
+                    switchOutCurve: AppMotion.standard,
+                    child: ChatView(key: ObjectKey(session), session: session),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 }
