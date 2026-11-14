@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher shortcuts. They open QuickActionActivity, which brings the
+     running app forward instead of letting the launcher's
+     FLAG_ACTIVITY_CLEAR_TASK restart it (and unload the model). -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new_chat"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_chat"
+        android:shortcutShortLabel="@string/shortcut_new_chat"
+        android:shortcutLongLabel="@string/shortcut_new_chat">
+        <intent
+            android:action="dev.abdullah.aithra.action.NEW_CHAT"
+            android:targetPackage="dev.abdullah.aithra"
+            android:targetClass="dev.abdullah.aithra.QuickActionActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="voice_mode"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_voice"
+        android:shortcutShortLabel="@string/shortcut_voice_mode"
+        android:shortcutLongLabel="@string/shortcut_voice_mode_long">
+        <intent
+            android:action="dev.abdullah.aithra.action.VOICE_MODE"
+            android:targetPackage="dev.abdullah.aithra"
+            android:targetClass="dev.abdullah.aithra.QuickActionActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="ask_photo"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_photo"
+        android:shortcutShortLabel="@string/shortcut_ask_photo"
+        android:shortcutLongLabel="@string/shortcut_ask_photo">
+        <intent
+            android:action="dev.abdullah.aithra.action.ASK_PHOTO"
+            android:targetPackage="dev.abdullah.aithra"
+            android:targetClass="dev.abdullah.aithra.QuickActionActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="voice_note"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_note"
+        android:shortcutShortLabel="@string/shortcut_voice_note"
+        android:shortcutLongLabel="@string/shortcut_voice_note_long">
+        <intent
+            android:action="dev.abdullah.aithra.action.VOICE_NOTE"
+            android:targetPackage="dev.abdullah.aithra"
+            android:targetClass="dev.abdullah.aithra.QuickActionActivity" />
+    </shortcut>
+</shortcuts>

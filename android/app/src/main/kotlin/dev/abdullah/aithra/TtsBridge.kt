@@ -3,23 +3,48 @@ package dev.abdullah.aithra
 import android.content.Context
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
+import android.view.textclassifier.TextClassificationManager
+import android.view.textclassifier.TextLanguage
 import java.util.Locale
 
-/** Android's built-in TextToSpeech. Utterances queue in order; events report each one's end. */
+/** One sentence to speak and how to speak it. */
+data class Utterance(
+    val text: String,
+    val id: String,
+    /** BCP 47 tag; null speaks in the phone's language. */
+    val language: String?,
+    /** A voice name from [TtsBridge.voices]; used when it speaks [language]. */
+    val voice: String?,
+    val rate: Float,
+)
+
+/**
+ * Android's built-in TextToSpeech. Utterances queue in order, each in its
+ * own language and voice; events report each one's end.
+ */
 class TtsBridge(context: Context) {
     private enum class State { STARTING, READY, FAILED }
 
+    private val appContext = context.applicationContext
     private var state = State.STARTING
-    private val pending = mutableListOf<Pair<String, String>>()
-    private val tts: TextToSpeech = TextToSpeech(context.applicationContext) { status ->
+    private val pending = mutableListOf<Utterance>()
+    private val voiceWaiters = mutableListOf<(List<Map<String, Any?>>) -> Unit>()
+
+    /** The language and voice last set on the engine; changing them reloads the engine's voice. */
+    private var applied: Pair<String?, String?>? = null
+
+    private val tts: TextToSpeech = TextToSpeech(appContext) { status ->
         state = if (status == TextToSpeech.SUCCESS) State.READY else State.FAILED
         if (state == State.READY) {
-            tts.language = Locale.getDefault()
-            pending.forEach { (text, id) -> speakNow(text, id) }
+            pending.forEach(::speakNow)
         } else {
-            pending.forEach { (_, id) -> fail(id) }
+            pending.forEach { fail(it.id) }
         }
         pending.clear()
+        val list = voices()
+        voiceWaiters.forEach { it(list) }
+        voiceWaiters.clear()
     }
 
     init {
@@ -42,18 +67,64 @@ class TtsBridge(context: Context) {
         })
     }
 
-    fun speak(text: String, id: String) {
+    fun speak(u: Utterance) {
         when (state) {
-            State.READY -> speakNow(text, id)
-            State.STARTING -> pending += text to id
-            State.FAILED -> fail(id)
+            State.READY -> speakNow(u)
+            State.STARTING -> pending += u
+            State.FAILED -> fail(u.id)
         }
     }
 
+    /**
+     * Voices that speak without a network connection and are installed:
+     * Aithra never sends text off the phone. Answers once the engine is up.
+     */
+    fun voices(callback: (List<Map<String, Any?>>) -> Unit) {
+        when (state) {
+            State.STARTING -> voiceWaiters += callback
+            else -> callback(voices())
+        }
+    }
+
+    private fun voices(): List<Map<String, Any?>> {
+        if (state != State.READY) return emptyList()
+        return (tts.voices ?: emptySet())
+            .filter { it.isOffline() }
+            .sortedWith(compareBy({ it.locale.toLanguageTag() }, { -it.quality }, { it.name }))
+            .map {
+                mapOf(
+                    "name" to it.name,
+                    "language" to it.locale.toLanguageTag(),
+                    // In the phone's language, for the settings list.
+                    "label" to it.locale.displayName,
+                    "quality" to it.quality,
+                )
+            }
+    }
+
+    private fun Voice.isOffline() =
+        !isNetworkConnectionRequired && TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in features
+
     private fun fail(id: String) = Events.send(mapOf("type" to "tts", "kind" to "error", "id" to id))
 
-    private fun speakNow(text: String, id: String) {
-        tts.speak(text, TextToSpeech.QUEUE_ADD, null, id)
+    private fun speakNow(u: Utterance) {
+        apply(u.language, u.voice)
+        tts.setSpeechRate(u.rate)
+        // The language, voice and rate are read when the utterance is
+        // queued, so each queued sentence keeps its own.
+        tts.speak(u.text, TextToSpeech.QUEUE_ADD, null, u.id)
+    }
+
+    private fun apply(language: String?, voiceName: String?) {
+        if (applied == language to voiceName) return
+        applied = language to voiceName
+        val locale = language?.let(Locale::forLanguageTag) ?: Locale.getDefault()
+        val chosen = voiceName?.let { name -> tts.voices?.firstOrNull { it.name == name } }
+        if (chosen != null && chosen.isOffline() && chosen.locale.language == locale.language) {
+            tts.voice = chosen
+        } else {
+            tts.language = locale
+        }
     }
 
     fun stop() {
@@ -62,4 +133,20 @@ class TtsBridge(context: Context) {
     }
 
     fun shutdown() = tts.shutdown()
+
+    companion object {
+        /**
+         * The language [text] is written in, from Android's on-device
+         * TextClassifier, or null when it is less sure than not (very short
+         * replies): the phone's own language is then the better guess.
+         * Blocking; call off the main thread.
+         */
+        fun detectLanguage(context: Context, text: String): String? {
+            val classifier = context.getSystemService(TextClassificationManager::class.java).textClassifier
+            val result = classifier.detectLanguage(TextLanguage.Request.Builder(text).build())
+            if (result.localeHypothesisCount == 0) return null
+            val top = result.getLocale(0)
+            return if (result.getConfidenceScore(top) >= 0.5f) top.toLanguageTag() else null
+        }
+    }
 }

@@ -16,9 +16,12 @@ String greetingFor(DateTime now) => switch (now.hour) {
 /// rising gently into place. Only opacity and a transform animate, both on
 /// the compositor, so it holds the display's full frame rate.
 class Greeting extends StatefulWidget {
-  const Greeting({required this.now, super.key});
+  const Greeting({required this.now, this.below, super.key});
 
   final DateTime now;
+
+  /// Shown under the greeting, rising in with it.
+  final Widget? below;
 
   @override
   State<Greeting> createState() => _GreetingState();
@@ -82,6 +85,10 @@ class _GreetingState extends State<Greeting>
                   textAlign: TextAlign.center,
                   style: AithraType.body.copyWith(color: c.textSecondary),
                 ),
+                if (widget.below case final below?) ...[
+                  const SizedBox(height: AppSpacing.lg),
+                  below,
+                ],
               ],
             ),
           ),

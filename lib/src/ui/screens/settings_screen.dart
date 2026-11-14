@@ -12,6 +12,8 @@ import 'custom_instructions_screen.dart';
 import 'memories_screen.dart';
 import 'models_screen.dart';
 import 'performance_screen.dart';
+import 'prompt_shortcuts_screen.dart';
+import 'read_aloud_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -85,6 +87,21 @@ class SettingsScreen extends StatelessWidget {
                   onTap: () => _push(context, const MemoriesScreen()),
                 ),
               ),
+              ListenableBuilder(
+                listenable: s.settings,
+                builder: (context, _) => SettingsTile(
+                  icon: Icons.bolt_rounded,
+                  title: 'Prompt shortcuts',
+                  subtitle: s.settings.promptShortcuts.isEmpty
+                      ? 'None'
+                      : oneLinePreview(
+                          s.settings.promptShortcuts
+                              .map((p) => p.label)
+                              .join(', '),
+                        ),
+                  onTap: () => _push(context, const PromptShortcutsScreen()),
+                ),
+              ),
               SettingsTile(
                 icon: Icons.speed_rounded,
                 title: 'Performance',
@@ -98,6 +115,17 @@ class SettingsScreen extends StatelessWidget {
             separatorIndent: _indent,
             children: [
               const _VoiceStatus(),
+              ListenableBuilder(
+                listenable: s.settings,
+                builder: (context, _) => SettingsTile(
+                  icon: Icons.volume_up_outlined,
+                  title: 'Read aloud',
+                  subtitle: s.settings.speakReplies
+                      ? 'Every reply is read aloud'
+                      : 'Language, voice and speed',
+                  onTap: () => _push(context, const ReadAloudScreen()),
+                ),
+              ),
               ListenableBuilder(
                 listenable: s.settings,
                 builder: (context, _) => SettingsTile(

@@ -90,3 +90,42 @@ class SpeechNoticeView extends StatelessWidget {
     );
   }
 }
+
+/// Tells the user why dictation stopped: the speech model for their
+/// language (with its download), or the recognizer's error.
+void showSpeechProblem(BuildContext context, SpeechService speech) {
+  final messenger = ScaffoldMessenger.of(context);
+  if (speech.languageMissing) {
+    // The notice follows the status check that error 12/13 starts, then
+    // the download.
+    messenger.showSnackBar(
+      SnackBar(
+        duration: const Duration(minutes: 1),
+        showCloseIcon: true,
+        content: ListenableBuilder(
+          listenable: speech,
+          builder: (context, _) => SpeechNoticeView(
+            speech: speech,
+            notice:
+                speech.modelNotice ??
+                const SpeechNotice('Speech recognition is ready.'),
+            inverse: true,
+          ),
+        ),
+      ),
+    );
+  } else if (speech.errorCode case final code?) {
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(speechErrorMessage(code)),
+        action: speech.micBlocked
+            ? SnackBarAction(
+                label: 'Settings',
+                onPressed: speech.openAppSettings,
+              )
+            : null,
+      ),
+    );
+    speech.errorCode = null;
+  }
+}

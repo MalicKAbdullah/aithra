@@ -144,6 +144,10 @@ class ChatSession extends ChangeNotifier {
 
   bool get _remembering => _assistant.settings.memoryEnabled && !skipMemory;
 
+  /// Replies are spoken (voice mode): the system prompt asks for short,
+  /// plain spoken sentences.
+  bool spoken = false;
+
   ConversationInfo? get conversation => _conversation;
 
   /// Set before the first message for a chat that starts private.
@@ -406,6 +410,7 @@ class ChatSession extends ChangeNotifier {
         replyStyle: settings.replyStyle,
         memories: profile.stable,
         summary: fresh.summary,
+        spoken: spoken,
       );
       final full = buildSystemPrompt(context);
       final counted = await _countTokens(spec, full, history);

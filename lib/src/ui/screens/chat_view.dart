@@ -7,13 +7,16 @@ import 'package:flutter/services.dart';
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
 import '../../memory/profile.dart';
+import '../../quick_actions.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
 import '../widgets/composer.dart';
+import '../widgets/composer_attach.dart';
 import '../widgets/find_bar.dart';
 import '../widgets/greeting.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/perf_hud.dart';
+import '../widgets/prompt_shortcut_chips.dart';
 import '../widgets/reveal.dart';
 import 'memories_screen.dart';
 import 'models_screen.dart';
@@ -37,6 +40,7 @@ class _ChatViewState extends State<ChatView> {
   final _greetedAt = DateTime.now();
   final _reveal = RevealController();
   Timer? _draftTimer;
+  late final QuickActions _quickActions;
 
   ChatSession get _session => widget.session;
 
@@ -51,6 +55,8 @@ class _ChatViewState extends State<ChatView> {
       // Reversed list: extentAfter is the distance to the oldest loaded message.
       if (_scroll.position.extentAfter < 800) _session.loadMore();
     });
+    _quickActions = context.services.quickActions..addListener(_onQuickAction);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onQuickAction());
     // A session still held for its reply already has its messages and the
     // reader's place in them is the newest end.
     if (_session.messages.isEmpty) {
@@ -63,6 +69,15 @@ class _ChatViewState extends State<ChatView> {
       });
     } else {
       _takeReveal();
+    }
+  }
+
+  /// "Ask about a photo" opened this new chat to pick the photo in it.
+  void _onQuickAction() {
+    final s = context.services;
+    if (!mounted || !identical(s.sessions.current, _session)) return;
+    if (s.quickActions.takePhotoRequest()) {
+      showAttachMenu(context, _composer);
     }
   }
 
@@ -93,6 +108,7 @@ class _ChatViewState extends State<ChatView> {
 
   @override
   void dispose() {
+    _quickActions.removeListener(_onQuickAction);
     _session.removeListener(_takeReveal);
     _session.finding.removeListener(_findToggled);
     _reveal.dispose();
@@ -120,7 +136,14 @@ class _ChatViewState extends State<ChatView> {
         ),
       );
     }
-    await _session.send(text, images);
+    final sending = _session.send(text, images);
+    _readReplyAloud();
+    await sending;
+  }
+
+  void _readReplyAloud() {
+    final s = context.services;
+    if (s.settings.speakReplies) s.readAloud.followReply(_session);
   }
 
   Future<void> _messageActions(ChatMessage m) async {
@@ -221,6 +244,7 @@ class _ChatViewState extends State<ChatView> {
                 listenable: Listenable.merge([_session, s.assistant]),
                 builder: (context, _) => Composer(
                   controller: _composer,
+                  speech: s.speech,
                   busy: _session.busy,
                   canAttachImages: s.assistant.activeModel?.vision ?? false,
                   onSend: () {
@@ -228,6 +252,7 @@ class _ChatViewState extends State<ChatView> {
                       final text = _composer.text.text;
                       _composer.clear();
                       _session.editLast(text);
+                      _readReplyAloud();
                     } else {
                       _send();
                     }
@@ -249,7 +274,15 @@ class _ChatViewState extends State<ChatView> {
     final extra = (_session.busy ? 1 : 0) + (_session.error != null ? 1 : 0);
     if (messages.isEmpty && extra == 0) {
       return _session.conversation == null
-          ? Greeting(now: _greetedAt)
+          ? Greeting(
+              now: _greetedAt,
+              below: PromptShortcutChips(
+                onPick: (p) {
+                  _composer.setText(p.prompt);
+                  _composer.focus.requestFocus();
+                },
+              ),
+            )
           : const SizedBox.shrink();
     }
     return ListView.builder(

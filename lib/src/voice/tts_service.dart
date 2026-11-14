@@ -32,11 +32,23 @@ class TtsService extends ChangeNotifier {
   /// the voice orb can pulse with the speech.
   final ValueNotifier<int> words = ValueNotifier(0);
 
-  Future<void> say(String sentence) async {
+  /// Queues [sentence]; see [NativeBridge.speak] for the voice parameters.
+  Future<void> say(
+    String sentence, {
+    String? language,
+    String? voice,
+    double rate = 1,
+  }) async {
     final id = 'u${_next++}';
     _pending.add(id);
     notifyListeners();
-    await _native.speak(sentence, id);
+    await _native.speak(
+      sentence,
+      id,
+      language: language,
+      voice: voice,
+      rate: rate,
+    );
   }
 
   /// Completes when the queue is empty.
