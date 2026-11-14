@@ -166,6 +166,10 @@ class ChatSession extends ChangeNotifier {
   /// Something shared from another app, for the composer to take.
   final ValueNotifier<SharedItem?> incoming = ValueNotifier(null);
 
+  /// Replies are spoken (voice mode): the system prompt asks for short,
+  /// plain spoken sentences.
+  bool spoken = false;
+
   ConversationInfo? get conversation => _conversation;
 
   /// Set before the first message for a chat that starts private.
@@ -474,6 +478,7 @@ class ChatSession extends ChangeNotifier {
         replyStyle: settings.replyStyle,
         memories: profile.stable,
         summary: fresh.summary,
+        spoken: spoken,
       );
       final full = buildSystemPrompt(context);
       final counted = await _countTokens(spec, full, history);

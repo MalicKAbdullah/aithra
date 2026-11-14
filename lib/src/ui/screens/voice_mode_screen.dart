@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../../chat/chat_session.dart';
 import '../../services.dart';
+import '../../voice/read_aloud.dart';
 import '../../voice/sentence_splitter.dart';
 import '../../voice/speech_service.dart';
 import '../aithra_type.dart';
@@ -32,8 +33,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
   VoicePhase _phase = VoicePhase.paused;
   String _heard = '';
   String _reply = '';
-  SentenceSplitter? _splitter;
-  int _spokenUpTo = 0;
+  ReplyReader? _reader;
   bool _closing = false;
   bool _modelInstalled = false;
 
@@ -41,7 +41,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
   void initState() {
     super.initState();
     _s = context.services;
-    _session = _s.sessions.detached();
+    _session = _s.sessions.detached()..spoken = true;
     _session.streaming.addListener(_onReplyText);
     _s.speech.addListener(_onSpeech);
     _finals = _s.speech.finals.listen(_onHeard);
@@ -56,7 +56,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
     _s.speech.removeListener(_onSpeech);
     _session.streaming.removeListener(_onReplyText);
     _s.speech.cancel();
-    _s.tts.stop();
+    _s.readAloud.stop();
     _session.dispose();
     super.dispose();
   }
@@ -102,41 +102,32 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
       _reply = '';
       _phase = VoicePhase.thinking;
     });
-    _splitter = SentenceSplitter();
-    _spokenUpTo = 0;
+    final reader = _reader = _s.readAloud.follow(_session);
     await _session.send(text, const []);
-    // The reply is complete: speak what is left, then listen again.
-    final splitter = _splitter;
-    if (splitter != null) {
-      final full = _session.lastReply;
-      final tail = full.length > _spokenUpTo ? full.substring(_spokenUpTo) : '';
-      for (final sentence in [...splitter.add(tail), ...splitter.flush()]) {
-        await _s.tts.say(sentence);
-      }
-      if (mounted) setState(() => _reply = full);
+    // Interrupted: the tap that stopped this reply listens again itself.
+    if (!identical(_reader, reader)) return;
+    _reader = null;
+    final full = _session.lastReply;
+    reader.finish(full);
+    if (mounted) setState(() => _reply = full);
+    await reader.done;
+    if (_session.error case final error?) {
+      await _s.readAloud.read(_session, error);
     }
-    _splitter = null;
-    if (_session.error != null) {
-      await _s.tts.say(_session.error!);
-    }
-    await _s.tts.idle;
     if (mounted && !_closing && _phase != VoicePhase.listening) await _listen();
   }
 
   void _onReplyText() {
     final text = _session.streaming.value;
-    final splitter = _splitter;
-    if (splitter == null || text.length <= _spokenUpTo) return;
-    final chunk = text.substring(_spokenUpTo);
-    _spokenUpTo = text.length;
-    final sentences = splitter.add(chunk);
-    if (sentences.isNotEmpty && _phase == VoicePhase.thinking) {
-      setState(() => _phase = VoicePhase.speaking);
-    }
-    for (final s in sentences) {
-      _s.tts.say(s);
-    }
-    setState(() => _reply = text);
+    final reader = _reader;
+    if (reader == null) return;
+    reader.add(text);
+    setState(() {
+      if (reader.started && _phase == VoicePhase.thinking) {
+        _phase = VoicePhase.speaking;
+      }
+      _reply = text;
+    });
   }
 
   Future<void> _interrupt() async {
@@ -144,8 +135,8 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
     switch (_phase) {
       case VoicePhase.thinking:
       case VoicePhase.speaking:
-        _splitter = null;
-        await _s.tts.stop();
+        _reader = null;
+        await _s.readAloud.stop();
         await _session.stop();
         await _listen();
       case VoicePhase.listening:
@@ -155,7 +146,8 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
     }
   }
 
-  void _typeInstead() {
+  /// Opens this conversation as a chat, where it carries on in writing.
+  void _continueInChat() {
     final conversation = _session.conversation;
     if (conversation != null) _s.sessions.open(conversation);
     Navigator.of(context).pop();
@@ -264,9 +256,13 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> {
                         ],
                         const Spacer(),
                         TextButton.icon(
-                          onPressed: _typeInstead,
+                          onPressed: _continueInChat,
                           icon: const Icon(Icons.keyboard_rounded, size: 18),
-                          label: const Text('Type instead'),
+                          label: Text(
+                            _session.conversation == null
+                                ? 'Type instead'
+                                : 'Continue in chat',
+                          ),
                           style: TextButton.styleFrom(
                             foregroundColor: c.textSecondary,
                           ),

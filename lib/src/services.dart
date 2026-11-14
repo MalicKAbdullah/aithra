@@ -18,6 +18,8 @@ import 'memory/recall_index.dart';
 import 'models/model_manager.dart';
 import 'platform/native.dart';
 import 'share/inbox.dart';
+import 'quick_actions.dart';
+import 'voice/read_aloud.dart';
 import 'voice/speech_service.dart';
 import 'voice/tts_service.dart';
 
@@ -74,6 +76,16 @@ class Services {
     store: chats,
     navigator: navigatorKey,
     messenger: messengerKey,
+  );
+
+  /// Launcher shortcuts and the Quick Settings tile.
+  late final QuickActions quickActions = QuickActions(native);
+
+  /// Reading replies aloud, for every screen that does.
+  late final ReadAloud readAloud = ReadAloud(
+    tts: tts,
+    native: native,
+    settings: settings,
   );
 
   /// The chat on screen and every chat still replying; one reply runs on

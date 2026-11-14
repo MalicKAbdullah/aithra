@@ -21,6 +21,12 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         app.surfaces++
         super.onCreate(savedInstanceState)
+        // Started by QuickActionActivity with no task to bring forward. A
+        // relaunch from Recents carries the same intent and must not
+        // repeat it.
+        if (savedInstanceState == null && intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0) {
+            QuickActions.offer(intent)
+        }
     }
 
     override fun getCachedEngineGroupId(): String = app.engineGroupId()
