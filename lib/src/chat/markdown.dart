@@ -1,3 +1,5 @@
+import 'chart_spec.dart';
+
 /// A small Markdown parser for chat replies: fenced code, display math,
 /// headings, lists (with task items), quotes, tables, rules and paragraphs,
 /// with bold/italic/strikethrough/code/link and LaTeX math inlines. It is
@@ -911,13 +913,13 @@ String _plainBlocks(List<MdBlock> blocks) {
       MdListItem(:final text, :final marker, :final indent, :final checked) =>
         '${'  ' * indent}'
             '${switch (checked) {
-              true => '☑',
-              false => '☐',
+              true => '[x]',
+              false => '[ ]',
               null => marker,
             }} '
             '${_inlinePlain(text).replaceAll('\n', '\n${'  ' * indent}  ')}',
       MdQuote(:final blocks) => _plainBlocks(blocks),
-      MdCode(:final code) => code,
+      MdCode(:final language, :final code) => _plainCode(language, code),
       MdMath(:final tex) => tex,
       MdTable() => tableTsv(block),
       MdRule() => '———',
@@ -925,6 +927,26 @@ String _plainBlocks(List<MdBlock> blocks) {
     prev = block;
   }
   return b.toString();
+}
+
+/// A chart's data rather than its JSON spec, when the spec is drawable.
+String _plainCode(String language, String code) {
+  if (!ChartSpec.languages.contains(language)) return code;
+  try {
+    return switch (ChartSpec.parse(language, code)) {
+      final PlotSpec p => [
+        if (p.title.isNotEmpty) p.title,
+        for (final s in p.sources) 'y = $s',
+        'x from ${p.xMin} to ${p.xMax}',
+      ].join('\n'),
+      final DataChart c => [
+        if (c.title.isNotEmpty) c.title,
+        c.tsv(),
+      ].join('\n'),
+    };
+  } on FormatException {
+    return code;
+  }
 }
 
 /// A table as tab-separated values, which spreadsheets paste as cells.
@@ -1023,8 +1045,8 @@ String _htmlBlocks(List<MdBlock> blocks) {
         lists.add((tag, block.indent));
       }
       final box = switch (block.checked) {
-        true => '☑ ',
-        false => '☐ ',
+        true => '[x] ',
+        false => '[ ] ',
         null => '',
       };
       b.write('<li>$box${_inlineHtml(block.text)}</li>');
@@ -1037,7 +1059,8 @@ String _htmlBlocks(List<MdBlock> blocks) {
       MdParagraph(:final text) => '<p>${_inlineHtml(text)}</p>',
       MdQuote(:final blocks) =>
         '<blockquote>${_htmlBlocks(blocks)}</blockquote>',
-      MdCode(:final code) => '<pre><code>${_escape(code)}</code></pre>',
+      MdCode(:final language, :final code) =>
+        '<pre><code>${_escape(_plainCode(language, code))}</code></pre>',
       MdMath(:final tex) => '<p><code>${_escape(tex)}</code></p>',
       MdRule() => '<hr>',
       MdTable(:final header, :final rows) =>
