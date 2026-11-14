@@ -3,6 +3,7 @@ import 'package:core_ui/core_ui.dart';
 import 'package:flutter/material.dart';
 
 import '../../services.dart';
+import '../../voice/read_aloud.dart';
 import '../aithra_type.dart';
 import '../widgets/section_label.dart';
 
@@ -42,10 +43,17 @@ class _ReadAloudScreenState extends State<ReadAloudScreen> {
   static const _sample =
       'Hi, I am Aithra. This is how I sound when I read a reply.';
 
+  late final ReadAloud _read;
+
+  @override
+  void initState() {
+    super.initState();
+    _read = context.services.readAloud;
+  }
+
   @override
   void dispose() {
-    final read = context.services.readAloud;
-    if (read.isReading(_sample)) read.stop();
+    if (_read.isReading(_sample)) _read.stop();
     super.dispose();
   }
 

@@ -367,9 +367,15 @@ class _Actions extends StatelessWidget {
                         AppSpacing.radiusPill,
                       ),
                     ),
-                    onSelected: !hasNote || runner.running && runner.action == a
+                    // The running action's chip stays enabled, so it keeps
+                    // its selected colours; tapping it again does nothing.
+                    onSelected: !hasNote
                         ? null
-                        : (_) => onRun(a),
+                        : (_) {
+                            if (!(runner.running && runner.action == a)) {
+                              onRun(a);
+                            }
+                          },
                   ),
                   const SizedBox(width: AppSpacing.sm),
                 ],
