@@ -182,36 +182,50 @@ void main() {
       );
     });
 
-    test('memories are shed from the end of the list, newest kept', () {
+    test('memories are shed from the end of the list, so the first one '
+        'is kept longest', () {
       final c = SystemContext(
         now: DateTime(2026),
-        memories: const ['new', 'mid', 'old', 'oldest'],
+        memories: const ['first', 'second', 'third', 'fourth'],
       );
-      expect(c.shed()!.memories, ['new', 'mid']);
-      expect(c.shed()!.shed()!.memories, ['new']);
+      expect(c.shed()!.memories, ['first', 'second']);
+      expect(c.shed()!.shed()!.memories, ['first']);
       expect(c.shed()!.shed()!.shed()!.memories, isEmpty);
       expect(c.shed()!.shed()!.shed()!.shed(), isNull);
     });
 
-    test('recalled snippets ride with the newest turn, most relevant kept '
-        'when room is short', () async {
-      expect(buildTurnContext(const []), isEmpty);
-      final all = buildTurnContext(const ['Tide tables', 'Ferry times']);
-      expect(all, contains('- Tide tables\n- Ferry times'));
+    test('per-message context rides with the newest turn, recalled '
+        'messages shed first when room is short', () async {
+      expect(buildTurnContext(), isEmpty);
+      const related = ['Bakes bread', 'Keeps bees'];
+      const recalled = [
+        RecalledMessage(fromUser: true, text: 'When is high tide?'),
+        RecalledMessage(fromUser: false, text: 'High tide is at 14:05.'),
+      ];
+      final all = buildTurnContext(related: related, recalled: recalled);
+      expect(all, contains('- Bakes bread\n- Keeps bees'));
+      expect(all, contains('- The user wrote: When is high tide?'));
+      expect(all, contains('- You replied: High tide is at 14:05.'));
       Future<int> cost(String s) async => s.length;
-      final one = buildTurnContext(const ['Tide tables']);
+      final noRecall = buildTurnContext(related: related);
       expect(
         await fitTurnContext(
-          const ['Tide tables', 'Ferry times'],
-          room: one.length,
+          related: related,
+          recalled: recalled,
+          room: noRecall.length,
           cost: cost,
         ),
-        (text: one, tokens: one.length),
+        (text: noRecall, tokens: noRecall.length),
       );
-      expect(await fitTurnContext(const ['Tide tables'], room: 3, cost: cost), (
-        text: '',
-        tokens: 0,
-      ));
+      expect(
+        await fitTurnContext(
+          related: related,
+          recalled: recalled,
+          room: 3,
+          cost: cost,
+        ),
+        (text: '', tokens: 0),
+      );
     });
 
     test('summarize prompt labels speakers', () {

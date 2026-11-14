@@ -73,4 +73,9 @@ class Vault {
     await tmp.writeAsBytes(payload.toBytes(), flush: true);
     await tmp.rename(file.path);
   }
+
+  Future<void> delete(String name) async {
+    final file = _file(name);
+    if (file.existsSync()) await file.delete();
+  }
 }

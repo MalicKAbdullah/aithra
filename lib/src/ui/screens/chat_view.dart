@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
+import '../../memory/profile.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
 import '../widgets/composer.dart';
@@ -272,9 +273,9 @@ class _ChatViewState extends State<ChatView> {
           onLongPress: () => _messageActions(m),
         );
         final notice = _session.notices[m.seq];
-        final remembered = _session.memoryUpdates.contains(m.seq);
+        final remembered = _session.memoryUpdates[m.seq];
         final cutOff = _session.canContinue(m);
-        if (notice == null && !remembered && !cutOff) {
+        if (notice == null && remembered == null && !cutOff) {
           return RevealAnchor(controller: _reveal, seq: m.seq, child: bubble);
         }
         return RevealAnchor(
@@ -286,7 +287,12 @@ class _ChatViewState extends State<ChatView> {
             children: [
               bubble,
               if (cutOff) _ContinueRow(onContinue: _session.continueReply),
-              if (remembered) const _MemoryHint(),
+              if (remembered != null)
+                _MemoryHint(
+                  update: remembered,
+                  onUndone: () =>
+                      setState(() => _session.memoryUpdates.remove(m.seq)),
+                ),
               if (notice != null) _NoticeRow(notice),
             ],
           ),
@@ -356,16 +362,19 @@ class _ContinueRow extends StatelessWidget {
   }
 }
 
-/// A quiet line under a reply after which Aithra updated its memory of the
-
-/// user; it fades in and never asks for anything. Tap to see what Aithra
-/// remembers.
+/// A quiet line under a reply after which Aithra updated the user's
+/// profile; it fades in and never asks for anything. Tap to see what Aithra
+/// remembers, or Undo to put the section back as it was.
 class _MemoryHint extends StatelessWidget {
-  const _MemoryHint();
+  const _MemoryHint({required this.update, required this.onUndone});
+
+  final MemoryUpdate update;
+  final VoidCallback onUndone;
 
   @override
   Widget build(BuildContext context) {
     final c = SuiteColors.of(context);
+    final memories = context.services.memories;
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
       duration: AppMotion.slow,
@@ -394,6 +403,27 @@ class _MemoryHint extends StatelessWidget {
               Text(
                 'Memory updated',
                 style: AithraType.caption.copyWith(color: c.textTertiary),
+              ),
+              ListenableBuilder(
+                listenable: memories,
+                builder: (context, _) => memories.canUndo(update)
+                    ? TextButton(
+                        onPressed: () async {
+                          if (await memories.undo(update)) onUndone();
+                        },
+                        style: TextButton.styleFrom(
+                          minimumSize: const Size(48, 40),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: AppSpacing.sm,
+                          ),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          textStyle: AithraType.caption.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        child: const Text('Undo'),
+                      )
+                    : const SizedBox.shrink(),
               ),
             ],
           ),

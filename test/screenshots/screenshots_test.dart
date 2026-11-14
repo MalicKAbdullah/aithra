@@ -19,7 +19,7 @@ import 'package:aithra/src/data/settings_store.dart';
 import 'package:aithra/src/data/vault.dart';
 import 'package:aithra/src/engine/engine_service.dart';
 import 'package:aithra/src/engine/run_metrics.dart';
-import 'package:aithra/src/memory/memory_curator.dart';
+import 'package:aithra/src/memory/memory_keeper.dart';
 import 'package:aithra/src/memory/memory_store.dart';
 import 'package:aithra/src/memory/recall_index.dart';
 import 'package:aithra/src/models/model_manager.dart';
@@ -763,6 +763,7 @@ Future<Harness> _build(
   required Brightness brightness,
   bool onboarded = true,
   bool withModels = true,
+  bool tidied = false,
 }) async {
   tester.view
     ..physicalSize = _phys
@@ -794,24 +795,7 @@ Future<Harness> _build(
   );
 
   final vault = MemVault();
-  vault.docs['memories'] = [
-    for (final (i, t) in const [
-      "User's name is Sam",
-      'Lives in Manchester',
-      'Prefers metric units and 24-hour time',
-      'Is vegetarian',
-      'Is learning Python for work',
-      'Daughter Ava turns 10 in March',
-      'Allergic to penicillin',
-    ].indexed)
-      {
-        'id': '$i',
-        'text': t,
-        'created': DateTime.now()
-            .subtract(Duration(days: i * 3))
-            .millisecondsSinceEpoch,
-      },
-  ];
+  _seedProfile(vault, tidied: tidied);
   final settings = SettingsStore(vault)
     ..onboarded = onboarded
     ..selectedModelId = withModels ? 'gemma4-e2b' : null;
@@ -836,6 +820,7 @@ Future<Harness> _build(
     assistant: Assistant(engine: engine, models: models, settings: settings),
     keeper: MemoryKeeper(
       native: native,
+      engine: engine,
       memories: memories,
       models: models,
       settings: settings,
@@ -869,6 +854,82 @@ Future<Harness> _build(
   );
   await _settle(tester);
   return Harness(native, services);
+}
+
+/// A profile as a few weeks of chats leave it, with one suggestion and one
+/// memory the user asked to keep. [tidied] adds the old flat list and the
+/// finished tidy-up waiting for review.
+void _seedProfile(MemVault vault, {required bool tidied}) {
+  final now = DateTime.now().millisecondsSinceEpoch;
+  var n = 0;
+  List<Map<String, Object?>> lines(List<String> texts) => [
+    for (final t in texts)
+      {'id': 'p${n++}', 'text': t, 'origin': 'stated', 'updated': now},
+  ];
+  vault.docs['profile.v2'] = {
+    'sections': {
+      'about': lines([
+        'Name is Sam',
+        'Lives in Manchester with daughter Ava, who turns 10 in March',
+      ]),
+      'preferences': lines([
+        'Prefers metric units and 24-hour time',
+        'Likes short answers with the steps shown',
+      ]),
+      'work': lines(['Data analyst at a hospital trust']),
+      'interests': lines(['Vegetarian cooking', 'Fell walking in the Lakes']),
+      'projects': lines(['Learning Python for work, on pandas now']),
+    },
+    'suggested': [
+      {
+        'id': 's1',
+        'section': 'interests',
+        'text': 'Plays chess online',
+        'created': now,
+      },
+    ],
+    'archived': [
+      if (tidied)
+        {
+          'id': 'a1',
+          'text': 'Asked what watch they are wearing',
+          'section': 'interests',
+          'archived': now,
+        },
+      if (tidied)
+        {
+          'id': 'a2',
+          'text': 'Wanted a packing list for Saturday',
+          'section': 'projects',
+          'archived': now,
+        },
+    ],
+    'pending': [
+      {'id': 'r1', 'text': 'Remember that my MOT is due in May', 'failures': 0},
+    ],
+    'tidy': {
+      'processed': [
+        if (tidied)
+          for (var i = 0; i < 11; i++) 'old$i',
+      ],
+      'sectionOf': <String, String>{},
+      'itemIds': <String>[],
+      'archivedIds': [
+        if (tidied) ...['a1', 'a2'],
+      ],
+      'kept': tidied ? 7 : 0,
+      'merged': tidied ? 2 : 0,
+      'setAside': tidied ? 2 : 0,
+      'failures': 0,
+    },
+    'tidied': tidied ? MemoryStore.tidyVersion : null,
+  };
+  if (tidied) {
+    vault.docs['memories'] = [
+      for (var i = 0; i < 11; i++)
+        {'id': 'old$i', 'text': 'Old note $i', 'created': now},
+    ];
+  }
 }
 
 /// Draws an Android-style status bar and gesture handle over the app.
@@ -1157,6 +1218,19 @@ void main() {
         final h = await _build(tester, brightness: b);
         await _push(tester, const MemoriesScreen());
         await _shot(tester, '09-memories-$t');
+        await tester.drag(find.byType(ListView).last, const Offset(0, -900));
+        await _settle(tester);
+        await _shot(tester, '09b-memories-scrolled-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('memories tidied $t', (tester) async {
+        final h = await _build(tester, brightness: b, tidied: true);
+        await _push(tester, const MemoriesScreen());
+        await _shot(tester, '09c-memories-tidy-banner-$t');
+        await tester.tap(find.text('Review'));
+        await _settle(tester, 16);
+        await _shot(tester, '09d-memories-set-aside-$t');
         await _teardown(tester, h);
       });
 

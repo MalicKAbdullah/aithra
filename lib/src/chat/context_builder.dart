@@ -42,6 +42,15 @@ class PromptPlan {
   final int promptTokens;
 }
 
+/// A message from another chat, recalled for its meaning.
+class RecalledMessage {
+  const RecalledMessage({required this.fromUser, required this.text});
+
+  /// Whether the user wrote it; otherwise it is one of Aithra's replies.
+  final bool fromUser;
+  final String text;
+}
+
 /// Everything the hidden system message carries besides who Aithra is. It
 /// holds only what stays the same from turn to turn, so the engine can keep
 /// the processed conversation and prefill just the new message; material
@@ -172,34 +181,55 @@ String buildSystemPrompt(SystemContext context) {
 
 String _two(int v) => v.toString().padLeft(2, '0');
 
-/// Material for the newest user turn only: snippets [recalled] from other
-/// chats. Empty when there is none.
-String buildTurnContext(List<String> recalled) {
-  if (recalled.isEmpty) return '';
+/// Material for the newest user turn only: the profile lines picked for
+/// this message ([related]) and messages [recalled] from other chats.
+/// Empty when there is neither.
+String buildTurnContext({
+  List<String> related = const [],
+  List<RecalledMessage> recalled = const [],
+}) {
+  if (related.isEmpty && recalled.isEmpty) return '';
   final b = StringBuffer()
-    ..writeln(
-      '(Possibly relevant notes from earlier chats, for context only; '
-      'the user has not repeated them:',
-    );
-  for (final r in recalled) {
-    b.writeln('- $r');
+    ..writeln('(Context for this message; the user has not repeated it.');
+  if (related.isNotEmpty) {
+    b.writeln('More of what you know about the user:');
+    for (final m in related) {
+      b.writeln('- $m');
+    }
+  }
+  if (recalled.isNotEmpty) {
+    b.writeln('Possibly relevant messages from earlier chats:');
+    for (final r in recalled) {
+      b.writeln(
+        '- ${r.fromUser ? 'The user wrote' : 'You replied'}: ${r.text}',
+      );
+    }
   }
   b.write(')');
   return b.toString();
 }
 
-/// The longest prefix of [recalled] whose [buildTurnContext] costs at most
-/// [room] tokens by [cost], and that cost; the user's message is fitted
-/// first, so snippets only use what it leaves.
-Future<({String text, int tokens})> fitTurnContext(
-  List<String> recalled, {
+/// The largest [buildTurnContext] that costs at most [room] tokens by
+/// [cost], and that cost; the user's message is fitted first, so this only
+/// uses what it leaves. Recalled messages go first, from the end (the least
+/// related), then profile lines from the end.
+Future<({String text, int tokens})> fitTurnContext({
+  required List<String> related,
+  required List<RecalledMessage> recalled,
   required int room,
   required Future<int> Function(String text) cost,
 }) async {
-  for (var n = recalled.length; n > 0; n--) {
-    final text = buildTurnContext(recalled.sublist(0, n));
+  var r = related;
+  var m = recalled;
+  while (r.isNotEmpty || m.isNotEmpty) {
+    final text = buildTurnContext(related: r, recalled: m);
     final tokens = await cost(text);
     if (tokens <= room) return (text: text, tokens: tokens);
+    if (m.isNotEmpty) {
+      m = m.sublist(0, m.length - 1);
+    } else {
+      r = r.sublist(0, r.length - 1);
+    }
   }
   return (text: '', tokens: 0);
 }
