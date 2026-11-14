@@ -759,4 +759,34 @@ void main() {
       );
     });
   });
+
+  group('regenerate and edit', () {
+    Future<(Harness, ChatSession, String)> chat() async {
+      final h = await Harness.start();
+      final a = h.sessions.current;
+      unawaited(a.send('Name a colour', const []));
+      await h.settle();
+      h.native.finish('Red.');
+      await h.settle();
+      return (h, a, a.conversation!.id);
+    }
+
+    test('any user message can be edited; what followed it goes', () async {
+      final (h, a, id) = await chat();
+      unawaited(a.send('And another', const []));
+      await h.settle();
+      h.native.finish('Green.');
+      await h.settle();
+      final first = a.messages.lastWhere((m) => m.role == Role.user);
+      unawaited(a.edit(first, 'Name a fruit'));
+      await h.settle();
+      h.native.finish('Apple.');
+      await h.settle();
+      expect(h.contents(id), ['Name a fruit', 'Apple.']);
+      expect(
+        [for (final m in a.messages) m.content],
+        ['Apple.', 'Name a fruit'],
+      );
+    });
+  });
 }

@@ -242,7 +242,6 @@ void main() {
                 itemBuilder: (context, i) => MessageBubble(
                   key: ValueKey(messages[count - 1 - i].seq),
                   message: messages[count - 1 - i],
-                  onLongPress: () {},
                 ),
               ),
             ),

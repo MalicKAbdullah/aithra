@@ -854,18 +854,17 @@ class ChatSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Rewrites the last user message and answers it again.
-  Future<void> editLast(String text) async {
-    if (busy) return;
-    final lastUser = _messages.where((m) => m.role == Role.user).firstOrNull;
-    if (lastUser == null) return;
-    _messages.removeWhere((m) => m.seq >= lastUser.seq);
+  /// Rewrites [message], a user message, and answers it again; everything
+  /// after it in the chat goes.
+  Future<void> edit(ChatMessage message, String text) async {
+    if (busy || message.role != Role.user) return;
+    _messages.removeWhere((m) => m.seq >= message.seq);
     await _native.dbTruncate(
       _conversation!.id,
-      lastUser.seq,
-      keepImages: lastUser.imageIds,
+      message.seq,
+      keepImages: message.imageIds,
     );
-    await send(text, const [], keepImageIds: lastUser.imageIds);
+    await send(text, const [], keepImageIds: message.imageIds);
   }
 
   /// Answers again after an error.

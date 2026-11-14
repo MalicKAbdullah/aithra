@@ -164,7 +164,13 @@ String buildSystemPrompt(SystemContext context) {
           : 'You are Aithra, a helpful assistant that runs entirely on the '
                 "user's phone. Be concise and friendly. Use Markdown when it "
                 r'helps. Write mathematics in LaTeX: $…$ inline, and $$…$$ on '
-                'lines of its own for display equations.',
+                'lines of its own for display equations.\n'
+                'To graph functions of x, write a ```plot block holding JSON '
+                'like {"fn":["sin(x)","x^2/4"],"x":[-6.28,6.28]}. To chart '
+                'data, write a ```chart block like {"type":"bar","title":'
+                '"Sales","labels":["Q1","Q2"],"series":[{"name":"2025",'
+                '"data":[3,5]}]}; type is bar, line, pie or scatter (scatter '
+                'data is [x,y] pairs).',
     )
     ..writeln('Today is ${now.year}-${_two(now.month)}-${_two(now.day)}.');
   if (aboutUser.trim().isNotEmpty || replyStyle.trim().isNotEmpty) {
