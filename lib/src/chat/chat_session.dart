@@ -1043,20 +1043,19 @@ class ChatSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Rewrites the last user message and answers it again.
-  Future<void> editLast(String text) async {
-    if (busy) return;
-    final lastUser = _messages.where((m) => m.role == Role.user).firstOrNull;
-    if (lastUser == null) return;
-    _messages.removeWhere((m) => m.seq >= lastUser.seq);
-    final docs = attachments.remove(lastUser.id) ?? const [];
+  /// Rewrites [message], a user message, and answers it again; everything
+  /// after it in the chat goes. Its photos and documents stay with it.
+  Future<void> edit(ChatMessage message, String text) async {
+    if (busy || message.role != Role.user) return;
+    _messages.removeWhere((m) => m.seq >= message.seq);
+    final docs = attachments.remove(message.id) ?? const [];
     await _native.dbTruncate(
       _conversation!.id,
-      lastUser.seq,
-      keepImages: lastUser.imageIds,
+      message.seq,
+      keepImages: message.imageIds,
       keepDocs: [for (final d in docs) d.id],
     );
-    await send(text, const [], keepImageIds: lastUser.imageIds, docs: docs);
+    await send(text, const [], keepImageIds: message.imageIds, docs: docs);
   }
 
   /// Answers again after an error.

@@ -66,7 +66,7 @@ object Inbox {
 
     @Volatile private var pending: Map<String, Any?>? = null
 
-    fun sharedDir(context: Context) = File(context.cacheDir, "shared").apply { mkdirs() }
+    fun sharedDir(context: Context) = File(context.cacheDir, "inbox").apply { mkdirs() }
 
     fun take(): Map<String, Any?>? = pending.also { pending = null }
 

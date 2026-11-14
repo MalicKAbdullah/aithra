@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="capture" path="capture/" />
+    <cache-path name="shared" path="shared/" />
     <cache-path name="export" path="export/" />
-
 </paths>

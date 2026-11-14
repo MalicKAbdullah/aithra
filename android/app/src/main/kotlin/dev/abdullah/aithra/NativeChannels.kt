@@ -519,6 +519,30 @@ class NativeChannels(
                 activity.startActivity(Intent.createChooser(send, null))
                 result.success(null)
             }
+            "clipboard.copy" -> {
+                RichOutput.copy(activity, call.argument<String>("text")!!, call.argument<String>("html"))
+                result.success(null)
+            }
+            "share.image" -> {
+                val png = call.argument<ByteArray>("png")!!
+                val name = call.argument<String>("name")!!
+                io.execute {
+                    val staged = runCatching { RichOutput.stageImage(activity, png, name) }
+                    activity.runOnUiThread {
+                        staged.fold(
+                            {
+                                RichOutput.shareImage(activity, it)
+                                result.success(null)
+                            },
+                            { result.error("share", it.message ?: it.javaClass.simpleName, null) },
+                        )
+                    }
+                }
+            }
+            "media.saveImage" -> onIo(result) {
+                RichOutput.saveImage(activity, call.argument<ByteArray>("png")!!, call.argument<String>("name")!!)
+            }
+            "url.open" -> result.success(RichOutput.openUrl(activity, call.argument<String>("url")!!))
             "share.text" -> {
                 val send = Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"

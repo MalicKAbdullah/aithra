@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:core_theme/core_theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
@@ -28,78 +29,235 @@ class ThumbCache {
   static Uint8List? peek(String id) => _thumbs[id];
 }
 
-class Thumb extends StatelessWidget {
+/// An image in a message: a square thumbnail that opens full screen.
+class Thumb extends StatefulWidget {
   const Thumb(this.id, {this.size = 120, super.key});
 
   final String id;
   final double size;
 
   @override
+  State<Thumb> createState() => _ThumbState();
+}
+
+class _ThumbState extends State<Thumb> {
+  /// Started once per image, not per build, so rebuilds while it decrypts
+  /// do not ask the store again.
+  Future<Uint8List?>? _load;
+
+  @override
+  void initState() {
+    super.initState();
+    _start();
+  }
+
+  @override
+  void didUpdateWidget(Thumb old) {
+    super.didUpdateWidget(old);
+    if (old.id != widget.id) _start();
+  }
+
+  void _start() {
+    _load = ThumbCache.peek(widget.id) == null
+        ? ThumbCache.get(context, widget.id)
+        : null;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final c = SuiteColors.of(context);
+    final size = widget.size;
     final dpr = MediaQuery.devicePixelRatioOf(context);
-    Widget frame(Widget child) => ClipRRect(
-      borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
-      child: SizedBox(width: size, height: size, child: child),
+    Widget frame(Uint8List? bytes) => Semantics(
+      button: true,
+      label: 'Photo, open full screen',
+      child: GestureDetector(
+        onTap: bytes == null
+            ? null
+            : () => ImageViewer.open(context, widget.id),
+        child: Hero(
+          tag: 'image-${widget.id}',
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(AppSpacing.radiusMd),
+            child: SizedBox(
+              width: size,
+              height: size,
+              child: bytes == null
+                  ? ColoredBox(color: c.surfaceAlt)
+                  : Image.memory(
+                      bytes,
+                      fit: BoxFit.cover,
+                      cacheWidth: (size * dpr).round(),
+                      gaplessPlayback: true,
+                    ),
+            ),
+          ),
+        ),
+      ),
     );
-    final cached = ThumbCache.peek(id);
-    if (cached != null) {
-      return frame(
-        Image.memory(
-          cached,
-          fit: BoxFit.cover,
-          cacheWidth: (size * dpr).round(),
-          gaplessPlayback: true,
+    final cached = ThumbCache.peek(widget.id);
+    if (cached != null) return frame(cached);
+    return FutureBuilder<Uint8List?>(
+      future: _load,
+      builder: (context, snap) => frame(snap.data),
+    );
+  }
+}
+
+/// A photo full screen: pinch or double-tap to zoom, tap or fling down to
+/// close. The thumbnail shows at once and the full image replaces it once
+/// decrypted.
+class ImageViewer extends StatefulWidget {
+  const ImageViewer({required this.id, super.key});
+
+  final String id;
+
+  static Future<void> open(BuildContext context, String id) =>
+      Navigator.of(context).push(
+        PageRouteBuilder<void>(
+          opaque: false,
+          barrierColor: Colors.black,
+          transitionDuration: AppMotion.base,
+          reverseTransitionDuration: AppMotion.fast,
+          pageBuilder: (_, _, _) => ImageViewer(id: id),
+          transitionsBuilder: (_, animation, _, child) =>
+              FadeTransition(opacity: animation, child: child),
         ),
       );
-    }
-    return FutureBuilder<Uint8List?>(
-      future: ThumbCache.get(context, id),
-      builder: (context, snap) => frame(
-        snap.data == null
-            ? ColoredBox(color: c.surfaceAlt)
-            : Image.memory(
-                snap.data!,
-                fit: BoxFit.cover,
-                cacheWidth: (size * dpr).round(),
+
+  @override
+  State<ImageViewer> createState() => _ImageViewerState();
+}
+
+class _ImageViewerState extends State<ImageViewer> {
+  final _zoom = TransformationController();
+  Uint8List? _full;
+  Offset _doubleTapAt = Offset.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    context.services.native.dbImage(widget.id, thumb: false).then((bytes) {
+      if (mounted && bytes != null) setState(() => _full = bytes);
+    });
+  }
+
+  @override
+  void dispose() {
+    _zoom.dispose();
+    super.dispose();
+  }
+
+  void _toggleZoom() {
+    final at = _doubleTapAt;
+    _zoom.value = _zoom.value.getMaxScaleOnAxis() > 1
+        ? Matrix4.identity()
+        : (Matrix4.identity()
+            ..translateByDouble(-at.dx * 1.5, -at.dy * 1.5, 0, 1)
+            ..scaleByDouble(2.5, 2.5, 1, 1));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bytes = _full ?? ThumbCache.peek(widget.id);
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: () => Navigator.pop(context),
+              onDoubleTapDown: (d) => _doubleTapAt = d.localPosition,
+              onDoubleTap: _toggleZoom,
+              onVerticalDragEnd: (d) {
+                if ((d.primaryVelocity ?? 0) > 600 &&
+                    _zoom.value.getMaxScaleOnAxis() <= 1) {
+                  Navigator.pop(context);
+                }
+              },
+              child: InteractiveViewer(
+                transformationController: _zoom,
+                maxScale: 6,
+                child: Center(
+                  child: Hero(
+                    tag: 'image-${widget.id}',
+                    child: bytes == null
+                        ? const SizedBox.shrink()
+                        : Image.memory(
+                            bytes,
+                            fit: BoxFit.contain,
+                            gaplessPlayback: true,
+                            semanticLabel: 'Photo',
+                          ),
+                  ),
+                ),
               ),
+            ),
+          ),
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: IconButton(
+                tooltip: 'Close',
+                color: Colors.white,
+                icon: const Icon(Icons.close_rounded),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
+/// A saved message. A user message sits in a tinted bubble and reveals its
+/// actions ([footer]) on tap; a reply is set as Markdown with its actions
+/// below.
 class MessageBubble extends StatelessWidget {
   const MessageBubble({
     required this.message,
-    required this.onLongPress,
+    this.onTap,
+    this.footer = const [],
     super.key,
   });
 
   final ChatMessage message;
-  final VoidCallback onLongPress;
+  final VoidCallback? onTap;
+  final List<Widget> footer;
 
   @override
   Widget build(BuildContext context) {
+    if (message.role == Role.model) {
+      return ReplyLayout(body: MarkdownView(message.content), footer: footer);
+    }
     final c = SuiteColors.of(context);
-    final user = message.role == Role.user;
-    final content = Column(
-      crossAxisAlignment: user
-          ? CrossAxisAlignment.end
-          : CrossAxisAlignment.start,
-      children: [
-        if (message.imageIds.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(bottom: AppSpacing.xs),
-            child: Wrap(
-              spacing: AppSpacing.xs,
-              runSpacing: AppSpacing.xs,
-              alignment: WrapAlignment.end,
-              children: [for (final id in message.imageIds) Thumb(id)],
-            ),
-          ),
-        if (message.content.isNotEmpty)
-          user
-              ? Container(
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        56,
+        AppSpacing.sm - 2,
+        AppSpacing.gutter,
+        AppSpacing.sm - 2,
+      ),
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (message.imageIds.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                child: Wrap(
+                  spacing: AppSpacing.xs,
+                  runSpacing: AppSpacing.xs,
+                  alignment: WrapAlignment.end,
+                  children: [for (final id in message.imageIds) Thumb(id)],
+                ),
+              ),
+            if (message.content.isNotEmpty)
+              GestureDetector(
+                onTap: onTap,
+                child: Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: AppSpacing.smd + 2,
                     vertical: AppSpacing.sm + 1,
@@ -112,42 +270,66 @@ class MessageBubble extends StatelessWidget {
                     message.content,
                     style: AithraType.body.copyWith(color: c.textPrimary),
                   ),
-                )
-              : MarkdownView(message.content),
-      ],
-    );
-    return GestureDetector(
-      onLongPress: onLongPress,
-      behavior: HitTestBehavior.opaque,
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(
-          user ? 56 : AppSpacing.gutter,
-          AppSpacing.sm - 2,
-          AppSpacing.gutter,
-          AppSpacing.sm - 2,
-        ),
-        child: Align(
-          alignment: user ? Alignment.centerRight : Alignment.centerLeft,
-          child: content,
+                ),
+              ),
+            ...footer,
+          ],
         ),
       ),
     );
   }
 }
 
-/// The reply being generated. Only this widget rebuilds while tokens stream;
-/// it owns the caret animation so the caret keeps its rhythm across those
-/// rebuilds without touching finished messages.
-class StreamingBubble extends StatefulWidget {
-  const StreamingBubble({required this.session, super.key});
+/// The frame of a reply: its body, then what goes under it (actions,
+/// notices). Streaming and saved replies share it, so a reply keeps its
+/// laid-out text when it finishes.
+class ReplyLayout extends StatelessWidget {
+  const ReplyLayout({required this.body, this.footer = const [], super.key});
+
+  final Widget body;
+  final List<Widget> footer;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(
+      AppSpacing.gutter,
+      AppSpacing.sm - 2,
+      AppSpacing.gutter,
+      AppSpacing.sm - 2,
+    ),
+    child: Align(
+      alignment: Alignment.centerLeft,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [body, ...footer],
+      ),
+    ),
+  );
+}
+
+/// One reply in a chat, from waiting through streaming to saved. It stays
+/// the same widget (under the same key) across those stages, so the text
+/// laid out while streaming is reused as is when the reply is saved,
+/// instead of being rebuilt and re-typeset.
+class ModelTurn extends StatefulWidget {
+  const ModelTurn({
+    required this.session,
+    this.message,
+    this.footer = const [],
+    super.key,
+  });
 
   final ChatSession session;
 
+  /// The saved reply; null while it is being generated.
+  final ChatMessage? message;
+  final List<Widget> footer;
+
   @override
-  State<StreamingBubble> createState() => _StreamingBubbleState();
+  State<ModelTurn> createState() => _ModelTurnState();
 }
 
-class _StreamingBubbleState extends State<StreamingBubble>
+class _ModelTurnState extends State<ModelTurn>
     with SingleTickerProviderStateMixin {
   late final AnimationController _caret = AnimationController(
     vsync: this,
@@ -158,44 +340,100 @@ class _StreamingBubbleState extends State<StreamingBubble>
     parent: _caret,
     curve: Curves.easeInOut,
   );
+  bool _listening = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (MediaQuery.disableAnimationsOf(context)) {
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(ModelTurn old) {
+    super.didUpdateWidget(old);
+    if (old.session != widget.session && _listening) {
+      old.session.streaming.removeListener(_onText);
+      _listening = false;
+    }
+    _sync();
+  }
+
+  /// Rebuilds with each published chunk only while the reply streams, and
+  /// breathes the caret only then.
+  void _sync() {
+    final streaming = widget.message == null;
+    if (streaming && !_listening) {
+      widget.session.streaming.addListener(_onText);
+    } else if (!streaming && _listening) {
+      widget.session.streaming.removeListener(_onText);
+    }
+    _listening = streaming;
+    if (!streaming) {
+      _caret.stop();
+    } else if (MediaQuery.disableAnimationsOf(context)) {
       _caret.value = 1;
     } else if (!_caret.isAnimating) {
       _caret.repeat(reverse: true);
     }
   }
 
+  void _onText() => setState(() {});
+
   @override
   void dispose() {
+    if (_listening) widget.session.streaming.removeListener(_onText);
     _caret.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final m = widget.message;
+    final Widget body;
+    if (m != null) {
+      body = MarkdownView(m.content);
+    } else if (widget.session.phase == ReplyPhase.queued) {
+      body = const _Queued();
+    } else {
+      final text = widget.session.streaming.value;
+      body = text.isEmpty
+          ? const TypingDots()
+          : MarkdownView(text, caret: _breath);
+    }
     return RepaintBoundary(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppSpacing.gutter,
-          vertical: AppSpacing.sm - 2,
-        ),
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: widget.session.phase == ReplyPhase.queued
-              ? const _Queued()
-              : ValueListenableBuilder<String>(
-                  valueListenable: widget.session.streaming,
-                  builder: (context, text, _) => text.isEmpty
-                      ? const TypingDots()
-                      : MarkdownView(text, caret: _breath),
-                ),
-        ),
-      ),
+      child: ReplyLayout(body: body, footer: widget.footer),
     );
+  }
+}
+
+/// The newest item of a reversed chat list, as a sliver of its own that
+/// keeps the reader's place while it grows: when the list is scrolled away
+/// from the newest end, its growth is handed back to the viewport as a
+/// scroll offset correction, so the text being read stays put instead of
+/// sliding up with every new line. At the newest end the list follows the
+/// growth instead.
+class SliverKeepReadingPlace extends SingleChildRenderObjectWidget {
+  const SliverKeepReadingPlace({super.key, super.child});
+
+  @override
+  RenderSliverKeepReadingPlace createRenderObject(BuildContext context) =>
+      RenderSliverKeepReadingPlace();
+}
+
+class RenderSliverKeepReadingPlace extends RenderSliverToBoxAdapter {
+  double? _extent;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    final before = _extent;
+    final extent = geometry!.scrollExtent;
+    _extent = extent;
+    if (before != null && extent != before && constraints.scrollOffset > 0) {
+      // The viewport moves its offset by this much and lays out again,
+      // all before this frame paints.
+      geometry = SliverGeometry(scrollOffsetCorrection: extent - before);
+    }
   }
 }
 
@@ -206,16 +444,18 @@ class _Queued extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = SuiteColors.of(context);
-    return SizedBox(
-      height: 24,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 24),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(Icons.schedule_rounded, size: 16, color: c.textTertiary),
           const SizedBox(width: 6),
-          Text(
-            'Queued · starts when the other reply finishes',
-            style: AithraType.bodySmall.copyWith(color: c.textTertiary),
+          Flexible(
+            child: Text(
+              'Queued · starts when the other reply finishes',
+              style: AithraType.bodySmall.copyWith(color: c.textTertiary),
+            ),
           ),
         ],
       ),
@@ -246,8 +486,8 @@ class _TypingDotsState extends State<TypingDots>
   @override
   Widget build(BuildContext context) {
     final color = SuiteColors.of(context).textTertiary;
-    return SizedBox(
-      height: 24,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 24),
       child: AnimatedBuilder(
         animation: _c,
         builder: (context, _) => Row(

@@ -163,12 +163,12 @@ void main() {
 
       final tight = await fitSystemPrompt(
         full,
-        budget: 900,
+        budget: 1200,
         firstCost: first.length,
         cost: cost,
       );
       expect(tight, isNot(contains('Memory 0')));
-      expect(tight.length, lessThanOrEqualTo(900));
+      expect(tight.length, lessThanOrEqualTo(1200));
       expect(tight, endsWith('The summary.'));
 
       expect(
@@ -278,7 +278,7 @@ void main() {
         MdSpan(' ', InlineStyle.plain),
         MdSpan('d', InlineStyle.code),
         MdSpan(' ', InlineStyle.plain),
-        MdSpan('e', InlineStyle.link),
+        MdSpan('e', InlineStyle.link, url: 'http://x'),
         MdSpan(' ', InlineStyle.plain),
         MdSpan('f', InlineStyle.boldItalic),
       ]);

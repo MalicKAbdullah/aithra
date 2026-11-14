@@ -50,6 +50,7 @@ Map<String, Object?> _pdfBlock(MdBlock block) => switch (block) {
   MdQuote(:final text) => {'kind': 'quote', 'text': _plain(text)},
   MdCode(:final code) => {'kind': 'code', 'text': code},
   MdMath(:final tex) => {'kind': 'code', 'text': tex},
+  MdTable() => {'kind': 'code', 'text': tableTsv(block)},
   MdRule() => {'kind': 'rule', 'text': ''},
 };
 

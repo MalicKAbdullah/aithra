@@ -98,7 +98,7 @@ class FileChip extends StatelessWidget {
   }
 }
 
-/// The documents a message sent, under it; tap one to summarise it.
+/// The documents a message sent, in its footer; tap one to summarise it.
 class MessageFiles extends StatelessWidget {
   const MessageFiles({required this.docs, super.key});
 
@@ -108,7 +108,7 @@ class MessageFiles extends StatelessWidget {
   Widget build(BuildContext context) {
     final summarizer = context.services.summarizer;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(56, 0, AppSpacing.gutter, 2),
+      padding: const EdgeInsets.only(top: AppSpacing.xs),
       child: Align(
         alignment: Alignment.centerRight,
         child: ListenableBuilder(
@@ -223,8 +223,8 @@ Future<void> showDocumentSheet(BuildContext context, DocInfo doc) =>
       },
     );
 
-/// "Sources · p.3 · p.12" under a reply that was given document passages;
-/// tap one to read the passage.
+/// "Sources · p.3 · p.12" in the footer of a reply that was given document
+/// passages, above its actions; tap one to read the passage.
 class SourcesRow extends StatelessWidget {
   const SourcesRow({required this.sources, super.key});
 
@@ -276,12 +276,7 @@ class SourcesRow extends StatelessWidget {
     final c = SuiteColors.of(context);
     final multiple = {for (final s in sources) s.docId}.length > 1;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppSpacing.gutter,
-        0,
-        AppSpacing.gutter,
-        AppSpacing.sm,
-      ),
+      padding: const EdgeInsets.only(top: AppSpacing.sm),
       child: Wrap(
         crossAxisAlignment: WrapCrossAlignment.center,
         spacing: AppSpacing.xs,

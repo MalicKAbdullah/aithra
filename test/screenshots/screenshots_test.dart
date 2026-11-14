@@ -18,6 +18,7 @@ import 'package:aithra/src/assistant.dart';
 import 'package:aithra/src/calibration/calibration.dart';
 import 'package:aithra/src/chat/chat_store.dart';
 import 'package:aithra/src/chat/templates.dart';
+import 'package:aithra/src/chat/markdown.dart';
 import 'package:aithra/src/data/settings_store.dart';
 import 'package:aithra/src/data/vault.dart';
 import 'package:aithra/src/engine/engine_service.dart';
@@ -39,6 +40,7 @@ import 'package:aithra/src/ui/screens/voice_note_screen.dart';
 import 'package:aithra/src/ui/screens/settings_screen.dart';
 import 'package:aithra/src/ui/screens/voice_mode_screen.dart';
 import 'package:aithra/src/ui/widgets/aithra_mark.dart';
+import 'package:aithra/src/ui/widgets/chart_view.dart';
 import 'package:aithra/src/voice/speech_service.dart';
 import 'package:aithra/src/voice/tts_service.dart';
 import 'package:core_lock/core_lock.dart';
@@ -649,6 +651,39 @@ Future<Uint8List> _plantPhoto() async {
   return data!.buffer.asUint8List();
 }
 
+const _dataQuestion = 'Compare my running this month with last month.';
+
+const _dataAnswer =
+    '''You ran **52 km** this month against **41 km** last month, and every week was longer than the one before it.
+
+| Week | Last month | This month |
+|:-----|-----------:|-----------:|
+| 1 | 8 | 10 |
+| 2 | 10 | 12 |
+| 3 | 11 | 14 |
+| 4 | 12 | 16 |
+
+```chart
+{"type":"bar","title":"Weekly distance (km)","labels":["Week 1","Week 2","Week 3","Week 4"],"series":[{"name":"Last month","data":[8,10,11,12]},{"name":"This month","data":[10,12,14,16]}]}
+```
+
+- [x] Long run on Sundays
+- [ ] One rest day after each long run
+
+Read more in the [training guide](https://example.com/guide).''';
+
+const _plotQuestion = 'Plot sin x and x²/4 between −2π and 2π.';
+
+const _plotAnswer =
+    r'''Here are both curves. They meet at $x = 0$ and again near
+$x \approx 1.93$.
+
+```plot
+{"fn":["sin(x)","x^2/4"],"x":[-6.28,6.28],"y":[-1.5,4]}
+```
+
+Tap the graph to read values off it.''';
+
 const _mathQuestion = 'How do I solve 2x² + 3x − 2 = 0?';
 
 const _mathAnswer = r'''Use the quadratic formula. For $ax^2 + bx + c = 0$:
@@ -779,6 +814,16 @@ void _seedChats(FakeNative n, Uint8List photo) {
         'page': page,
         'name': 'ferry-timetable.pdf',
       },
+  ];
+  n.conversations.add(conv('data', 'Running this month', now - 20 * min));
+  n.messages['data'] = [
+    msg(7, 0, 'user', _dataQuestion, now - 21 * min),
+    msg(8, 1, 'model', _dataAnswer, now - 20 * min),
+  ];
+  n.conversations.add(conv('plot', 'Plotting two curves', now - 25 * min));
+  n.messages['plot'] = [
+    msg(9, 0, 'user', _plotQuestion, now - 26 * min),
+    msg(10, 1, 'model', _plotAnswer, now - 25 * min),
   ];
   n.images['img-plant'] = photo;
   n.messages['plant'] = [
@@ -1268,6 +1313,55 @@ void main() {
         await _teardown(tester, h);
       });
 
+      testWidgets('table and chart $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        _open(h, 'data');
+        await _settle(tester, 16);
+        await _shot(tester, '13-table-$t');
+        await tester.drag(
+          find.byType(CustomScrollView).first,
+          const Offset(0, -500),
+        );
+        await _settle(tester);
+        await _shot(tester, '14-chart-actions-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('plot $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        _open(h, 'plot');
+        await _settle(tester, 16);
+        final graph = tester.getRect(
+          find
+              .descendant(
+                of: find.byType(ChartCard),
+                matching: find.byType(CustomPaint),
+              )
+              .last,
+        );
+        await tester.tapAt(graph.center + Offset(graph.width * 0.18, 0));
+        await _settle(tester);
+        await _shot(tester, '15-plot-$t');
+        await _teardown(tester, h);
+      });
+
+      testWidgets('user actions and plain text $t', (tester) async {
+        final h = await _build(tester, brightness: b);
+        _open(h, 'data');
+        await _settle(tester, 16);
+        await tester.drag(
+          find.byType(CustomScrollView).first,
+          const Offset(0, 1600),
+        );
+        await _settle(tester);
+        await tester.tap(find.text(_dataQuestion));
+        await _settle(tester);
+        await _shot(tester, '16-user-actions-$t');
+        await _push(tester, _CopiedText(text: plainText(_dataAnswer)));
+        await _shot(tester, '17-plain-text-copy-$t');
+        await _teardown(tester, h);
+      });
+
       testWidgets('custom instructions $t', (tester) async {
         final h = await _build(tester, brightness: b);
         await h.services.settings.update(
@@ -1503,6 +1597,33 @@ void main() {
 Iterable<String> _chunks(String s) sync* {
   for (var i = 0; i < s.length; i += 6) {
     yield s.substring(i, math.min(i + 6, s.length));
+  }
+}
+
+/// What Copy puts on the clipboard for a reply, shown as a pasting app
+/// without formatting would show it.
+class _CopiedText extends StatelessWidget {
+  const _CopiedText({required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = SuiteColors.of(context);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Copied as plain text')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Text(
+          text,
+          style: TextStyle(
+            fontFamily: 'Roboto',
+            fontSize: 15,
+            height: 1.45,
+            color: c.textPrimary,
+          ),
+        ),
+      ),
+    );
   }
 }
 

@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:core_theme/core_theme.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../chat/chat_models.dart';
 import '../../chat/chat_session.dart';
@@ -17,6 +16,7 @@ import '../widgets/file_chip.dart';
 import '../widgets/composer_attach.dart';
 import '../widgets/find_bar.dart';
 import '../widgets/greeting.dart';
+import '../widgets/message_actions.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/perf_hud.dart';
 import '../widgets/prompt_shortcut_chips.dart';
@@ -44,6 +44,12 @@ class _ChatViewState extends State<ChatView> {
   final _reveal = RevealController();
   Timer? _draftTimer;
   late final QuickActions _quickActions;
+
+  /// The user message being rewritten in the composer.
+  ChatMessage? _editing;
+
+  /// The user message whose actions are showing, by seq.
+  int? _actionsFor;
 
   ChatSession get _session => widget.session;
 
@@ -189,79 +195,16 @@ class _ChatViewState extends State<ChatView> {
     if (s.settings.speakReplies) s.readAloud.followReply(_session);
   }
 
-  Future<void> _messageActions(ChatMessage m) async {
-    HapticFeedback.mediumImpact();
-    final s = context.services;
-    final lastUser = _session.messages
-        .where((x) => x.role == Role.user)
-        .firstOrNull;
-    final isLastModel =
-        _session.messages.isNotEmpty &&
-        _session.messages.first.id == m.id &&
-        m.role == Role.model;
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _sheetItem(context, Icons.content_copy_rounded, 'Copy', 'copy'),
-            _sheetItem(context, Icons.ios_share_rounded, 'Share', 'share'),
-            if (m.role == Role.user && lastUser?.id == m.id && !_session.busy)
-              _sheetItem(context, Icons.edit_outlined, 'Edit', 'edit'),
-            if (isLastModel && !_session.busy)
-              _sheetItem(
-                context,
-                Icons.refresh_rounded,
-                'Regenerate',
-                'regenerate',
-              ),
-            if (m.stats?.decodeTps != null)
-              Padding(
-                padding: const EdgeInsets.all(AppSpacing.md),
-                child: Text(
-                  '${m.stats!.decodeTps!.toStringAsFixed(1)} tokens/s · '
-                  'first word after ${((m.stats!.ttftMs ?? 0) / 1000).toStringAsFixed(1)} s',
-                  style: AithraType.caption.copyWith(
-                    color: SuiteColors.of(context).textTertiary,
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (!mounted) return;
-    switch (action) {
-      case 'copy':
-        // The stored text: Markdown and LaTeX source, as the model wrote it.
-        await Clipboard.setData(ClipboardData(text: m.content));
-        _toast('Copied');
-      case 'share':
-        await s.native.shareText(m.content);
-      case 'edit':
-        _composer.text.text = m.content;
-        _composer.editing = true;
-        _composer.focus.requestFocus();
-        setState(() {});
-      case 'regenerate':
-        await _session.regenerate();
-    }
+  /// Puts [m] in the composer; sending replaces it and everything after.
+  void _edit(ChatMessage m) {
+    _composer.text.text = m.content;
+    _composer.editing = true;
+    _composer.focus.requestFocus();
+    setState(() {
+      _editing = m;
+      _actionsFor = null;
+    });
   }
-
-  Widget _sheetItem(
-    BuildContext context,
-    IconData icon,
-    String label,
-    String value,
-  ) => ListTile(
-    leading: Icon(icon),
-    title: Text(label),
-    onTap: () => Navigator.pop(context, value),
-  );
-
-  void _toast(String text) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
 
   @override
   Widget build(BuildContext context) {
@@ -291,10 +234,12 @@ class _ChatViewState extends State<ChatView> {
                   speech: s.speech,
                   busy: _session.busy,
                   onSend: () {
-                    if (_composer.editing) {
+                    final editing = _editing;
+                    if (_composer.editing && editing != null) {
                       final text = _composer.text.text;
                       _composer.clear();
-                      _session.editLast(text);
+                      _editing = null;
+                      _session.edit(editing, text);
                       _readReplyAloud();
                     } else {
                       _send();
@@ -314,8 +259,9 @@ class _ChatViewState extends State<ChatView> {
 
   Widget _messagesList(BuildContext context) {
     final messages = _session.messages;
-    final extra = (_session.busy ? 1 : 0) + (_session.error != null ? 1 : 0);
-    if (messages.isEmpty && extra == 0) {
+    final hasError = _session.error != null;
+    final busy = _session.busy;
+    if (messages.isEmpty && !busy && !hasError) {
       return _session.conversation == null
           ? Greeting(
               now: _greetedAt,
@@ -328,60 +274,104 @@ class _ChatViewState extends State<ChatView> {
             )
           : const SizedBox.shrink();
     }
-    return ListView.builder(
-      controller: _scroll,
-      reverse: true,
-      padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
-      itemCount: messages.length + extra,
-      itemBuilder: (context, i) {
-        if (_session.error != null && i == 0) return _errorRow(context);
-        final offset = _session.error != null ? 1 : 0;
-        if (_session.busy && i == offset) {
-          return StreamingBubble(
-            key: const ValueKey('streaming'),
-            session: _session,
-          );
-        }
-        final m = messages[i - extra];
-        final bubble = MessageBubble(
-          key: ValueKey(m.seq),
-          message: m,
-          onLongPress: () => _messageActions(m),
-        );
-        final notice = _session.notices[m.seq];
-        final remembered = _session.memoryUpdates[m.seq];
-        final files = _session.attachments[m.id];
-        final sources = _session.sources[m.id];
-        final cutOff = _session.canContinue(m);
-        if (notice == null &&
-            remembered == null &&
-            !cutOff &&
-            files == null &&
-            sources == null) {
-          return RevealAnchor(controller: _reveal, seq: m.seq, child: bubble);
-        }
-        return RevealAnchor(
-          key: ValueKey('after-${m.seq}'),
-          controller: _reveal,
-          seq: m.seq,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              bubble,
-              if (files != null) MessageFiles(docs: files),
-              if (sources != null) SourcesRow(sources: sources),
-              if (cutOff) _ContinueRow(onContinue: _session.continueReply),
-              if (remembered != null)
-                _MemoryHint(
-                  update: remembered,
-                  onUndone: () =>
-                      setState(() => _session.memoryUpdates.remove(m.seq)),
-                ),
-              if (notice != null) _NoticeRow(notice),
-            ],
+    final newest = messages.firstOrNull;
+    // A reply is saved under the next seq of its chat (the store appends at
+    // its highest seq + 1), so the reply in progress takes the key it will
+    // have once saved and keeps its element, laid-out text and all.
+    final streamingSeq = newest != null && newest.seq >= 0
+        ? newest.seq + 1
+        : null;
+    // The newest item has a sliver of its own (see SliverKeepReadingPlace);
+    // the rest follow in a lazy list.
+    final older = busy ? messages : messages.skip(1).toList();
+    final index = {for (final (i, m) in older.indexed) ValueKey(m.seq): i};
+    return SelectionArea(
+      child: CustomScrollView(
+        controller: _scroll,
+        reverse: true,
+        slivers: [
+          if (hasError) SliverToBoxAdapter(child: _errorRow(context)),
+          if (busy || newest != null)
+            SliverKeepReadingPlace(
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                child: busy
+                    ? RevealAnchor(
+                        key: streamingSeq == null
+                            ? const ValueKey('reply')
+                            : ValueKey(streamingSeq),
+                        controller: _reveal,
+                        seq: streamingSeq ?? -1,
+                        child: ModelTurn(session: _session),
+                      )
+                    : _item(newest!, newest),
+              ),
+            ),
+          SliverPadding(
+            padding: const EdgeInsets.only(top: AppSpacing.sm),
+            sliver: SliverList.builder(
+              itemCount: older.length,
+              findChildIndexCallback: (key) => index[key],
+              itemBuilder: (context, i) => _item(older[i], newest),
+            ),
           ),
-        );
-      },
+        ],
+      ),
+    );
+  }
+
+  /// A saved message, anchored for search (see [RevealController]) under
+  /// its seq; the reply in progress is anchored the same way, so it keeps
+  /// its element once saved.
+  Widget _item(ChatMessage m, ChatMessage? newest) => RevealAnchor(
+    key: ValueKey(m.seq),
+    controller: _reveal,
+    seq: m.seq,
+    child: _message(m, newest),
+  );
+
+  Widget _message(ChatMessage m, ChatMessage? newest) {
+    final busy = _session.busy;
+    if (m.role == Role.user) {
+      return MessageBubble(
+        message: m,
+        onTap: () =>
+            setState(() => _actionsFor = _actionsFor == m.seq ? null : m.seq),
+        footer: [
+          if (_session.attachments[m.id] case final files?)
+            MessageFiles(docs: files),
+          if (_actionsFor == m.seq)
+            UserActions(
+              message: m,
+              session: _session,
+              onEdit: busy ? null : () => _edit(m),
+            ),
+        ],
+      );
+    }
+    final notice = _session.notices[m.seq];
+    return ModelTurn(
+      session: _session,
+      message: m,
+      footer: [
+        if (_session.sources[m.id] case final sources?)
+          SourcesRow(sources: sources),
+        ReplyActions(
+          message: m,
+          session: _session,
+          canRegenerate: identical(m, newest),
+          reader: context.services.readAloud,
+        ),
+        if (_session.canContinue(m))
+          _ContinueRow(onContinue: _session.continueReply),
+        if (_session.memoryUpdates[m.seq] case final update?)
+          _MemoryHint(
+            update: update,
+            onUndone: () =>
+                setState(() => _session.memoryUpdates.remove(m.seq)),
+          ),
+        if (notice != null) _NoticeRow(notice),
+      ],
     );
   }
 
