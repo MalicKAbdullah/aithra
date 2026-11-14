@@ -186,6 +186,7 @@ class _ChatViewState extends State<ChatView> {
                 listenable: Listenable.merge([_session, s.assistant]),
                 builder: (context, _) => Composer(
                   controller: _composer,
+                  speech: s.speech,
                   busy: _session.busy,
                   canAttachImages: s.assistant.activeModel?.vision ?? false,
                   onSend: () {

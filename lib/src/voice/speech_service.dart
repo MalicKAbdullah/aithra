@@ -232,7 +232,11 @@ class SpeechService extends ChangeNotifier {
 
   final NativeBridge _native;
   final SpeechClock _clock = SpeechClock();
-  final StreamController<String> _finals = StreamController.broadcast();
+  // Synchronous, so a final reaches its listeners before the `idle` that
+  // follows it can end their session.
+  final StreamController<String> _finals = StreamController.broadcast(
+    sync: true,
+  );
   late final List<StreamSubscription<Map<String, Object?>>> _subscriptions;
   late final AppLifecycleListener _lifecycle;
 
