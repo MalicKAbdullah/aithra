@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../assistant.dart';
 import '../engine/engine_service.dart';
+import '../engine/run_metrics.dart';
 import '../memory/memory_keeper.dart';
 import '../memory/profile.dart';
 import '../memory/recall_index.dart';
@@ -66,6 +67,13 @@ class ReplyNotice {
 
   /// A recall failure, which the user can retry.
   final bool recall;
+}
+
+/// One answer to a message that has been regenerated.
+class ReplyVersion {
+  const ReplyVersion(this.content, this.stats);
+  final String content;
+  final RunMetrics? stats;
 }
 
 /// An image attached in the composer, before it is stored.
@@ -649,30 +657,108 @@ class ChatSession extends ChangeNotifier {
     await _generation?.cancel();
   }
 
-  /// Replaces the last reply with a new one.
+  /// Answers to the same message kept across regenerations, by the seq of
+  /// the reply that answers it, oldest first. Only one is stored in the
+  /// chat; the others live for this session.
+  final Map<int, List<ReplyVersion>> _versions = {};
+
+  /// Which of [_versions] each reply shows.
+  final Map<int, int> _shownVersion = {};
+
+  /// Every answer [reply] has had and which one it shows, or null when it
+  /// was never regenerated.
+  ({List<ReplyVersion> versions, int shown})? versionsOf(ChatMessage reply) {
+    final versions = _versions[reply.seq];
+    if (versions == null) return null;
+    return (versions: versions, shown: _shownVersion[reply.seq]!);
+  }
+
+  /// Makes answer [index] of [versionsOf] the one [reply] shows and the one
+  /// the model sees from now on.
+  Future<void> showVersion(ChatMessage reply, int index) async {
+    final v = _versions[reply.seq]![index];
+    final stats = v.stats == null ? null : jsonEncode(v.stats!.toJson());
+    await _native.dbUpdateMessage(reply.id, v.content, stats);
+    final at = _messages.indexWhere((m) => m.id == reply.id);
+    if (at < 0) return;
+    _messages[at] = ChatMessage(
+      id: reply.id,
+      seq: reply.seq,
+      role: Role.model,
+      content: v.content,
+      imageIds: const [],
+      created: reply.created,
+      stats: v.stats,
+    );
+    _shownVersion[reply.seq] = index;
+    notifyListeners();
+  }
+
+  /// Answers the last message again, keeping the answer it replaces as an
+  /// earlier version.
   Future<void> regenerate() async {
     if (busy || _messages.isEmpty) return;
     final last = _messages.first;
     if (last.role != Role.model) return;
+    final versions =
+        _versions.remove(last.seq) ??
+        [ReplyVersion(last.content, last.stats)];
+    _shownVersion.remove(last.seq);
     _messages.removeAt(0);
     notifyListeners();
     await _native.dbTruncate(_conversation!.id, last.seq);
     final lastUser = _messages.firstWhere((m) => m.role == Role.user);
     await _reply(recallQuery: lastUser.content);
+    final fresh = _messages.firstOrNull;
+    if (fresh != null && fresh.role == Role.model && fresh.seq == last.seq) {
+      _versions[fresh.seq] = [...versions, ReplyVersion(fresh.content, fresh.stats)];
+      _shownVersion[fresh.seq] = versions.length;
+      notifyListeners();
+    } else if (!_disposed) {
+      // No new answer arrived (stopped before the first word, or an
+      // error): the one it was meant to replace comes back.
+      final shown = versions.last;
+      final saved = await _native.dbAddMessage(
+        convId: _conversation!.id,
+        role: 'model',
+        content: shown.content,
+        images: const [],
+        stats: shown.stats == null ? null : jsonEncode(shown.stats!.toJson()),
+        now: last.created.millisecondsSinceEpoch,
+      );
+      _messages.insert(
+        0,
+        ChatMessage(
+          id: saved['id']! as int,
+          seq: saved['seq']! as int,
+          role: Role.model,
+          content: shown.content,
+          imageIds: const [],
+          created: last.created,
+          stats: shown.stats,
+        ),
+      );
+      if (versions.length > 1) {
+        _versions[last.seq] = versions;
+        _shownVersion[last.seq] = versions.length - 1;
+      }
+      notifyListeners();
+    }
   }
 
-  /// Rewrites the last user message and answers it again.
-  Future<void> editLast(String text) async {
-    if (busy) return;
-    final lastUser = _messages.where((m) => m.role == Role.user).firstOrNull;
-    if (lastUser == null) return;
-    _messages.removeWhere((m) => m.seq >= lastUser.seq);
+  /// Rewrites [message], a user message, and answers it again; everything
+  /// after it in the chat goes.
+  Future<void> edit(ChatMessage message, String text) async {
+    if (busy || message.role != Role.user) return;
+    _messages.removeWhere((m) => m.seq >= message.seq);
+    _versions.removeWhere((seq, _) => seq >= message.seq);
+    _shownVersion.removeWhere((seq, _) => seq >= message.seq);
     await _native.dbTruncate(
       _conversation!.id,
-      lastUser.seq,
-      keepImages: lastUser.imageIds,
+      message.seq,
+      keepImages: message.imageIds,
     );
-    await send(text, const [], keepImageIds: lastUser.imageIds);
+    await send(text, const [], keepImageIds: message.imageIds);
   }
 
   /// Answers again after an error.
