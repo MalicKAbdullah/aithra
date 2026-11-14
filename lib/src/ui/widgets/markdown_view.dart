@@ -145,7 +145,7 @@ class MarkdownView extends StatelessWidget {
 /// One run of inline Markdown. Inline code is drawn as a rounded chip
 /// painted behind the glyphs by [_ChipParagraph], so it wraps with the text
 /// and costs no extra widgets.
-class _InlineText extends StatelessWidget {
+class _InlineText extends StatefulWidget {
   const _InlineText(
     this.text, {
     required this.base,
@@ -158,22 +158,37 @@ class _InlineText extends StatelessWidget {
   final SuiteColors colors;
   final Animation<double>? caret;
 
+  @override
+  State<_InlineText> createState() => _InlineTextState();
+}
+
+class _InlineTextState extends State<_InlineText> {
   /// Hair spaces pad each chip so its rounded edge clears the glyphs.
   static const _pad = ' ';
 
+  final _math = InlineMath();
+
   @override
   Widget build(BuildContext context) {
-    final c = colors;
+    final c = widget.colors;
+    final base = widget.base;
+    final runs = parseInline(widget.text);
+    final math = _math.spansFor([
+      for (final s in runs)
+        if (s.style == InlineStyle.math || s.style == InlineStyle.displayMath)
+          (
+            tex: s.text,
+            display: s.style == InlineStyle.displayMath,
+            style: base,
+          ),
+    ]);
+    var equation = 0;
     final chips = <TextRange>[];
     var offset = 0;
     final children = <InlineSpan>[];
-    for (final s in parseInline(text)) {
+    for (final s in runs) {
       if (s.style == InlineStyle.math || s.style == InlineStyle.displayMath) {
-        final spans = MathView.inline(
-          s.text,
-          base,
-          display: s.style == InlineStyle.displayMath,
-        );
+        final spans = math[equation++];
         children.addAll(spans);
         // Widget spans stand for one placeholder character each, and the
         // spans between them are single spaces.
@@ -219,7 +234,7 @@ class _InlineText extends StatelessWidget {
       );
       offset += s.text.length;
     }
-    final caret = this.caret;
+    final caret = widget.caret;
     if (caret != null) {
       children.add(
         WidgetSpan(

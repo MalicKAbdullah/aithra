@@ -9,8 +9,8 @@ import 'package:flutter/services.dart';
 import '../assistant.dart';
 import '../docs/documents.dart';
 import '../engine/engine_service.dart';
-import '../memory/memory_curator.dart';
-import '../memory/memory_store.dart';
+import '../memory/memory_keeper.dart';
+import '../memory/profile.dart';
 import '../memory/recall_index.dart';
 import '../models/catalog.dart';
 import '../platform/native.dart';
@@ -92,7 +92,6 @@ class ChatSession extends ChangeNotifier {
     required NativeBridge native,
     required Assistant assistant,
     required ChatStore store,
-    required MemoryStore memories,
     required MemoryKeeper keeper,
     required RecallIndex recall,
     required ReplyQueue queue,
@@ -100,7 +99,6 @@ class ChatSession extends ChangeNotifier {
   }) : _native = native,
        _assistant = assistant,
        _store = store,
-       _memories = memories,
        _keeper = keeper,
        _recallIndex = recall,
        _queue = queue,
@@ -110,14 +108,9 @@ class ChatSession extends ChangeNotifier {
   static const int replyTokens = 1024;
   static const int summaryTokens = 256;
 
-  /// Newest memories offered to the system prompt, before its budget
-  /// (see [fitSystemPrompt]) trims them.
-  static const int maxMemories = 40;
-
   final NativeBridge _native;
   final Assistant _assistant;
   final ChatStore _store;
-  final MemoryStore _memories;
   final MemoryKeeper _keeper;
   final RecallIndex _recallIndex;
   final ReplyQueue _queue;
@@ -148,9 +141,15 @@ class ChatSession extends ChangeNotifier {
   /// it for this session.
   final Map<int, ReplyNotice> notices = {};
 
-  /// Replies (by seq) after which the model updated long-term memory; each
-  /// shows a quiet hint.
-  final Set<int> memoryUpdates = {};
+  /// Replies (by seq) after which the model updated the user's profile;
+  /// each shows a quiet hint that can undo the change.
+  final Map<int, MemoryUpdate> memoryUpdates = {};
+
+  /// Leaves memory out of this chat: the profile and other chats are not
+  /// used in its prompts, and nothing said in it is learned.
+  bool skipMemory = false;
+
+  bool get _remembering => _assistant.settings.memoryEnabled && !skipMemory;
 
   /// Documents sent with each user message, by message id.
   final Map<int, List<DocInfo>> attachments = {};
@@ -369,20 +368,20 @@ class ChatSession extends ChangeNotifier {
           ChatMessage.fromMap(r),
       ];
       final settings = _assistant.settings;
-      final remembering = settings.memoryEnabled;
+      final remembering = _remembering;
       final recall = remembering
           ? await _recallIndex.recall(recallQuery, conv.id)
           : const RecallOff();
       final recalled = switch (recall) {
-        Recalled(:final snippets) => snippets,
-        RecallOff() || RecallFailed() => const <String>[],
+        Recalled(:final messages) => messages,
+        RecallOff() || RecallFailed() => const <RecalledMessage>[],
       };
       final context = SystemContext(
         now: DateTime.now(),
         aboutUser: settings.aboutUser,
         replyStyle: settings.replyStyle,
         memories: remembering
-            ? [for (final m in _memories.items.take(maxMemories)) m.text]
+            ? await _keeper.forPrompt(recallQuery, rank: recall is Recalled)
             : const [],
         recalled: recalled,
         summary: fresh.summary,
@@ -587,7 +586,7 @@ class ChatSession extends ChangeNotifier {
   }
 
   /// Housekeeping once the reply is in and the engine is free: naming a new
-  /// chat, letting the model update long-term memory and embedding the new
+  /// chat, letting the model update the user's profile and embedding the new
   /// messages for recall. Each step yields to the user's next message (see
   /// [BackgroundRun]); a new message ends the whole run.
   Future<void> _afterReply(
@@ -616,11 +615,14 @@ class ChatSession extends ChangeNotifier {
         }
       }
     }
-    final learned = await _keeper.learn(run, asked: asked, reply: reply);
-    if (learned == true && !_disposed) {
-      memoryUpdates.add(replySeq);
-      notifyListeners();
+    if (_remembering) {
+      final update = await _keeper.learn(run, asked: asked);
+      if (update != null && !_disposed) {
+        memoryUpdates[replySeq] = update;
+        notifyListeners();
+      }
     }
+    await _keeper.catchUp(run);
     if (!run.preempted) _recallIndex.indexInBackground();
   }
 
