@@ -37,7 +37,7 @@ class Embedder(private val executor: Executor) {
             Log.i(LOG_TAG, "load ms=${(System.nanoTime() - start) / 1_000_000}")
         }
         val start = System.nanoTime()
-        val out = texts.map { truncate(LlamaNative.nativeEmbed(handle, it)) }
+        val out = LlamaNative.nativeEmbedBatch(handle, texts.toTypedArray()).map(::truncate)
         Log.i(LOG_TAG, "embed texts=${texts.size} ms=${(System.nanoTime() - start) / 1_000_000}")
         lastUse = SystemClock.uptimeMillis()
         main.postDelayed(freeIdle, IDLE_MS)

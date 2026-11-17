@@ -36,7 +36,7 @@ object LlamaNative {
 
     external fun nativeEmbedLoad(path: String, threads: Int): Long
     external fun nativeEmbedFree(handle: Long)
-    external fun nativeEmbed(handle: Long, text: String): FloatArray
+    external fun nativeEmbedBatch(handle: Long, texts: Array<String>): Array<FloatArray>
 }
 
 /** llama.cpp on the CPU, for GGUF models. Text only. */
