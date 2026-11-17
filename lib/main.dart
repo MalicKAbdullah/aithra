@@ -180,6 +180,7 @@ Future<void> _afterFirstFrame(Services s) async {
   s.inbox.start();
   await Future.wait([s.models.refresh(), s.memories.load()]);
   s.assistant.warmUp();
+  await s.preparer.resumePending();
   await s.summarizer.resumePending();
 }
 

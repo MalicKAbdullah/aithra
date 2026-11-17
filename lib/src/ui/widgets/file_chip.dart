@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:core_theme/core_theme.dart';
 import 'package:flutter/material.dart';
 
+import '../../docs/doc_preparer.dart';
 import '../../docs/documents.dart';
 import '../../services.dart';
 import '../aithra_type.dart';
@@ -98,6 +99,31 @@ class FileChip extends StatelessWidget {
   }
 }
 
+/// A [FileChip] that shows how far the document's preparation (see
+/// DocPreparer) has come, then its size once it is ready.
+class PreparingFileChip extends StatelessWidget {
+  const PreparingFileChip({required this.doc, this.trailing, super.key});
+
+  final DocInfo doc;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final preparer = context.services.preparer;
+    return ListenableBuilder(
+      listenable: preparer,
+      builder: (context, _) => FileChip(
+        doc: doc,
+        trailing: trailing,
+        status: switch (preparer.progress[doc.id]) {
+          final p? => prepLabel(p),
+          null => null,
+        },
+      ),
+    );
+  }
+}
+
 /// The documents a message sent, in its footer; tap one to summarise it.
 class MessageFiles extends StatelessWidget {
   const MessageFiles({required this.docs, super.key});
@@ -106,13 +132,13 @@ class MessageFiles extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final summarizer = context.services.summarizer;
+    final s = context.services;
     return Padding(
       padding: const EdgeInsets.only(top: AppSpacing.xs),
       child: Align(
         alignment: Alignment.centerRight,
         child: ListenableBuilder(
-          listenable: summarizer,
+          listenable: Listenable.merge([s.summarizer, s.preparer]),
           builder: (context, _) => Wrap(
             alignment: WrapAlignment.end,
             spacing: AppSpacing.xs,
@@ -121,11 +147,16 @@ class MessageFiles extends StatelessWidget {
               for (final d in docs)
                 FileChip(
                   doc: d,
-                  status: switch (summarizer.running[d.id]) {
-                    (done: final done, total: final total) when total > 0 =>
+                  status: switch ((
+                    s.summarizer.running[d.id],
+                    s.preparer.progress[d.id],
+                  )) {
+                    ((done: final done, total: final total), _)
+                        when total > 0 =>
                       'Summarising · part ${done + 1} of $total',
-                    (done: _, total: _) => 'Summarising…',
-                    null => null,
+                    ((done: _, total: _), _) => 'Summarising…',
+                    (null, final p?) => prepLabel(p),
+                    (null, null) => null,
                   },
                   onTap: () => showDocumentSheet(context, d),
                 ),

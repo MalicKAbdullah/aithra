@@ -410,6 +410,15 @@ class NativeChannels(
                     call.argument<Int>("limit")!!,
                 )
             }
+            "doc.index" -> onEmbed(result) {
+                docs.indexSome(
+                    embedder,
+                    call.argument<String>("modelPath")!!,
+                    call.argument<String>("id")!!,
+                    call.argument<Int>("limit")!!,
+                )
+            }
+            "doc.unprepared" -> onDb(result) { docs.unprepared(call.argument<Boolean>("withPassages")!!) }
             "doc.putCitations" -> onDb(result) {
                 docs.putCitations(call.argument<Number>("msgId")!!.toLong(), call.argument<List<Map<String, Any?>>>("cites")!!)
             }

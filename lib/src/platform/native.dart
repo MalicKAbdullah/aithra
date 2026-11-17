@@ -433,6 +433,32 @@ class NativeBridge {
     }),
   );
 
+  /// Embeds up to [limit] passages of document [id] that have no vector
+  /// yet: how many it embedded (0 once all are done), and how many of the
+  /// document's [total] passages have one now.
+  Future<({int embedded, int indexed, int total})> indexDocument(
+    String modelPath,
+    String id,
+    int limit,
+  ) async {
+    final m = await _map('doc.index', {
+      'modelPath': modelPath,
+      'id': id,
+      'limit': limit,
+    });
+    return (
+      embedded: m['embedded']! as int,
+      indexed: m['indexed']! as int,
+      total: m['total']! as int,
+    );
+  }
+
+  /// Documents sent in chats with scanned pages still to read or, with
+  /// [withPassages], passages still to embed.
+  Future<List<Map<String, Object?>>> unpreparedDocuments({
+    required bool withPassages,
+  }) => _rows('doc.unprepared', {'withPassages': withPassages});
+
   /// The [limit] passages of [ids] closest in meaning to [query].
   Future<List<Map<String, Object?>>> searchDocuments(
     String modelPath,

@@ -99,7 +99,7 @@ class AttachmentTray extends StatelessWidget {
                       for (final d in docs)
                         Padding(
                           padding: const EdgeInsets.only(right: AppSpacing.xs),
-                          child: FileChip(
+                          child: PreparingFileChip(
                             doc: d,
                             trailing: IconButton(
                               tooltip: 'Remove ${d.name}',
@@ -108,9 +108,9 @@ class AttachmentTray extends StatelessWidget {
                               icon: const Icon(Icons.close_rounded),
                               onPressed: () {
                                 c.docs.value = [...docs]..remove(d);
-                                unawaited(
-                                  context.services.native.deleteDocument(d.id),
-                                );
+                                final s = context.services;
+                                s.preparer.drop(d.id);
+                                unawaited(s.native.deleteDocument(d.id));
                               },
                             ),
                           ),
