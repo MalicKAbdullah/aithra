@@ -2,6 +2,7 @@ package dev.abdullah.aithra
 
 import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
+import android.util.Log
 import dev.abdullah.aithra.engine.Embedder
 import java.util.UUID
 
@@ -79,6 +80,8 @@ class DocumentStore(private val chat: ChatDb) {
     /** Stores [doc] unattached and returns its row (see [row]). */
     fun put(doc: ExtractedDocument, now: Long): Map<String, Any?> {
         val id = UUID.randomUUID().toString()
+        val start = System.nanoTime()
+        var chunks = 0
         writable.transaction {
             var chars = 0
             for (p in doc.pages) {
@@ -93,7 +96,7 @@ class DocumentStore(private val chat: ChatDb) {
                 })
                 if (p.text != null) {
                     chars += p.text.length
-                    insertChunks(this, id, p.page, p.text)
+                    chunks += insertChunks(this, id, p.page, p.text)
                 }
             }
             insertOrThrow("documents", null, ContentValues().apply {
@@ -106,13 +109,16 @@ class DocumentStore(private val chat: ChatDb) {
                 put("created", now)
             })
         }
+        Log.i(Documents.LOG_TAG, "chunk+store chunks=$chunks ms=${(System.nanoTime() - start) / 1_000_000}")
         return document(id)!!
     }
 
-    private fun insertChunks(db: SQLiteDatabase, docId: String, page: Int, text: String) {
+    /** Splits [text] into passages of [docId] after its last one; returns how many. */
+    private fun insertChunks(db: SQLiteDatabase, docId: String, page: Int, text: String): Int {
         var ord = db.rawQuery("SELECT COALESCE(MAX(ord), -1) + 1 FROM doc_chunks WHERE doc_id = ?", arrayOf(docId))
             .use { c -> c.moveToFirst(); c.getInt(0) }
-        for (passage in Chunker.chunk(text)) {
+        val passages = Chunker.chunk(text)
+        for (passage in passages) {
             db.insertOrThrow("doc_chunks", null, ContentValues().apply {
                 put("doc_id", docId)
                 put("ord", ord++)
@@ -120,6 +126,7 @@ class DocumentStore(private val chat: ChatDb) {
                 put("text", chat.sealText(passage))
             })
         }
+        return passages.size
     }
 
     private val columns =
@@ -265,8 +272,16 @@ class DocumentStore(private val chat: ChatDb) {
      */
     fun search(embedder: Embedder, modelPath: String, ids: List<String>, query: String, limit: Int): List<Map<String, Any?>> {
         if (ids.isEmpty()) return emptyList()
-        while (index(embedder, modelPath, ids, 16) > 0) Unit
+        val start = System.nanoTime()
+        var missing = 0
+        while (true) {
+            val n = index(embedder, modelPath, ids, 16)
+            if (n == 0) break
+            missing += n
+        }
+        val indexed = System.nanoTime()
         val q = embedder.embed(modelPath, listOf(Embedder.query(query.trim()))).single()
+        val embedded = System.nanoTime()
         val marks = ids.joinToString(",") { "?" }
         val scored = readable.rawQuery(
             "SELECT doc_id, ord, vec FROM doc_chunks WHERE doc_id IN ($marks) AND vec IS NOT NULL",
@@ -281,9 +296,17 @@ class DocumentStore(private val chat: ChatDb) {
                 }
             }
         }
-        return scored.sortedByDescending { it.third }.take(limit).mapNotNull { (doc, ord, score) ->
+        val found = scored.sortedByDescending { it.third }.take(limit).mapNotNull { (doc, ord, score) ->
             passage(doc, ord)?.plus("score" to score.toDouble())
         }
+        val end = System.nanoTime()
+        Log.i(
+            Documents.LOG_TAG,
+            "search embeddedAtQuestion=$missing indexMs=${(indexed - start) / 1_000_000} " +
+                "queryMs=${(embedded - indexed) / 1_000_000} scoreMs=${(end - embedded) / 1_000_000} " +
+                "passages=${scored.size} totalMs=${(end - start) / 1_000_000}",
+        )
+        return found
     }
 
     fun putCitations(msgId: Long, cites: List<Map<String, Any?>>) = writable.transaction {

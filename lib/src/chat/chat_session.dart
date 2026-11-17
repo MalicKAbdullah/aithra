@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import '../assistant.dart';
 import '../docs/documents.dart';
 import '../engine/engine_service.dart';
+import '../engine/run_metrics.dart';
 import '../memory/memory_keeper.dart';
 import '../memory/profile.dart';
 import '../memory/recall_index.dart';
@@ -436,12 +437,14 @@ class ChatSession extends ChangeNotifier {
       phase = ReplyPhase.preparing;
       notifyListeners();
     }
+    final clock = Stopwatch()..start();
     try {
       final prepared = await _assistant.prepare();
       if (prepared == null) {
         throw StateError('No model is ready. Download one in Models.');
       }
       final (spec, _) = prepared;
+      logStage('aithra.reply', 'modelReadyMs=${clock.elapsedMilliseconds}');
       final contextSize = _assistant.engine.contextSize!;
       final fresh = ConversationInfo.fromMap(
         (await _native.dbConversation(conv.id))!,
@@ -515,6 +518,7 @@ class ChatSession extends ChangeNotifier {
       // profile lines and recalled messages in what they leave.
       final docs = await _documents(conv.id, spec);
       if (_stopRequested) return;
+      final retrieval = Stopwatch()..start();
       final reading = await readDocuments(
         native: _native,
         docs: docs,
@@ -523,6 +527,14 @@ class ChatSession extends ChangeNotifier {
         embedderPath: _assistant.models.pathOf(embeddingModel),
         costs: counted.costs,
       );
+      if (docs.isNotEmpty) {
+        logStage(
+          'aithra.docs',
+          'retrievalMs=${retrieval.elapsedMilliseconds} '
+              'whole=${reading?.whole} searched=${reading?.searched} '
+              'passages=${reading?.cited.length} tokens=${reading?.tokens}',
+        );
+      }
       final docTokens = reading?.tokens ?? 0;
       final turnContext = await fitTurnContext(
         related: profile.related,
@@ -575,15 +587,28 @@ class ChatSession extends ChangeNotifier {
         keepContext: true,
       );
       _generation = generation;
+      final promptReadyMs = clock.elapsedMilliseconds;
       final sub = generation.text.listen((chunk) {
         if (phase != ReplyPhase.streaming) {
           phase = ReplyPhase.streaming;
           notifyListeners();
+          logStage(
+            'aithra.reply',
+            'promptReadyMs=$promptReadyMs '
+                'firstTokenMs=${clock.elapsedMilliseconds}',
+          );
         }
         streaming.add(chunk);
       });
       final metrics = await generation.done;
       await sub.cancel();
+      logStage(
+        'aithra.reply',
+        'doneMs=${clock.elapsedMilliseconds} '
+            'engineTtftMs=${metrics.ttftMs?.round()} '
+            'promptTokens=${metrics.promptTokens} '
+            'reusedTokens=${metrics.reusedTokens}',
+      );
       // Only a prompt prefilled in full measures the whole prompt's ratio.
       if (counted.estimated &&
           metrics.reusedTokens == 0 &&
@@ -855,6 +880,8 @@ class ChatSession extends ChangeNotifier {
     if (!spec.vision || docs.every((d) => d.unreadPages == 0)) {
       return docs;
     }
+    final clock = Stopwatch()..start();
+    var read = 0;
     try {
       for (final d in docs.where((d) => d.unreadPages > 0)) {
         final pages = await _native.unreadPages(d.id);
@@ -878,11 +905,16 @@ class ChatSession extends ChangeNotifier {
           await g.done;
           if (g.cancelled) return docs;
           await _native.setPageText(d.id, page, text);
+          read++;
         }
       }
     } finally {
       _generation = null;
       activity.value = null;
+      logStage(
+        'aithra.docs',
+        'scannedAtQuestion pages=$read ms=${clock.elapsedMilliseconds}',
+      );
     }
     return [
       for (final r in await _native.documentsOf(convId)) DocInfo.fromMap(r),

@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.ext.SdkExtensions
+import android.util.Log
 import android.util.Xml
 import org.xmlpull.v1.XmlPullParser
 import java.io.ByteArrayOutputStream
@@ -46,6 +47,9 @@ object Documents {
      */
     const val MAX_VISION_PAGES = 30
 
+    /** Logcat tag of the document pipeline's stage timings. */
+    const val LOG_TAG = "aithra.docs"
+
     fun extract(context: Context, uri: Uri, onProgress: (done: Int, total: Int) -> Unit): ExtractedDocument =
         extract(context, Media.displayName(context, uri), context.contentResolver.getType(uri), onProgress) {
             context.contentResolver.openInputStream(uri)!!
@@ -59,8 +63,9 @@ object Documents {
         onProgress: (done: Int, total: Int) -> Unit,
         open: () -> InputStream,
     ): ExtractedDocument {
+        val start = System.nanoTime()
         val ext = name.substringAfterLast('.', "").lowercase()
-        return when {
+        val doc = when {
             type == PDF || ext == "pdf" -> pdf(context, name, open, onProgress)
             type == DOCX || ext == "docx" -> open().use {
                 ExtractedDocument(name, DOCX, listOf(PageContent(0, capped(name, DocxText.extract(it, Xml.newPullParser())), null)), false)
@@ -74,6 +79,12 @@ object Documents {
                 ExtractedDocument(name, type ?: "text/plain", listOf(PageContent(0, capped(name, text), null)), false)
             }
         }
+        Log.i(
+            LOG_TAG,
+            "extract ${doc.mime} pages=${doc.pages.size} scanned=${doc.pages.count { it.text == null }} " +
+                "chars=${doc.pages.sumOf { it.text?.length ?: 0 }} ms=${(System.nanoTime() - start) / 1_000_000}",
+        )
+        return doc
     }
 
     private fun capped(name: String, text: String): String {
