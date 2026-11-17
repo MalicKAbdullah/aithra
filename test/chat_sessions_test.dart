@@ -23,6 +23,8 @@ import 'package:aithra/src/platform/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fake_replies.dart';
+
 class MemVault extends Vault {
   MemVault() : super('/dev/null', Uint8List(32));
   final Map<String, Object?> docs = {};
@@ -38,7 +40,7 @@ class MemVault extends Vault {
 /// A store and engine in memory. Chat replies stream only when the test
 /// says so ([finish]); background generations (titles, memory) answer at
 /// once with [backgroundReply].
-class FakeNative extends NativeBridge {
+class FakeNative extends NativeBridge with FakeReplies {
   FakeNative._(this._events)
     : super(channel: const MethodChannel('fake'), events: _events.stream);
   factory FakeNative() => FakeNative._(StreamController.broadcast());
@@ -59,21 +61,26 @@ class FakeNative extends NativeBridge {
       turns.first.text.startsWith('You are Aithra');
 
   /// Streams [text] as the oldest running reply and ends it, after
-  /// [decodeTokens] tokens; [stopped] as by the notification's Stop.
-  void finish(
-    String text, {
-    bool cancelled = false,
-    bool stopped = false,
-    int? decodeTokens,
-  }) {
+  /// [decodeTokens] tokens.
+  void finish(String text, {bool cancelled = false, int? decodeTokens}) {
     final (id, _, done) = replies.removeAt(0);
     _events.add({'type': 'token', 'requestId': id, 'text': text});
-    done.complete({
-      'cancelled': cancelled || stopped,
-      'stopped': stopped,
-      'decodeTokens': decodeTokens,
-    });
+    done.complete({'cancelled': cancelled, 'decodeTokens': decodeTokens});
   }
+
+  /// Streams [text] as the oldest running reply, which goes on.
+  void stream(String text) => _events.add({
+    'type': 'token',
+    'requestId': replies.first.$1,
+    'text': text,
+  });
+
+  /// The Stop of the notification shown while the user is away.
+  void stopFromNotification() => _events.add({'type': 'reply', 'kind': 'stop'});
+
+  /// The app leaving the screen or coming back to it.
+  void setVisible(bool visible) =>
+      _events.add({'type': 'visibility', 'visible': visible});
 
   /// Whether each chat reply asked the engine to keep its state.
   final List<bool> keptContext = [];
@@ -703,11 +710,47 @@ void main() {
       final a = h.sessions.current;
       unawaited(a.send('Count to ten', const []));
       await h.settle();
-      h.native.finish('One, two', stopped: true);
+      h.native.stream('One, two');
+      h.native.stopFromNotification();
       await h.settle();
       expect(a.messages.first.content, 'One, two');
       expect(a.notices, isEmpty);
       expect(a.error, isNull);
+      // A stopped reply is nothing the user waits to hear about.
+      expect(h.native.ended.single.$3, isNull);
+    });
+
+    test('a reply holds the notification from send to saved, and offers '
+        'its chat once it is ready', () async {
+      final h = await Harness.start();
+      final a = h.sessions.current;
+      unawaited(a.send('Plan a picnic', const []));
+      await h.settle();
+      expect(h.native.begun, hasLength(1));
+      expect(h.native.ended, isEmpty);
+      h.native.finish('Bring bread.');
+      await h.settle();
+      final (id, convId, title) = h.native.ended.single;
+      expect(id, h.native.begun.single);
+      expect(convId, a.conversation!.id);
+      expect(title, a.conversation!.title);
+    });
+
+    test('housekeeping waits while the app is away and runs once it is '
+        'back', () async {
+      final h = await Harness.start();
+      final a = h.sessions.current;
+      unawaited(a.send('Plan a picnic', const []));
+      await h.settle();
+      h.native.setVisible(false);
+      await h.settle();
+      h.native.finish('Bring bread.');
+      await h.settle();
+      // The chat title and memory steps are background generations.
+      expect(h.native.background, isEmpty);
+      h.native.setVisible(true);
+      await h.settle();
+      expect(h.native.background, isNotEmpty);
     });
   });
 

@@ -10,6 +10,8 @@ import 'package:aithra/src/platform/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fake_replies.dart';
+
 BackendResult result(
   String id,
   List<String> answers, {
@@ -34,7 +36,7 @@ BackendResult result(
 );
 
 /// Loads instantly; every generation reports [cancelled].
-class CancellingEngine extends NativeBridge {
+class CancellingEngine extends NativeBridge with FakeReplies {
   CancellingEngine()
     : super(
         channel: const MethodChannel('fake'),

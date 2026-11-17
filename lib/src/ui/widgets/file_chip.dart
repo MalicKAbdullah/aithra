@@ -184,8 +184,9 @@ Future<void> showDocumentSheet(BuildContext context, DocInfo doc) =>
                     Text(
                       progress != null
                           ? 'Aithra is summarising the whole document in the '
-                                'background. You can keep chatting or leave '
-                                'the app; the summary arrives in this chat.'
+                                'background. You can keep chatting; it pauses '
+                                'while you are away from Aithra, and the '
+                                'summary arrives in this chat.'
                           : 'Summarise reads the whole document part by part '
                                 'in the background and posts a summary in '
                                 'this chat.',

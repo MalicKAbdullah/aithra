@@ -118,6 +118,26 @@ class NativeBridge {
   Future<void> cancel(int requestId) =>
       _channel.invokeMethod('engine.cancel', {'requestId': requestId});
 
+  /// Whether an Aithra activity is on screen; `visibility` events follow
+  /// every change.
+  Future<bool> appVisible() => _call<bool>('app.visible');
+
+  /// Reply [id], which the user waits for, has begun: while they are away
+  /// from Aithra, a notification keeps it running (its Stop sends a
+  /// `reply` event of kind `stop`).
+  Future<void> replyBegin(int id) =>
+      _channel.invokeMethod('reply.begin', {'id': id});
+
+  /// Reply [id] has ended. With [readyTitle], it delivered something the
+  /// user has not seen, announced if they are away: tapping it opens
+  /// [convId], or the Ask sheet without one.
+  Future<void> replyEnd(int id, {String? convId, String? readyTitle}) =>
+      _channel.invokeMethod('reply.end', {
+        'id': id,
+        'convId': convId,
+        'title': readyTitle,
+      });
+
   Future<void> unload() => _channel.invokeMethod('engine.unload');
 
   // -- Encrypted chat store (Android SQLite, see ChatDb.kt) ----------------
@@ -442,25 +462,6 @@ class NativeBridge {
   /// waits. An `inbox` event says something new arrived.
   Future<Map<String, Object?>?> takeInbox() async =>
       _optMap(await _channel.invokeMethod<Object?>('inbox.take'));
-
-  /// Shows or updates the notification [tag]; with [done] it is an ongoing
-  /// progress notification, without it one the user can swipe away.
-  Future<void> notifyProgress({
-    required String tag,
-    required String title,
-    required String text,
-    int? done,
-    int? total,
-  }) => _channel.invokeMethod('notify.progress', {
-    'tag': tag,
-    'title': title,
-    'text': text,
-    'done': done,
-    'total': total,
-  });
-
-  Future<void> cancelNotification(String tag) =>
-      _channel.invokeMethod('notify.cancel', {'tag': tag});
 
   /// Language tags and English names, the user's own languages first.
   Future<List<({String tag, String name})>> languages() async => [

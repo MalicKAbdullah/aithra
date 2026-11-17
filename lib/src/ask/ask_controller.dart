@@ -157,6 +157,8 @@ class AskController extends ChangeNotifier {
     answer.reset();
     phase = AskPhase.preparing;
     notifyListeners();
+    final hold = _engine.holdReply(onStop: () => unawaited(stop()));
+    var stopped = false;
     try {
       final prepared = await _assistant.prepare();
       final (spec, _) = prepared!;
@@ -210,12 +212,19 @@ class AskController extends ChangeNotifier {
         answer.add(chunk);
       });
       _metrics = await g.done;
+      stopped = g.cancelled;
       await sub.cancel();
     } on PlatformException catch (e) {
       error = e.message ?? e.code;
     } on StateError catch (e) {
       error = e.message;
     } finally {
+      hold.end(
+        readyTitle:
+            template == chosen && error == null && !stopped && result.isNotEmpty
+            ? 'Ask Aithra · ${chosen.label}'
+            : null,
+      );
       _generation = null;
       if (template == chosen) {
         phase = AskPhase.done;

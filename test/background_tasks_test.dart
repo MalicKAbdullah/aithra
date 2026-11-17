@@ -7,10 +7,12 @@ import 'package:aithra/src/platform/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fake_replies.dart';
+
 /// An engine whose generations stream [reply] and finish when [finish] is
 /// called; cancelling the running request ends it, as the native engine
 /// does.
-class FakeEngine extends NativeBridge {
+class FakeEngine extends NativeBridge with FakeReplies {
   FakeEngine._(this._events)
     : super(channel: const MethodChannel('fake'), events: _events.stream);
   factory FakeEngine() => FakeEngine._(StreamController.broadcast());
@@ -58,6 +60,11 @@ class FakeEngine extends NativeBridge {
   Future<void> unload() async {}
 
   final List<int> cancelledIds = [];
+
+  void setVisible(bool visible) =>
+      _events.add({'type': 'visibility', 'visible': visible});
+
+  void stopFromNotification() => _events.add({'type': 'reply', 'kind': 'stop'});
 
   @override
   Future<void> cancel(int requestId) async {
@@ -164,6 +171,47 @@ void main() {
       expect(await run.generate(const [], maxTokens: 8), isNull);
       expect(await run.step(() async => 1), isNull);
       expect(native.started, hasLength(2));
+    });
+
+    test('leaving the app interrupts a running one, which starts over '
+        'once the app is back', () async {
+      final result = engine.backgroundRun().generate(const [], maxTokens: 8);
+      await pumpEventQueue();
+      expect(native.started, hasLength(1));
+      native.setVisible(false);
+      await pumpEventQueue();
+      expect(native.cancelledIds, [native.started.single]);
+      expect(native.started, hasLength(1));
+      native.setVisible(true);
+      await pumpEventQueue();
+      expect(native.started, hasLength(2));
+      native.finish();
+      expect(await result, '{"add": []}');
+    });
+
+    test('none runs while a reply is held, and every run begun before the '
+        'reply ends', () async {
+      final before = engine.backgroundRun();
+      final hold = engine.holdReply(onStop: () {});
+      var ran = false;
+      final during = engine.backgroundRun().step(() async => ran = true);
+      final stale = before.step(() async => true);
+      await pumpEventQueue();
+      expect(ran, isFalse);
+      hold.end();
+      expect(await during, isTrue);
+      expect(await stale, isNull);
+      expect(native.begun, hasLength(1));
+      expect(native.ended.single.$3, isNull);
+    });
+
+    test("the notification's Stop stops every held reply", () async {
+      var stops = 0;
+      engine.holdReply(onStop: () => stops++);
+      engine.holdReply(onStop: () => stops++);
+      native.stopFromNotification();
+      await pumpEventQueue();
+      expect(stops, 2);
     });
   });
   group('stopping a reply', () {

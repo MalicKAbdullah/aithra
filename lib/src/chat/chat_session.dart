@@ -408,9 +408,16 @@ class ChatSession extends ChangeNotifier {
 
   Future<void> _reply({String? recallQuery, ChatMessage? continuing}) async {
     final done = _replying = Completer<void>();
+    final hold = _assistant.engine.holdReply(onStop: () => unawaited(stop()));
+    var delivered = false;
     try {
-      await _replyIn(_conversation!, recallQuery, continuing);
+      delivered = await _replyIn(_conversation!, recallQuery, continuing);
     } finally {
+      final conv = _conversation!;
+      hold.end(
+        convId: conv.id,
+        readyTitle: delivered && !_stopRequested ? conv.title : null,
+      );
       _replying = null;
       done.complete();
     }
@@ -418,7 +425,8 @@ class ChatSession extends ChangeNotifier {
 
   /// Answers the latest message, or with [continuing] (the newest reply,
   /// cut off at [replyTokens]) writes the rest of that reply onto it.
-  Future<void> _replyIn(
+  /// Returns whether a reply was saved.
+  Future<bool> _replyIn(
     ConversationInfo conv,
     String? recallQuery,
     ChatMessage? continuing,
@@ -431,7 +439,7 @@ class ChatSession extends ChangeNotifier {
       // Stopped while it waited for another chat's reply.
       phase = ReplyPhase.idle;
       notifyListeners();
-      return;
+      return false;
     }
     if (phase == ReplyPhase.queued) {
       phase = ReplyPhase.preparing;
@@ -517,7 +525,7 @@ class ChatSession extends ChangeNotifier {
       // Documents come first in what the newest turn carries, then the
       // profile lines and recalled messages in what they leave.
       final docs = await _documents(conv.id, spec);
-      if (_stopRequested) return;
+      if (_stopRequested) return false;
       final retrieval = Stopwatch()..start();
       final reading = await readDocuments(
         native: _native,
@@ -580,7 +588,7 @@ class ChatSession extends ChangeNotifier {
       }
 
       // Stop pressed while the model loaded or the prompt was assembled.
-      if (_stopRequested) return;
+      if (_stopRequested) return false;
       final generation = _assistant.engine.generate(
         turns,
         maxTokens: replyTokens,
@@ -622,8 +630,7 @@ class ChatSession extends ChangeNotifier {
           unawaited(_assistant.observeTokensPerByte(spec, tokens / bytes));
         }
       }
-      final interrupted =
-          generation.cancelled && !_stopRequested && !generation.stoppedByUser;
+      final interrupted = generation.cancelled && !_stopRequested;
       // A continuation keeps its leading space: it joins the stored reply.
       final text = continuing == null
           ? streaming.full.trim()
@@ -634,7 +641,7 @@ class ChatSession extends ChangeNotifier {
               'Android needed memory back before Aithra could answer. '
               'Try again.';
         }
-        return;
+        return false;
       }
       if (continuing != null) {
         final content = continuing.content + text;
@@ -657,7 +664,7 @@ class ChatSession extends ChangeNotifier {
         unawaited(HapticFeedback.selectionClick());
         unawaited(_store.upsert(conv.id));
         if (!fresh.private) _recallIndex.indexInBackground();
-        return;
+        return true;
       }
       final saved = await _native.dbAddMessage(
         convId: conv.id,
@@ -736,8 +743,10 @@ class ChatSession extends ChangeNotifier {
         replySeq,
         _afterReply(conv.id, replySeq, history, asked.content, text),
       );
+      return true;
     } catch (e) {
       error = e is PlatformException ? (e.message ?? e.code) : '$e';
+      return false;
     } finally {
       _queue.release(this);
       _generation = null;
@@ -897,7 +906,7 @@ class ChatSession extends ChangeNotifier {
             [
               EngineTurn('user', readPagePrompt, [image!]),
             ],
-            maxTokens: replyTokens,
+            maxTokens: readPageTokens,
             temperature: 0,
           );
           _generation = g;

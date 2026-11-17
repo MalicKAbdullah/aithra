@@ -1,9 +1,6 @@
 package dev.abdullah.aithra
 
 import android.Manifest
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -108,6 +105,8 @@ class NativeChannels(
     fun notify(event: Map<String, Any?>) = events.send(event)
 
     fun destroy() {
+        // This engine's replies end with it, unannounced: nothing is left to save them.
+        app.replies.endScope(scope)
         if (speechLazy.isInitialized()) speech.destroy()
         if (ttsLazy.isInitialized()) tts.shutdown()
     }
@@ -161,10 +160,6 @@ class NativeChannels(
     private fun <T> onEngine(result: MethodChannel.Result, block: () -> T) =
         engineHost.submit(block) { reply(result, "engine", it) }
 
-    /** Engine work that keeps the process in the foreground while it runs. */
-    private fun <T> onEngineHeld(result: MethodChannel.Result, block: () -> T) =
-        engineHost.submitHeld(block) { reply(result, "engine", it) }
-
     fun <T> onIo(result: MethodChannel.Result, block: () -> T) = runOn(io, "io", result, block)
 
     private fun <T> onDb(result: MethodChannel.Result, block: () -> T) = runOn(app.dbExec, "db", result, block)
@@ -208,34 +203,11 @@ class NativeChannels(
             .map { mapOf("tag" to it.toLanguageTag(), "name" to it.getDisplayLanguage(Locale.ENGLISH)) }
     }
 
-    private fun progressNotification(call: MethodCall) {
-        val manager = activity.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(DOCUMENT_CHANNEL, "Documents", NotificationManager.IMPORTANCE_LOW),
-        )
-        val open = PendingIntent.getActivity(
-            activity, 0,
-            Intent(activity, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_IMMUTABLE,
-        )
-        val done = call.argument<Int>("done")
-        val total = call.argument<Int>("total")
-        val builder = android.app.Notification.Builder(activity, DOCUMENT_CHANNEL)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(call.argument<String>("title"))
-            .setContentText(call.argument<String>("text"))
-            .setContentIntent(open)
-            .setOngoing(done != null)
-            .setAutoCancel(done == null)
-        if (done != null && total != null) builder.setProgress(total, done, false)
-        manager.notify(call.argument<String>("tag"), DOCUMENT_NOTIFICATION, builder.build())
-    }
-
     @Suppress("UNCHECKED_CAST")
     private fun onCall(call: MethodCall, result: MethodChannel.Result) {
         if (extra(call, result)) return
         when (call.method) {
-            "engine.load" -> onEngineHeld(result) { engineHost.load(call.arguments as Map<String, Any?>) }
+            "engine.load" -> onEngine(result) { engineHost.load(call.arguments as Map<String, Any?>) }
             "engine.generate" -> {
                 val requestId = call.argument<Int>("requestId")!!
                 val id = nativeId(requestId)
@@ -255,7 +227,7 @@ class NativeChannels(
                     keepContext = call.argument<Boolean>("keepContext")!!,
                 )
                 engineHost.enqueue(id, call.argument<Boolean>("background") == true)
-                onEngineHeld(result) {
+                onEngine(result) {
                     engineHost.generate(id, request) { text ->
                         events.send(mapOf("type" to "token", "requestId" to requestId, "text" to text))
                         true
@@ -273,6 +245,20 @@ class NativeChannels(
                 result.success(null)
             }
             "engine.unload" -> onEngine(result) { engineHost.unload() }
+
+            "app.visible" -> result.success(app.replies.visible)
+            "reply.begin" -> {
+                app.replies.begin(nativeId(call.argument<Int>("id")!!))
+                result.success(null)
+            }
+            "reply.end" -> {
+                val title = call.argument<String>("title")
+                app.replies.end(
+                    nativeId(call.argument<Int>("id")!!),
+                    title?.let { Replies.ReadyNote(it, call.argument<String>("convId"), activity.taskId) },
+                )
+                result.success(null)
+            }
 
             "db.open" -> onDb(result) { db.open(call.argument<ByteArray>("key")!!) }
             "db.conversations" -> onDb(result) {
@@ -429,16 +415,6 @@ class NativeChannels(
             }
             "doc.citations" -> onDb(result) { docs.citations(call.argument<String>("convId")!!) }
 
-            "notify.progress" -> {
-                progressNotification(call)
-                result.success(null)
-            }
-            "notify.cancel" -> {
-                activity.getSystemService(NotificationManager::class.java)
-                    .cancel(call.argument<String>("tag"), DOCUMENT_NOTIFICATION)
-                result.success(null)
-            }
-            "locale.languages" -> onIo(result) { languages() }
 
             "device.info" -> onIo(result) { DeviceInfo.collect(activity) }
             "device.runsLlama" -> result.success(CpuFeatures.runsLlama)
@@ -611,7 +587,5 @@ class NativeChannels(
 
     companion object {
         private val nextScope = AtomicInteger(1)
-        private const val DOCUMENT_CHANNEL = "documents"
-        private const val DOCUMENT_NOTIFICATION = 2
     }
 }
