@@ -319,6 +319,7 @@ class ChatSession extends ChangeNotifier {
     }
     _assistant.engine.preemptBackground();
     unawaited(HapticFeedback.lightImpact());
+    unawaited(_native.askNotificationsOnce());
     error = null;
     final now = DateTime.now();
     // Optimistic: the message shows before anything is written.

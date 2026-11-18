@@ -556,6 +556,11 @@ class NativeBridge {
   Future<void> deleteFile(String path) =>
       _channel.invokeMethod('file.delete', {'path': path});
 
+  /// Asks for the notification permission unless it is granted or was
+  /// asked before; replies and downloads notify only once it is granted.
+  Future<void> askNotificationsOnce() =>
+      _channel.invokeMethod('notifications.askOnce');
+
   /// Starts (or returns the running) download of [fileName]; it resumes
   /// after connection drops and is checked against [sha256].
   Future<int> startDownload({

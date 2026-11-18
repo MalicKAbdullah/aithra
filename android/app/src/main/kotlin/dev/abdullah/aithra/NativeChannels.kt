@@ -1,9 +1,11 @@
 package dev.abdullah.aithra
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.LocaleList
 import android.provider.Settings
 import androidx.activity.result.ActivityResultLauncher
@@ -90,6 +92,17 @@ class NativeChannels(
     // their progress notification shows.
     private val askNotifications: ActivityResultLauncher<String> =
         activity.registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    // Android 13+ only shows the dialog while the permission is undecided, and
+    // a denied app is never asked again, so the first ask is the only one.
+    private fun askNotificationsOnce() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        val prefs = activity.getSharedPreferences("notification_permission", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("asked", false)) return
+        prefs.edit().putBoolean("asked", true).apply()
+        askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
     private val askPermission: ActivityResultLauncher<String> =
         activity.registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             pendingPermission?.success(microphoneState(granted))
@@ -448,10 +461,12 @@ class NativeChannels(
             "storage.erase" -> onIo(result) { Storage.erase(activity) }
 
             "download.start" -> {
-                if (activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                    askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
+                askNotificationsOnce()
                 startDownload(call, result)
+            }
+            "notifications.askOnce" -> {
+                askNotificationsOnce()
+                result.success(null)
             }
             "download.query" -> onIo(result) { ModelDownloads.query(activity) }
             "download.remove" -> onIo(result) { ModelDownloads.remove(activity, (call.argument<Number>("id")!!).toLong()) }

@@ -46,6 +46,11 @@ class FakeNative extends NativeBridge with FakeReplies {
   factory FakeNative() => FakeNative._(StreamController.broadcast());
 
   final StreamController<Object?> _events;
+  var notificationAsks = 0;
+
+  @override
+  Future<void> askNotificationsOnce() async => notificationAsks++;
+
   final conversations = <String, Map<String, Object?>>{};
   final messages = <String, List<Map<String, Object?>>>{};
   var _nextId = 1;
@@ -397,6 +402,16 @@ class Harness {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('notification permission', () {
+    test('sending asks for it without waiting on the answer', () async {
+      final h = await Harness.start();
+      unawaited(h.sessions.current.send('Hello', const []));
+      await h.settle();
+      expect(h.native.notificationAsks, 1);
+      expect(h.native.replies, hasLength(1));
+    });
+  });
 
   group('reply queue', () {
     test('grants the engine in order and skips withdrawn replies', () async {
