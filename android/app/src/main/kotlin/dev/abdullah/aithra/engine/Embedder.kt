@@ -3,6 +3,7 @@ package dev.abdullah.aithra.engine
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import java.util.concurrent.Executor
 
 /**
@@ -30,10 +31,14 @@ class Embedder(private val executor: Executor) {
         if (path != modelPath) {
             ModelFormat.require(java.io.File(modelPath), "llamacpp")
             release()
+            val start = System.nanoTime()
             handle = LlamaNative.nativeEmbedLoad(modelPath, THREADS)
             path = modelPath
+            Log.i(LOG_TAG, "load ms=${(System.nanoTime() - start) / 1_000_000}")
         }
-        val out = texts.map { truncate(LlamaNative.nativeEmbed(handle, it)) }
+        val start = System.nanoTime()
+        val out = LlamaNative.nativeEmbedBatch(handle, texts.toTypedArray()).map(::truncate)
+        Log.i(LOG_TAG, "embed texts=${texts.size} ms=${(System.nanoTime() - start) / 1_000_000}")
         lastUse = SystemClock.uptimeMillis()
         main.postDelayed(freeIdle, IDLE_MS)
         return out
@@ -60,6 +65,7 @@ class Embedder(private val executor: Executor) {
         const val DIMS = 256
         private const val THREADS = 4
         private const val IDLE_MS = 60_000L
+        private const val LOG_TAG = "aithra.embed"
 
         // EmbeddingGemma's retrieval prompts.
         fun query(text: String) = "task: search result | query: $text"

@@ -2,6 +2,7 @@ package dev.abdullah.aithra
 
 import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
+import android.util.Log
 import dev.abdullah.aithra.engine.Embedder
 import java.util.UUID
 
@@ -79,6 +80,8 @@ class DocumentStore(private val chat: ChatDb) {
     /** Stores [doc] unattached and returns its row (see [row]). */
     fun put(doc: ExtractedDocument, now: Long): Map<String, Any?> {
         val id = UUID.randomUUID().toString()
+        val start = System.nanoTime()
+        var chunks = 0
         writable.transaction {
             var chars = 0
             for (p in doc.pages) {
@@ -93,7 +96,7 @@ class DocumentStore(private val chat: ChatDb) {
                 })
                 if (p.text != null) {
                     chars += p.text.length
-                    insertChunks(this, id, p.page, p.text)
+                    chunks += insertChunks(this, id, p.page, p.text)
                 }
             }
             insertOrThrow("documents", null, ContentValues().apply {
@@ -106,13 +109,16 @@ class DocumentStore(private val chat: ChatDb) {
                 put("created", now)
             })
         }
+        Log.i(Documents.LOG_TAG, "chunk+store chunks=$chunks ms=${(System.nanoTime() - start) / 1_000_000}")
         return document(id)!!
     }
 
-    private fun insertChunks(db: SQLiteDatabase, docId: String, page: Int, text: String) {
+    /** Splits [text] into passages of [docId] after its last one; returns how many. */
+    private fun insertChunks(db: SQLiteDatabase, docId: String, page: Int, text: String): Int {
         var ord = db.rawQuery("SELECT COALESCE(MAX(ord), -1) + 1 FROM doc_chunks WHERE doc_id = ?", arrayOf(docId))
             .use { c -> c.moveToFirst(); c.getInt(0) }
-        for (passage in Chunker.chunk(text)) {
+        val passages = Chunker.chunk(text)
+        for (passage in passages) {
             db.insertOrThrow("doc_chunks", null, ContentValues().apply {
                 put("doc_id", docId)
                 put("ord", ord++)
@@ -120,6 +126,7 @@ class DocumentStore(private val chat: ChatDb) {
                 put("text", chat.sealText(passage))
             })
         }
+        return passages.size
     }
 
     private val columns =
@@ -182,12 +189,16 @@ class DocumentStore(private val chat: ChatDb) {
 
     /**
      * Stores what the vision model read on a scanned page and frees its
-     * image; empty [text] marks the page as having nothing to read.
+     * image; empty [text] marks the page as having nothing to read. A page
+     * already read (by a reply and by background preparation at once) or
+     * of a deleted document keeps what it has: the first reading stands.
      */
     fun setPageText(id: String, page: Int, text: String) = writable.transaction {
-        val image = rawQuery("SELECT image FROM doc_pages WHERE doc_id = ? AND page = ?", arrayOf(id, page.toString()))
-            .use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getString(0) else null }
-        image?.let { delete("media", "id = ?", arrayOf(it)) }
+        val image = rawQuery(
+            "SELECT image FROM doc_pages WHERE doc_id = ? AND page = ? AND text IS NULL AND image IS NOT NULL",
+            arrayOf(id, page.toString()),
+        ).use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: return@transaction
+        delete("media", "id = ?", arrayOf(image))
         val clean = text.trim()
         update("doc_pages", ContentValues().apply {
             if (clean.isEmpty()) putNull("text") else put("text", chat.sealText(clean))
@@ -259,14 +270,50 @@ class DocumentStore(private val chat: ChatDb) {
     }
 
     /**
+     * Embeds up to [limit] passages of document [id] that have no vector
+     * yet: `embedded` (0 once all are done), then `indexed` of `total`.
+     */
+    fun indexSome(embedder: Embedder, modelPath: String, id: String, limit: Int): Map<String, Int> {
+        val embedded = index(embedder, modelPath, listOf(id), limit)
+        return readable.rawQuery(
+            "SELECT COUNT(vec), COUNT(*) FROM doc_chunks WHERE doc_id = ?",
+            arrayOf(id),
+        ).use { c ->
+            c.moveToFirst()
+            mapOf("embedded" to embedded, "indexed" to c.getInt(0), "total" to c.getInt(1))
+        }
+    }
+
+    /**
+     * Documents sent in chats with scanned pages still to read or, with
+     * [withPassages], passages still to embed.
+     */
+    fun unprepared(withPassages: Boolean): List<Map<String, Any?>> =
+        readable.rawQuery(
+            "SELECT $columns FROM documents WHERE conv_id IS NOT NULL AND (" +
+                "EXISTS (SELECT 1 FROM doc_pages p WHERE p.doc_id = documents.id AND p.text IS NULL AND p.image IS NOT NULL)" +
+                (if (withPassages) " OR EXISTS (SELECT 1 FROM doc_chunks k WHERE k.doc_id = documents.id AND k.vec IS NULL)" else "") +
+                ")",
+            null,
+        ).use { c -> buildList { while (c.moveToNext()) add(row(c)) } }
+
+    /**
      * The passages of [ids] closest in meaning to [query], best first.
      * Passages not yet embedded are embedded first, so a question asked
      * right after attaching still searches the whole document.
      */
     fun search(embedder: Embedder, modelPath: String, ids: List<String>, query: String, limit: Int): List<Map<String, Any?>> {
         if (ids.isEmpty()) return emptyList()
-        while (index(embedder, modelPath, ids, 16) > 0) Unit
+        val start = System.nanoTime()
+        var missing = 0
+        while (true) {
+            val n = index(embedder, modelPath, ids, 16)
+            if (n == 0) break
+            missing += n
+        }
+        val indexed = System.nanoTime()
         val q = embedder.embed(modelPath, listOf(Embedder.query(query.trim()))).single()
+        val embedded = System.nanoTime()
         val marks = ids.joinToString(",") { "?" }
         val scored = readable.rawQuery(
             "SELECT doc_id, ord, vec FROM doc_chunks WHERE doc_id IN ($marks) AND vec IS NOT NULL",
@@ -281,9 +328,17 @@ class DocumentStore(private val chat: ChatDb) {
                 }
             }
         }
-        return scored.sortedByDescending { it.third }.take(limit).mapNotNull { (doc, ord, score) ->
+        val found = scored.sortedByDescending { it.third }.take(limit).mapNotNull { (doc, ord, score) ->
             passage(doc, ord)?.plus("score" to score.toDouble())
         }
+        val end = System.nanoTime()
+        Log.i(
+            Documents.LOG_TAG,
+            "search embeddedAtQuestion=$missing indexMs=${(indexed - start) / 1_000_000} " +
+                "queryMs=${(embedded - indexed) / 1_000_000} scoreMs=${(end - embedded) / 1_000_000} " +
+                "passages=${scored.size} totalMs=${(end - start) / 1_000_000}",
+        )
+        return found
     }
 
     fun putCitations(msgId: Long, cites: List<Map<String, Any?>>) = writable.transaction {

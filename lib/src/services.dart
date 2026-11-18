@@ -10,6 +10,7 @@ import 'chat/chat_sessions.dart';
 import 'chat/chat_store.dart';
 import 'chat/reply_queue.dart';
 import 'data/settings_store.dart';
+import 'docs/doc_preparer.dart';
 import 'docs/doc_summarizer.dart';
 import 'engine/engine_service.dart';
 import 'memory/memory_keeper.dart';
@@ -68,6 +69,12 @@ class Services {
       unawaited(chats.upsert(convId));
       sessions.reloadShown(convId);
     },
+  );
+
+  /// Reads and indexes documents as soon as they are attached.
+  late final DocPreparer preparer = DocPreparer(
+    native: native,
+    assistant: assistant,
   );
 
   late final Inbox inbox = Inbox(

@@ -357,17 +357,24 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeGenerate(
 // -- Embeddings ---------------------------------------------------------------
 //
 // A separate model and context in embedding mode (EmbeddingGemma for
-// cross-chat recall). The pooling type comes from the model's metadata; the
-// whole text is one sequence in one batch because the model attends both
-// ways, so it is truncated to the context.
+// cross-chat recall and document search). The pooling type comes from the
+// model's metadata; a text is one sequence in one batch because the model
+// attends both ways, so it is truncated to the context. Several texts share
+// a batch as separate sequences: one decode per batch instead of one per
+// text.
 
 namespace {
+
+// Sequences one decode may carry; texts are rarely short enough for more
+// to fit the context.
+constexpr int kEmbedSeqs = 16;
 
 struct Embedder {
     llama_model *model = nullptr;
     llama_context *ctx = nullptr;
     int n_ctx = 0;
     int n_embd = 0;
+    int n_seq = 0;
 };
 
 }  // namespace
@@ -386,7 +393,9 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeEmbedLoad(JNIEnv *env, jobject
     cp.n_ctx = n_ctx;
     cp.n_batch = n_ctx;
     cp.n_ubatch = n_ctx;
-    cp.n_seq_max = 1;
+    cp.n_seq_max = kEmbedSeqs;
+    // Every sequence may use the whole context: a long text goes alone.
+    cp.kv_unified = true;
     cp.n_threads = threads;
     cp.n_threads_batch = threads;
     llama_context *ctx = llama_init_from_model(model, cp);
@@ -406,6 +415,7 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeEmbedLoad(JNIEnv *env, jobject
     e->ctx = ctx;
     e->n_ctx = n_ctx;
     e->n_embd = llama_model_n_embd_out(model);
+    e->n_seq = kEmbedSeqs;
     LOGI("embedder %s n_ctx=%d n_embd=%d", path.c_str(), n_ctx, e->n_embd);
     return reinterpret_cast<jlong>(e);
 }
@@ -418,41 +428,74 @@ Java_dev_abdullah_aithra_engine_LlamaNative_nativeEmbedFree(JNIEnv *, jobject, j
     delete e;
 }
 
-// The pooled embedding of [text], L2-normalised.
-extern "C" JNIEXPORT jfloatArray JNICALL
-Java_dev_abdullah_aithra_engine_LlamaNative_nativeEmbed(JNIEnv *env, jobject, jlong handle, jstring text) {
+// The pooled, L2-normalised embeddings of [texts], in order. Whole texts
+// are packed into one llama_decode, each its own sequence, while they fit
+// the context and its sequences; the encoder masks attention between
+// sequences, so each embedding is the one the text would get alone.
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_dev_abdullah_aithra_engine_LlamaNative_nativeEmbedBatch(
+        JNIEnv *env, jobject, jlong handle, jobjectArray jtexts) {
     auto *e = reinterpret_cast<Embedder *>(handle);
-    std::vector<llama_token> tokens = tokenize(llama_model_get_vocab(e->model), to_utf8(env, text), true);
-    if ((int) tokens.size() > e->n_ctx) tokens.resize(e->n_ctx);
-    if (tokens.empty()) {
-        throw_java(env, "Nothing to embed");
-        return nullptr;
+    const llama_vocab *vocab = llama_model_get_vocab(e->model);
+    jsize n = env->GetArrayLength(jtexts);
+    std::vector<std::vector<llama_token>> texts(n);
+    for (jsize i = 0; i < n; ++i) {
+        auto t = (jstring) env->GetObjectArrayElement(jtexts, i);
+        texts[i] = tokenize(vocab, to_utf8(env, t), true);
+        env->DeleteLocalRef(t);
+        if ((int) texts[i].size() > e->n_ctx) texts[i].resize(e->n_ctx);
+        if (texts[i].empty()) {
+            throw_java(env, "Nothing to embed");
+            return nullptr;
+        }
     }
-    llama_batch batch = llama_batch_init((int32_t) tokens.size(), 0, 1);
-    for (size_t i = 0; i < tokens.size(); ++i) {
-        batch.token[i] = tokens[i];
-        batch.pos[i] = (llama_pos) i;
-        batch.n_seq_id[i] = 1;
-        batch.seq_id[i][0] = 0;
-        batch.logits[i] = 1;
+    const int cap = e->n_ctx;
+    jobjectArray out = env->NewObjectArray(n, env->FindClass("[F"), nullptr);
+    llama_batch batch = llama_batch_init(e->n_ctx, 0, 1);
+    std::vector<float> v(e->n_embd);
+    jsize next = 0;
+    while (next < n) {
+        const jsize first = next;
+        batch.n_tokens = 0;
+        // The first text always fits: it was truncated to the context.
+        while (next < n && next - first < e->n_seq &&
+               (batch.n_tokens == 0 || batch.n_tokens + (int) texts[next].size() <= cap)) {
+            const auto seq = (llama_seq_id) (next - first);
+            for (size_t p = 0; p < texts[next].size(); ++p) {
+                const int k = batch.n_tokens++;
+                batch.token[k] = texts[next][p];
+                batch.pos[k] = (llama_pos) p;
+                batch.n_seq_id[k] = 1;
+                batch.seq_id[k][0] = seq;
+                batch.logits[k] = 1;
+            }
+            ++next;
+        }
+        llama_memory_clear(llama_get_memory(e->ctx), true);
+        if (llama_decode(e->ctx, batch) != 0) {
+            llama_batch_free(batch);
+            throw_java(env, "llama.cpp could not embed the text");
+            return nullptr;
+        }
+        for (jsize i = first; i < next; ++i) {
+            const float *embd = llama_get_embeddings_seq(e->ctx, (llama_seq_id) (i - first));
+            if (!embd) {
+                llama_batch_free(batch);
+                throw_java(env, "llama.cpp could not embed the text");
+                return nullptr;
+            }
+            double norm = 0;
+            for (int d = 0; d < e->n_embd; ++d) norm += (double) embd[d] * embd[d];
+            norm = std::sqrt(norm);
+            for (int d = 0; d < e->n_embd; ++d) v[d] = norm > 0 ? (float) (embd[d] / norm) : embd[d];
+            jfloatArray arr = env->NewFloatArray(e->n_embd);
+            env->SetFloatArrayRegion(arr, 0, e->n_embd, v.data());
+            env->SetObjectArrayElement(out, i, arr);
+            env->DeleteLocalRef(arr);
+        }
     }
-    batch.n_tokens = (int32_t) tokens.size();
-    llama_memory_clear(llama_get_memory(e->ctx), true);
-    int rc = llama_decode(e->ctx, batch);
     llama_batch_free(batch);
-    const float *embd = rc == 0 ? llama_get_embeddings_seq(e->ctx, 0) : nullptr;
-    if (!embd) {
-        throw_java(env, "llama.cpp could not embed the text");
-        return nullptr;
-    }
-    std::vector<float> out(embd, embd + e->n_embd);
-    double norm = 0;
-    for (float v : out) norm += (double) v * v;
-    norm = std::sqrt(norm);
-    if (norm > 0) for (float &v : out) v = (float) (v / norm);
-    jfloatArray arr = env->NewFloatArray(e->n_embd);
-    env->SetFloatArrayRegion(arr, 0, e->n_embd, out.data());
-    return arr;
+    return out;
 }
 
 // -- Token counts ---------------------------------------------------------------

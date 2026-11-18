@@ -61,6 +61,7 @@ class _ChatViewState extends State<ChatView> {
     _composer.text.text = _session.conversation?.draft ?? '';
     _composer.text.addListener(_onDraftChanged);
     _composer.summarise = _summarise;
+    _composer.docs.addListener(_prepareDocs);
     _session.incoming.addListener(_takeIncoming);
     _takeIncoming();
     _scroll.addListener(() {
@@ -81,6 +82,15 @@ class _ChatViewState extends State<ChatView> {
       });
     } else {
       _takeReveal();
+    }
+  }
+
+  /// Starts reading and indexing each document as it lands in the
+  /// composer, so it is ready by the time the question is.
+  void _prepareDocs() {
+    final preparer = context.services.preparer;
+    for (final d in _composer.docs.value) {
+      preparer.prepare(d);
     }
   }
 

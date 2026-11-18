@@ -3,7 +3,6 @@ package dev.abdullah.aithra.engine
 import android.content.Context
 import android.util.Log
 import dev.abdullah.aithra.Events
-import dev.abdullah.aithra.InferenceService
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -27,7 +26,6 @@ class EngineHost(private val context: Context) {
     private val queued = HashSet<Long>()
     private val cancelled = HashSet<Long>()
     private val background = HashSet<Long>()
-    private val stoppedByUser = HashSet<Long>()
     private var running: Long? = null
 
     /** What the loaded [engine] was loaded with, and what that load measured. */
@@ -36,16 +34,6 @@ class EngineHost(private val context: Context) {
 
     fun <T> submit(block: () -> T, onResult: (Result<T>) -> Unit) {
         worker.execute { onResult(runCatching(block)) }
-    }
-
-    /** Like [submit], with the process kept in the foreground while it runs. */
-    fun <T> submitHeld(block: () -> T, onResult: (Result<T>) -> Unit) {
-        InferenceService.acquire(context)
-        worker.execute {
-            val result = runCatching(block)
-            InferenceService.release(context)
-            onResult(result)
-        }
     }
 
     /**
@@ -69,19 +57,6 @@ class EngineHost(private val context: Context) {
         if (requestId !in queued) return@synchronized
         cancelled += requestId
         if (running == requestId) engine?.cancel()
-    }
-
-    /**
-     * Stops the running generation because the user asked to (the "Aithra
-     * is thinking" notification's Stop). Its result says `stopped`, so the
-     * app keeps the partial reply as it does for its own Stop button rather
-     * than reporting it as cut short by Android.
-     */
-    fun stopRunning() = synchronized(lock) {
-        val id = running ?: return@synchronized
-        stoppedByUser += id
-        cancelled += id
-        engine?.cancel()
     }
 
     /**
@@ -152,7 +127,7 @@ class EngineHost(private val context: Context) {
                 running = requestId
                 current.resetCancel()
                 if (requestId in cancelled) {
-                    return GenerateStats.cancelledBeforeStart.toMap() + ("stopped" to (requestId in stoppedByUser))
+                    return GenerateStats.cancelledBeforeStart.toMap()
                 }
             }
             val sampler = RssSampler().also { it.start() }
@@ -161,15 +136,13 @@ class EngineHost(private val context: Context) {
             } finally {
                 sampler.stop()
             }
-            val stopped = synchronized(lock) { requestId in stoppedByUser }
-            return stats.toMap() + ("peakRssMb" to sampler.peakMb) + ("stopped" to stopped)
+            return stats.toMap() + ("peakRssMb" to sampler.peakMb)
         } finally {
             synchronized(lock) {
                 running = null
                 queued -= requestId
                 cancelled -= requestId
                 background -= requestId
-                stoppedByUser -= requestId
             }
         }
     }
@@ -195,10 +168,9 @@ class EngineHost(private val context: Context) {
     /**
      * Frees the model once the work already queued has run. For when the
      * app's UI is gone for good (swiped from recents): nothing will use the
-     * model again in this process, and a reopened app loads it afresh. A
-     * reply still generating under the foreground service finishes first.
+     * model again in this process, and a reopened app loads it afresh.
      */
-    fun releaseWhenIdle() = submit({ unload() }) { InferenceService.stopIfIdle(context) }
+    fun releaseWhenIdle() = submit({ unload() }) {}
 }
 
 /** Samples this process's resident set size until stopped and keeps the peak. */

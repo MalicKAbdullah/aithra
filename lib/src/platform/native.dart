@@ -118,6 +118,31 @@ class NativeBridge {
   Future<void> cancel(int requestId) =>
       _channel.invokeMethod('engine.cancel', {'requestId': requestId});
 
+  /// Whether an Aithra activity is on screen; `visibility` events follow
+  /// every change.
+  Future<bool> appVisible() => _call<bool>('app.visible');
+
+  /// Whether a reply is in progress in any Flutter engine; `replying`
+  /// events follow every change.
+  Future<bool> appReplying() => _call<bool>('app.replying');
+
+  /// Reply [id], which the user waits for, has begun: while they are away
+  /// from Aithra, a notification keeps it running (its Stop sends a
+  /// `reply` event of kind `stop`).
+  Future<void> replyBegin(int id) =>
+      _channel.invokeMethod('reply.begin', {'id': id});
+
+  /// Reply [id] has ended. With [readyTitle], it delivered something the
+  /// user has not seen, announced unless its screen (the app, or this Ask
+  /// sheet) is showing: tapping it opens [convId], or the Ask sheet without
+  /// one.
+  Future<void> replyEnd(int id, {String? convId, String? readyTitle}) =>
+      _channel.invokeMethod('reply.end', {
+        'id': id,
+        'convId': convId,
+        'title': readyTitle,
+      });
+
   Future<void> unload() => _channel.invokeMethod('engine.unload');
 
   // -- Encrypted chat store (Android SQLite, see ChatDb.kt) ----------------
@@ -413,6 +438,32 @@ class NativeBridge {
     }),
   );
 
+  /// Embeds up to [limit] passages of document [id] that have no vector
+  /// yet: how many it embedded (0 once all are done), and how many of the
+  /// document's [total] passages have one now.
+  Future<({int embedded, int indexed, int total})> indexDocument(
+    String modelPath,
+    String id,
+    int limit,
+  ) async {
+    final m = await _map('doc.index', {
+      'modelPath': modelPath,
+      'id': id,
+      'limit': limit,
+    });
+    return (
+      embedded: m['embedded']! as int,
+      indexed: m['indexed']! as int,
+      total: m['total']! as int,
+    );
+  }
+
+  /// Documents sent in chats with scanned pages still to read or, with
+  /// [withPassages], passages still to embed.
+  Future<List<Map<String, Object?>>> unpreparedDocuments({
+    required bool withPassages,
+  }) => _rows('doc.unprepared', {'withPassages': withPassages});
+
   /// The [limit] passages of [ids] closest in meaning to [query].
   Future<List<Map<String, Object?>>> searchDocuments(
     String modelPath,
@@ -442,25 +493,6 @@ class NativeBridge {
   /// waits. An `inbox` event says something new arrived.
   Future<Map<String, Object?>?> takeInbox() async =>
       _optMap(await _channel.invokeMethod<Object?>('inbox.take'));
-
-  /// Shows or updates the notification [tag]; with [done] it is an ongoing
-  /// progress notification, without it one the user can swipe away.
-  Future<void> notifyProgress({
-    required String tag,
-    required String title,
-    required String text,
-    int? done,
-    int? total,
-  }) => _channel.invokeMethod('notify.progress', {
-    'tag': tag,
-    'title': title,
-    'text': text,
-    'done': done,
-    'total': total,
-  });
-
-  Future<void> cancelNotification(String tag) =>
-      _channel.invokeMethod('notify.cancel', {'tag': tag});
 
   /// Language tags and English names, the user's own languages first.
   Future<List<({String tag, String name})>> languages() async => [
@@ -523,6 +555,11 @@ class NativeBridge {
 
   Future<void> deleteFile(String path) =>
       _channel.invokeMethod('file.delete', {'path': path});
+
+  /// Asks for the notification permission unless it is granted or was
+  /// asked before; replies and downloads notify only once it is granted.
+  Future<void> askNotificationsOnce() =>
+      _channel.invokeMethod('notifications.askOnce');
 
   /// Starts (or returns the running) download of [fileName]; it resumes
   /// after connection drops and is checked against [sha256].

@@ -17,6 +17,8 @@ import 'package:aithra/src/platform/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fake_replies.dart';
+
 class MemVault extends Vault {
   MemVault() : super('/dev/null', Uint8List(32));
   final Map<String, Object?> docs = {};
@@ -47,7 +49,7 @@ Prompt kindOf(List<EngineTurn> turns) {
 
 /// A loaded model that answers each kind of memory prompt from [answers],
 /// and an embedding model whose vectors come from [vectors].
-class FakeModel extends NativeBridge {
+class FakeModel extends NativeBridge with FakeReplies {
   FakeModel._(this._events)
     : super(channel: const MethodChannel('fake'), events: _events.stream);
   factory FakeModel() => FakeModel._(StreamController.broadcast());

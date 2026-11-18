@@ -15,10 +15,11 @@ typedef SummaryProgress = ({int done, int total});
 
 /// A summary of a whole document, which rarely fits in one prompt: each
 /// group of pages is summarised on its own (map), then the part summaries
-/// are combined (reduce). It runs as background work on the engine, giving
-/// way to every chat reply and picking up where it left off; each finished
-/// part is stored, so closing the app loses at most the part in progress.
-/// The summary is posted to the document's chat as a reply.
+/// are combined (reduce). The user starts it from the document. It runs as
+/// background work on the engine, giving way to every chat reply, pausing
+/// while Aithra is off screen and picking up where it left off; each
+/// finished part is stored, so closing the app loses at most the part in
+/// progress. The summary is posted to the document's chat as a reply.
 class DocSummarizer extends ChangeNotifier {
   DocSummarizer({
     required NativeBridge native,
@@ -58,11 +59,10 @@ class DocSummarizer extends ChangeNotifier {
     failures.remove(sent.id);
     running[sent.id] = (done: 0, total: 0);
     notifyListeners();
-    final tag = 'summary-${sent.id}';
     try {
       // The stored row, with the parts of a summary already under way.
       final doc = DocInfo.fromMap((await _native.document(sent.id))!);
-      final summary = doc.summary ?? await _summarize(doc, tag);
+      final summary = doc.summary ?? await _summarize(doc);
       await _native.dbAddMessage(
         convId: convId,
         role: 'model',
@@ -71,25 +71,19 @@ class DocSummarizer extends ChangeNotifier {
         stats: null,
         now: DateTime.now().millisecondsSinceEpoch,
       );
-      await _native.notifyProgress(
-        tag: tag,
-        title: 'Summary ready',
-        text: doc.name,
-      );
       _onPosted(convId);
     } on PlatformException catch (e) {
       failures[sent.id] = e.message ?? e.code;
-      await _native.cancelNotification(tag);
     } on StateError catch (e) {
       failures[sent.id] = e.message;
-      await _native.cancelNotification(tag);
     } finally {
       running.remove(sent.id);
       notifyListeners();
     }
   }
 
-  Future<String> _summarize(DocInfo doc, String tag) async {
+  Future<String> _summarize(DocInfo doc) async {
+    await _assistant.engine.whenHousekeepingAllowed();
     final spec = await _ready();
     final contextSize = _assistant.engine.contextSize!;
     final pages = [
@@ -120,13 +114,6 @@ class DocSummarizer extends ChangeNotifier {
     for (var i = plan.parts.length; i < plan.groups.length; i++) {
       running[doc.id] = (done: i, total: plan.groups.length);
       notifyListeners();
-      await _native.notifyProgress(
-        tag: tag,
-        title: 'Summarising ${doc.name}',
-        text: 'Part ${i + 1} of ${plan.groups.length}',
-        done: i,
-        total: plan.groups.length,
-      );
       final (from, to) = plan.groups[i];
       final group = pages.sublist(from, to + 1);
       final range = doc.paged
@@ -220,6 +207,8 @@ class DocSummarizer extends ChangeNotifier {
     final engine = _assistant.engine;
     while (true) {
       await engine.whenIdle();
+      // Reloading the model below is housekeeping too.
+      await engine.whenHousekeepingAllowed();
       final spec = _assistant.activeModel;
       final backend = spec == null ? null : _assistant.backendFor(spec);
       if (spec == null || backend == null) {

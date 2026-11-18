@@ -267,6 +267,9 @@ Future<DocumentContext?> readDocuments({
   );
 }
 
+/// Tokens the vision model may write for one scanned page.
+const int readPageTokens = 1024;
+
 /// The instruction that has the vision model read a scanned page.
 const String readPagePrompt =
     'Write out all the text on this page exactly as it appears, in reading '

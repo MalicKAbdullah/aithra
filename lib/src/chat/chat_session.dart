@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import '../assistant.dart';
 import '../docs/documents.dart';
 import '../engine/engine_service.dart';
+import '../engine/run_metrics.dart';
 import '../memory/memory_keeper.dart';
 import '../memory/profile.dart';
 import '../memory/recall_index.dart';
@@ -318,6 +319,7 @@ class ChatSession extends ChangeNotifier {
     }
     _assistant.engine.preemptBackground();
     unawaited(HapticFeedback.lightImpact());
+    unawaited(_native.askNotificationsOnce());
     error = null;
     final now = DateTime.now();
     // Optimistic: the message shows before anything is written.
@@ -407,9 +409,16 @@ class ChatSession extends ChangeNotifier {
 
   Future<void> _reply({String? recallQuery, ChatMessage? continuing}) async {
     final done = _replying = Completer<void>();
+    final hold = _assistant.engine.holdReply(onStop: () => unawaited(stop()));
+    var delivered = false;
     try {
-      await _replyIn(_conversation!, recallQuery, continuing);
+      delivered = await _replyIn(_conversation!, recallQuery, continuing);
     } finally {
+      final conv = _conversation!;
+      hold.end(
+        convId: conv.id,
+        readyTitle: delivered && !_stopRequested ? conv.title : null,
+      );
       _replying = null;
       done.complete();
     }
@@ -417,7 +426,8 @@ class ChatSession extends ChangeNotifier {
 
   /// Answers the latest message, or with [continuing] (the newest reply,
   /// cut off at [replyTokens]) writes the rest of that reply onto it.
-  Future<void> _replyIn(
+  /// Returns whether a reply was saved.
+  Future<bool> _replyIn(
     ConversationInfo conv,
     String? recallQuery,
     ChatMessage? continuing,
@@ -430,18 +440,20 @@ class ChatSession extends ChangeNotifier {
       // Stopped while it waited for another chat's reply.
       phase = ReplyPhase.idle;
       notifyListeners();
-      return;
+      return false;
     }
     if (phase == ReplyPhase.queued) {
       phase = ReplyPhase.preparing;
       notifyListeners();
     }
+    final clock = Stopwatch()..start();
     try {
       final prepared = await _assistant.prepare();
       if (prepared == null) {
         throw StateError('No model is ready. Download one in Models.');
       }
       final (spec, _) = prepared;
+      logStage('aithra.reply', 'modelReadyMs=${clock.elapsedMilliseconds}');
       final contextSize = _assistant.engine.contextSize!;
       final fresh = ConversationInfo.fromMap(
         (await _native.dbConversation(conv.id))!,
@@ -514,7 +526,8 @@ class ChatSession extends ChangeNotifier {
       // Documents come first in what the newest turn carries, then the
       // profile lines and recalled messages in what they leave.
       final docs = await _documents(conv.id, spec);
-      if (_stopRequested) return;
+      if (_stopRequested) return false;
+      final retrieval = Stopwatch()..start();
       final reading = await readDocuments(
         native: _native,
         docs: docs,
@@ -523,6 +536,14 @@ class ChatSession extends ChangeNotifier {
         embedderPath: _assistant.models.pathOf(embeddingModel),
         costs: counted.costs,
       );
+      if (docs.isNotEmpty) {
+        logStage(
+          'aithra.docs',
+          'retrievalMs=${retrieval.elapsedMilliseconds} '
+              'whole=${reading?.whole} searched=${reading?.searched} '
+              'passages=${reading?.cited.length} tokens=${reading?.tokens}',
+        );
+      }
       final docTokens = reading?.tokens ?? 0;
       final turnContext = await fitTurnContext(
         related: profile.related,
@@ -568,22 +589,35 @@ class ChatSession extends ChangeNotifier {
       }
 
       // Stop pressed while the model loaded or the prompt was assembled.
-      if (_stopRequested) return;
+      if (_stopRequested) return false;
       final generation = _assistant.engine.generate(
         turns,
         maxTokens: replyTokens,
         keepContext: true,
       );
       _generation = generation;
+      final promptReadyMs = clock.elapsedMilliseconds;
       final sub = generation.text.listen((chunk) {
         if (phase != ReplyPhase.streaming) {
           phase = ReplyPhase.streaming;
           notifyListeners();
+          logStage(
+            'aithra.reply',
+            'promptReadyMs=$promptReadyMs '
+                'firstTokenMs=${clock.elapsedMilliseconds}',
+          );
         }
         streaming.add(chunk);
       });
       final metrics = await generation.done;
       await sub.cancel();
+      logStage(
+        'aithra.reply',
+        'doneMs=${clock.elapsedMilliseconds} '
+            'engineTtftMs=${metrics.ttftMs?.round()} '
+            'promptTokens=${metrics.promptTokens} '
+            'reusedTokens=${metrics.reusedTokens}',
+      );
       // Only a prompt prefilled in full measures the whole prompt's ratio.
       if (counted.estimated &&
           metrics.reusedTokens == 0 &&
@@ -597,8 +631,7 @@ class ChatSession extends ChangeNotifier {
           unawaited(_assistant.observeTokensPerByte(spec, tokens / bytes));
         }
       }
-      final interrupted =
-          generation.cancelled && !_stopRequested && !generation.stoppedByUser;
+      final interrupted = generation.cancelled && !_stopRequested;
       // A continuation keeps its leading space: it joins the stored reply.
       final text = continuing == null
           ? streaming.full.trim()
@@ -609,7 +642,7 @@ class ChatSession extends ChangeNotifier {
               'Android needed memory back before Aithra could answer. '
               'Try again.';
         }
-        return;
+        return false;
       }
       if (continuing != null) {
         final content = continuing.content + text;
@@ -632,7 +665,7 @@ class ChatSession extends ChangeNotifier {
         unawaited(HapticFeedback.selectionClick());
         unawaited(_store.upsert(conv.id));
         if (!fresh.private) _recallIndex.indexInBackground();
-        return;
+        return true;
       }
       final saved = await _native.dbAddMessage(
         convId: conv.id,
@@ -711,8 +744,10 @@ class ChatSession extends ChangeNotifier {
         replySeq,
         _afterReply(conv.id, replySeq, history, asked.content, text),
       );
+      return true;
     } catch (e) {
       error = e is PlatformException ? (e.message ?? e.code) : '$e';
+      return false;
     } finally {
       _queue.release(this);
       _generation = null;
@@ -855,6 +890,8 @@ class ChatSession extends ChangeNotifier {
     if (!spec.vision || docs.every((d) => d.unreadPages == 0)) {
       return docs;
     }
+    final clock = Stopwatch()..start();
+    var read = 0;
     try {
       for (final d in docs.where((d) => d.unreadPages > 0)) {
         final pages = await _native.unreadPages(d.id);
@@ -870,7 +907,7 @@ class ChatSession extends ChangeNotifier {
             [
               EngineTurn('user', readPagePrompt, [image!]),
             ],
-            maxTokens: replyTokens,
+            maxTokens: readPageTokens,
             temperature: 0,
           );
           _generation = g;
@@ -878,11 +915,16 @@ class ChatSession extends ChangeNotifier {
           await g.done;
           if (g.cancelled) return docs;
           await _native.setPageText(d.id, page, text);
+          read++;
         }
       }
     } finally {
       _generation = null;
       activity.value = null;
+      logStage(
+        'aithra.docs',
+        'scannedAtQuestion pages=$read ms=${clock.elapsedMilliseconds}',
+      );
     }
     return [
       for (final r in await _native.documentsOf(convId)) DocInfo.fromMap(r),

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 
 import '../engine/engine_service.dart';
@@ -127,16 +129,23 @@ String? pickBackend(List<BackendResult> results) {
 /// Progress callback: (backends finished, backends total, current label).
 typedef CalibrationProgress = void Function(int done, int total, String label);
 
-/// Android took the model's memory back during a calibration step, so the
-/// step's outcome says nothing about the backend.
+/// Android took the model's memory back during a calibration step, or the
+/// app left the screen, so the step's outcome says nothing about the
+/// backend.
 class _Interrupted implements Exception {}
 
 /// Tries every candidate backend of a model: load, answer the probes with
 /// greedy decoding, then a fixed-size speed run.
+///
+/// Calibration is housekeeping unless a reply waits for it: with Aithra
+/// off screen and no reply in progress, the backend being tried stops and
+/// is tried again from its load once the app is back, since a process
+/// Android may freeze measures nothing.
 class CalibrationRunner {
   CalibrationRunner(this._engine);
 
   final EngineService _engine;
+  Generation? _running;
 
   /// The calibration, or null when Android interrupted it; an interrupted
   /// run is not a verdict and is run again later.
@@ -147,16 +156,30 @@ class CalibrationRunner {
     required CalibrationProgress onProgress,
   }) async {
     final results = <BackendResult>[];
-    for (final backend in spec.backends) {
-      onProgress(results.length, spec.backends.length, backend.label);
-      final releases = _engine.releases;
-      try {
-        final result = await _tryBackend(spec, path, backend);
-        if (_engine.releases != releases) return null;
-        results.add(result);
-      } on _Interrupted {
-        return null;
+    final hidden = _engine.hidden.listen((_) {
+      if (!_engine.replying) unawaited(_running?.cancel());
+    });
+    try {
+      for (final backend in spec.backends) {
+        onProgress(results.length, spec.backends.length, backend.label);
+        while (true) {
+          await _engine.whenAttended();
+          final releases = _engine.releases;
+          final pauses = _engine.pauses;
+          bool paused() => _engine.pauses != pauses && !_engine.replying;
+          try {
+            final result = await _tryBackend(spec, path, backend, paused);
+            if (_engine.releases != releases) return null;
+            if (paused()) continue;
+            results.add(result);
+            break;
+          } on _Interrupted {
+            if (_engine.releases != releases || !paused()) return null;
+          }
+        }
       }
+    } finally {
+      await hidden.cancel();
     }
     onProgress(results.length, spec.backends.length, '');
     return Calibration(
@@ -172,29 +195,43 @@ class CalibrationRunner {
     ModelSpec spec,
     String path,
     BackendOption backend,
+    bool Function() paused,
   ) async {
     LoadResult? load;
+    // A load cannot be stopped; a pause during it is noticed before the
+    // next generation.
+    Generation start(Generation g) {
+      if (paused()) {
+        unawaited(g.cancel());
+      }
+      return _running = g;
+    }
+
     try {
       // Unload first so every backend's load time is measured cold.
       await _engine.release();
       load = await _engine.ensureLoaded(spec, path, backend);
       final answers = <String>[];
       for (final probe in probes) {
-        final g = _engine.generate(
-          [EngineTurn('user', probe.prompt)],
-          maxTokens: probeMaxTokens,
-          temperature: 0,
+        final g = start(
+          _engine.generate(
+            [EngineTurn('user', probe.prompt)],
+            maxTokens: probeMaxTokens,
+            temperature: 0,
+          ),
         );
         final text = await g.text.join();
         await g.done;
         if (g.cancelled) throw _Interrupted();
         answers.add(text);
       }
-      final speedRun = _engine.generate(
-        const [EngineTurn('user', speedPrompt)],
-        maxTokens: speedDecodeTokens,
-        temperature: 0,
-        ignoreEos: true,
+      final speedRun = start(
+        _engine.generate(
+          const [EngineTurn('user', speedPrompt)],
+          maxTokens: speedDecodeTokens,
+          temperature: 0,
+          ignoreEos: true,
+        ),
       );
       await speedRun.text.drain<void>();
       final speed = await speedRun.done;

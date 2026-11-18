@@ -9,7 +9,9 @@ import 'package:aithra/src/platform/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class FakeNative extends NativeBridge {
+import 'fake_replies.dart';
+
+class FakeNative extends NativeBridge with FakeReplies {
   FakeNative._(StreamController<Object?> events)
     : super(channel: const MethodChannel('fake'), events: events.stream);
   factory FakeNative() => FakeNative._(StreamController.broadcast());

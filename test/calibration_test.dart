@@ -10,6 +10,8 @@ import 'package:aithra/src/platform/native.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fake_replies.dart';
+
 BackendResult result(
   String id,
   List<String> answers, {
@@ -34,7 +36,7 @@ BackendResult result(
 );
 
 /// Loads instantly; every generation reports [cancelled].
-class CancellingEngine extends NativeBridge {
+class CancellingEngine extends NativeBridge with FakeReplies {
   CancellingEngine()
     : super(
         channel: const MethodChannel('fake'),
@@ -68,6 +70,66 @@ class CancellingEngine extends NativeBridge {
     bool keepContext = false,
     bool background = false,
   }) async => {'cancelled': cancelled, 'stopped': false, 'promptTokens': 10};
+
+  @override
+  Future<void> unload() async {}
+}
+
+/// Loads instantly and answers every generation, except that the app
+/// leaves the screen during the first one, which the runner's cancel ends.
+class LeavingEngine extends NativeBridge with FakeReplies {
+  LeavingEngine._(this._events)
+    : super(channel: const MethodChannel('fake'), events: _events.stream);
+  factory LeavingEngine() => LeavingEngine._(StreamController.broadcast());
+
+  final StreamController<Object?> _events;
+  final List<String> loads = [];
+  Completer<Map<String, Object?>>? _first;
+
+  void setVisible(bool visible) =>
+      _events.add({'type': 'visibility', 'visible': visible});
+
+  @override
+  Future<Map<String, Object?>> load({
+    required String runtime,
+    required String path,
+    required String backend,
+    required int? threads,
+    required bool vision,
+    required int? maxTokens,
+  }) async {
+    loads.add(backend);
+    return {
+      'contextSize': 4096,
+      'loadMs': 1.0,
+      'peakRssMb': 1.0,
+      'cacheWrittenMb': 0.0,
+    };
+  }
+
+  @override
+  Future<Map<String, Object?>> generate({
+    required int requestId,
+    required List<EngineTurn> turns,
+    required int maxTokens,
+    required double temperature,
+    required bool ignoreEos,
+    bool keepContext = false,
+    bool background = false,
+  }) async {
+    if (_first == null) {
+      _first = Completer();
+      setVisible(false);
+      return _first!.future;
+    }
+    return {'cancelled': false, 'promptTokens': 10};
+  }
+
+  @override
+  Future<void> cancel(int requestId) async {
+    final first = _first!;
+    if (!first.isCompleted) first.complete({'cancelled': true});
+  }
 
   @override
   Future<void> unload() async {}
@@ -213,6 +275,24 @@ void main() {
         onProgress: (_, _, _) {},
       );
       expect(result, isNull);
+    });
+
+    test('leaving the app pauses the run, which tries the interrupted '
+        'backend again from its load once the app is back', () async {
+      final engine = LeavingEngine();
+      final spec = catalog.first;
+      final run = CalibrationRunner(
+        EngineService(engine),
+      ).run(spec, '/m', 1, onProgress: (_, _, _) {});
+      await pumpEventQueue();
+      expect(engine.loads, [spec.backends.first.nativeId]);
+      engine.setVisible(true);
+      final result = await run;
+      expect(result!.results, hasLength(spec.backends.length));
+      expect(engine.loads, [
+        spec.backends.first.nativeId,
+        for (final b in spec.backends) b.nativeId,
+      ]);
     });
 
     test('a run that completes gives one result per backend', () async {

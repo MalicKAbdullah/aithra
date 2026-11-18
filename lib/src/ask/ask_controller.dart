@@ -66,6 +66,7 @@ class AskController extends ChangeNotifier {
   RunMetrics? _metrics;
   String _prompt = '';
   Generation? _generation;
+  bool _stopRequested = false;
 
   /// Loads the lock first, so the sheet is gated before anything of
   /// Aithra's shows, then the data key, settings and model list, and
@@ -157,6 +158,9 @@ class AskController extends ChangeNotifier {
     answer.reset();
     phase = AskPhase.preparing;
     notifyListeners();
+    _stopRequested = false;
+    final hold = _engine.holdReply(onStop: () => unawaited(stop()));
+    var complete = false;
     try {
       final prepared = await _assistant.prepare();
       final (spec, _) = prepared!;
@@ -194,7 +198,8 @@ class AskController extends ChangeNotifier {
             (counted.overhead ?? 0),
         cost: cost,
       );
-      if (template != chosen) return;
+      // Stop pressed while the model loaded or the prompt was assembled.
+      if (template != chosen || _stopRequested) return;
       final g = _generation = _engine.generate([
         EngineTurn('system', system),
         EngineTurn('user', message.text),
@@ -210,12 +215,18 @@ class AskController extends ChangeNotifier {
         answer.add(chunk);
       });
       _metrics = await g.done;
+      complete = !g.cancelled;
       await sub.cancel();
     } on PlatformException catch (e) {
       error = e.message ?? e.code;
     } on StateError catch (e) {
       error = e.message;
     } finally {
+      hold.end(
+        readyTitle: template == chosen && complete && result.isNotEmpty
+            ? 'Ask Aithra · ${chosen.label}'
+            : null,
+      );
       _generation = null;
       if (template == chosen) {
         phase = AskPhase.done;
@@ -224,7 +235,12 @@ class AskController extends ChangeNotifier {
     }
   }
 
-  Future<void> stop() async => _generation?.cancel();
+  /// Stops the answer in any phase: while the model loads, while the
+  /// prompt is assembled, or while it streams.
+  Future<void> stop() async {
+    _stopRequested = true;
+    await _generation?.cancel();
+  }
 
   /// The answer as it stands, including any tail not yet shown.
   String get result => answer.full.trim();

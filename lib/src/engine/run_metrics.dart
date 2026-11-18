@@ -1,3 +1,9 @@
+import 'package:flutter/foundation.dart';
+
+/// Writes one stage timing to logcat: Flutter sends print output there in
+/// every build mode, so `adb logcat -s flutter` measures a release build.
+void logStage(String tag, String message) => debugPrint('$tag $message');
+
 /// Counts and timings of one generation, as reported by the engine.
 /// A null field was not reported, and is shown as "—", never estimated.
 class RunMetrics {

@@ -1,7 +1,9 @@
 package dev.abdullah.aithra
 
+import android.app.Activity
 import android.app.Application
 import android.content.ComponentCallbacks2
+import android.os.Bundle
 import dev.abdullah.aithra.engine.Embedder
 import dev.abdullah.aithra.engine.EngineCache
 import dev.abdullah.aithra.engine.EngineHost
@@ -34,6 +36,48 @@ class AithraApplication : Application() {
     /** Activities showing Flutter (the app, the Ask sheet). Main thread. */
     var surfaces = 0
 
+    /** The replies the user waits for, and whether Aithra is on screen. Main thread. */
+    val replies = Replies(object : Replies.Host {
+        override fun startService() = InferenceService.start(this@AithraApplication)
+        override fun stopService() = InferenceService.stop(this@AithraApplication)
+        override fun postReady(note: Replies.ReadyNote) = ReplyNotifications.post(this@AithraApplication, note)
+        override fun visibilityChanged(visible: Boolean) =
+            Events.send(mapOf("type" to "visibility", "visible" to visible))
+        override fun replyingChanged(replying: Boolean) =
+            Events.send(mapOf("type" to "replying", "replying" to replying))
+    })
+
+    /** Aithra activities between onStart and onStop. */
+    private var started = 0
+
+    /**
+     * Aithra is on screen while any of its activities is started. The last
+     * one stopping is still within Android's grace period for starting a
+     * foreground service, which is why the service starts there and not
+     * later.
+     */
+    private val visibility = object : ActivityLifecycleCallbacks {
+        override fun onActivityStarted(activity: Activity) {
+            if (started++ == 0) replies.shown()
+            // The screen a finished reply belongs to is showing it now.
+            when (activity) {
+                is MainActivity -> ReplyNotifications.clearChats(activity)
+                is AskActivity -> ReplyNotifications.clearAsk(activity, activity.taskId)
+            }
+        }
+
+        override fun onActivityStopped(activity: Activity) {
+            // A configuration change stops one instance and starts the next.
+            if (--started == 0 && !activity.isChangingConfigurations) replies.hidden()
+        }
+
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+        override fun onActivityResumed(activity: Activity) = Unit
+        override fun onActivityPaused(activity: Activity) = Unit
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+        override fun onActivityDestroyed(activity: Activity) = Unit
+    }
+
     /**
      * The app and the Ask sheet run in engines of one group: a second
      * engine starts in a fraction of the time and memory of the first.
@@ -49,8 +93,7 @@ class AithraApplication : Application() {
     /**
      * Frees the models once the last Flutter activity has finished for
      * good: nothing will use them again in this process, and a reopened
-     * app loads them afresh. A reply still generating under the foreground
-     * service finishes first.
+     * app loads them afresh. A generation already queued finishes first.
      */
     fun releaseIfNoSurface() {
         if (surfaces > 0) return
@@ -65,6 +108,7 @@ class AithraApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        registerActivityLifecycleCallbacks(visibility)
         engineHost = EngineHost(this)
         db = ChatDb(this)
         embedder = Embedder(embedExec)

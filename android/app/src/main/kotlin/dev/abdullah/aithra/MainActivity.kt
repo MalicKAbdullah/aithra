@@ -26,7 +26,19 @@ class MainActivity : FlutterFragmentActivity() {
         // repeat it.
         if (savedInstanceState == null && intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0) {
             QuickActions.offer(intent)
+            openReadyChat(intent)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        openReadyChat(intent)
+    }
+
+    /** A "Reply ready" tap opens the chat the reply went to. */
+    private fun openReadyChat(intent: Intent) {
+        val chat = ReplyNotifications.chatOf(intent) ?: return
+        Inbox.hold(mapOf("kind" to "chat", "id" to chat))
     }
 
     override fun getCachedEngineGroupId(): String = app.engineGroupId()
@@ -70,10 +82,15 @@ object Inbox {
 
     fun take(): Map<String, Any?>? = pending.also { pending = null }
 
-    /** Holds [item] for the app and brings the app forward, or starts it. */
-    fun deliver(context: Context, item: Map<String, Any?>) {
+    /** Holds [item] for the app, which is running or starting. */
+    fun hold(item: Map<String, Any?>) {
         pending = item
         Events.send(mapOf("type" to "inbox"))
+    }
+
+    /** Holds [item] for the app and brings the app forward, or starts it. */
+    fun deliver(context: Context, item: Map<String, Any?>) {
+        hold(item)
         val task = context.getSystemService(ActivityManager::class.java).appTasks.firstOrNull {
             it.taskInfo.baseActivity?.className == MainActivity::class.java.name
         }

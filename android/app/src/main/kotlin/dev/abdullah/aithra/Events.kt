@@ -20,7 +20,13 @@ class EventStream : EventChannel.StreamHandler {
         Events.streams += this
     }
 
-    override fun onCancel(arguments: Any?) {
+    override fun onCancel(arguments: Any?) = close()
+
+    /**
+     * Stops sending to this engine. A destroyed engine never cancels its
+     * stream, so its activity closes it.
+     */
+    fun close() {
         sink = null
         Events.streams -= this
     }
