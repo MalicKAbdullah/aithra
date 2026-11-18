@@ -122,6 +122,10 @@ class NativeBridge {
   /// every change.
   Future<bool> appVisible() => _call<bool>('app.visible');
 
+  /// Whether a reply is in progress in any Flutter engine; `replying`
+  /// events follow every change.
+  Future<bool> appReplying() => _call<bool>('app.replying');
+
   /// Reply [id], which the user waits for, has begun: while they are away
   /// from Aithra, a notification keeps it running (its Stop sends a
   /// `reply` event of kind `stop`).
@@ -129,8 +133,9 @@ class NativeBridge {
       _channel.invokeMethod('reply.begin', {'id': id});
 
   /// Reply [id] has ended. With [readyTitle], it delivered something the
-  /// user has not seen, announced if they are away: tapping it opens
-  /// [convId], or the Ask sheet without one.
+  /// user has not seen, announced unless its screen (the app, or this Ask
+  /// sheet) is showing: tapping it opens [convId], or the Ask sheet without
+  /// one.
   Future<void> replyEnd(int id, {String? convId, String? readyTitle}) =>
       _channel.invokeMethod('reply.end', {
         'id': id,

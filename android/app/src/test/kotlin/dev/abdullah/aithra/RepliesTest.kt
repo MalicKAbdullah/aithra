@@ -9,8 +9,8 @@ class RepliesTest {
         override fun startService() { log += "start" }
         override fun stopService() { log += "stop" }
         override fun postReady(note: Replies.ReadyNote) { log += "ready ${note.chat}" }
-        override fun clearReady() { log += "clear" }
         override fun visibilityChanged(visible: Boolean) { log += if (visible) "shown" else "hidden" }
+        override fun replyingChanged(replying: Boolean) { log += "replying $replying" }
     }
 
     private val host = Host()
@@ -24,9 +24,9 @@ class RepliesTest {
     fun aReplyOnScreenShowsNothing() {
         host.log.clear()
         replies.begin(scopeA or 1)
-        replies.end(scopeA or 1, note("c1"))
-        // Nothing is started; ending with nothing running asks for no service.
-        assertEquals(listOf("stop"), host.log)
+        replies.end(scopeA or 1, note("c1"), ownerShown = true)
+        // The service is never started; stopping one that is not running does nothing.
+        assertEquals(listOf("replying true", "stop", "replying false"), host.log)
     }
 
     @Test
@@ -37,7 +37,7 @@ class RepliesTest {
         assertEquals(listOf("start", "hidden"), host.log)
         host.log.clear()
         replies.shown()
-        assertEquals(listOf("stop", "clear", "shown"), host.log)
+        assertEquals(listOf("stop", "shown"), host.log)
     }
 
     @Test
@@ -45,8 +45,18 @@ class RepliesTest {
         replies.begin(scopeA or 1)
         replies.hidden()
         host.log.clear()
-        replies.end(scopeA or 1, note("c1"))
-        assertEquals(listOf("ready c1", "stop"), host.log)
+        replies.end(scopeA or 1, note("c1"), ownerShown = false)
+        assertEquals(listOf("ready c1", "stop", "replying false"), host.log)
+    }
+
+    @Test
+    fun aReplyWhoseScreenIsHiddenBehindAnotherAithraScreenIsAnnounced() {
+        // The app's chat finishes while the Ask sheet is in front: Aithra is
+        // visible, but not the chat.
+        replies.begin(scopeA or 1)
+        host.log.clear()
+        replies.end(scopeA or 1, note("c1"), ownerShown = false)
+        assertEquals(listOf("ready c1", "stop", "replying false"), host.log)
     }
 
     @Test
@@ -54,17 +64,17 @@ class RepliesTest {
         replies.begin(scopeA or 1)
         replies.hidden()
         host.log.clear()
-        replies.end(scopeA or 1, null)
-        assertEquals(listOf("stop"), host.log)
+        replies.end(scopeA or 1, null, ownerShown = false)
+        assertEquals(listOf("stop", "replying false"), host.log)
     }
 
     @Test
     fun theServiceStaysWhileAnotherReplyRuns() {
         replies.begin(scopeA or 1)
-        replies.begin(scopeA or 2)
+        replies.begin(scopeB or 1)
         replies.hidden()
         host.log.clear()
-        replies.end(scopeA or 1, note("c1"))
+        replies.end(scopeA or 1, note("c1"), ownerShown = false)
         assertEquals(listOf("ready c1"), host.log)
     }
 
@@ -77,7 +87,7 @@ class RepliesTest {
         replies.endScope(scopeA)
         assertEquals(emptyList<String>(), host.log)
         replies.endScope(scopeB)
-        assertEquals(listOf("stop"), host.log)
+        assertEquals(listOf("stop", "replying false"), host.log)
     }
 
     @Test

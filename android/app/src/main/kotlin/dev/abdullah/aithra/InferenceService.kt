@@ -115,6 +115,9 @@ object ReplyNotifications {
     private const val EXTRA_CHAT = "dev.abdullah.aithra.CHAT"
     private const val EXTRA_TASK = "dev.abdullah.aithra.TASK"
 
+    // Chat ids are numbers, so no chat's tag starts with this.
+    private const val ASK_PREFIX = "ask-"
+
     fun openApp(context: Context): PendingIntent = PendingIntent.getActivity(
         context,
         0,
@@ -127,7 +130,7 @@ object ReplyNotifications {
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL, "Replies ready", NotificationManager.IMPORTANCE_DEFAULT),
         )
-        val tag = note.chat ?: "ask-${note.askTask}"
+        val tag = note.chat ?: askTag(note.askTask)
         val open = if (note.chat != null) {
             Intent(context, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -155,10 +158,19 @@ object ReplyNotifications {
         Log.i("aithra.replies", "reply ready posted")
     }
 
-    fun clear(context: Context) {
+    /** Clears every chat's "Reply ready": the app is showing. */
+    fun clearChats(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        for (n in manager.activeNotifications) if (n.id == ID) manager.cancel(n.tag, ID)
+        for (n in manager.activeNotifications) {
+            if (n.notification.channelId == CHANNEL && !n.tag.startsWith(ASK_PREFIX)) manager.cancel(n.tag, ID)
+        }
     }
+
+    /** Clears the "Reply ready" of the Ask sheet in [task]: it is showing. */
+    fun clearAsk(context: Context, task: Int) =
+        context.getSystemService(NotificationManager::class.java).cancel(askTag(task), ID)
+
+    private fun askTag(task: Int) = "$ASK_PREFIX$task"
 
     /** The chat a "Reply ready" tap opens, if [intent] is one. */
     fun chatOf(intent: Intent): String? = intent.getStringExtra(EXTRA_CHAT)

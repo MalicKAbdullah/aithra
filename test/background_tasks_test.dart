@@ -64,6 +64,9 @@ class FakeEngine extends NativeBridge with FakeReplies {
   void setVisible(bool visible) =>
       _events.add({'type': 'visibility', 'visible': visible});
 
+  void setReplyingAnywhere(bool replying) =>
+      _events.add({'type': 'replying', 'replying': replying});
+
   void stopFromNotification() => _events.add({'type': 'reply', 'kind': 'stop'});
 
   @override
@@ -203,6 +206,22 @@ void main() {
       expect(await stale, isNull);
       expect(native.begun, hasLength(1));
       expect(native.ended.single.$3, isNull);
+    });
+
+    test("the Ask sheet's reply interrupts the app's housekeeping, which "
+        'starts over once that reply ends', () async {
+      final result = engine.backgroundRun().generate(const [], maxTokens: 8);
+      await pumpEventQueue();
+      expect(native.started, hasLength(1));
+      native.setReplyingAnywhere(true);
+      await pumpEventQueue();
+      expect(native.cancelledIds, [native.started.single]);
+      expect(native.started, hasLength(1));
+      native.setReplyingAnywhere(false);
+      await pumpEventQueue();
+      expect(native.started, hasLength(2));
+      native.finish();
+      expect(await result, '{"add": []}');
     });
 
     test("the notification's Stop stops every held reply", () async {

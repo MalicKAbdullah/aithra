@@ -10,6 +10,7 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
 import dev.abdullah.aithra.engine.ChatTurn
 import dev.abdullah.aithra.engine.CpuFeatures
 import dev.abdullah.aithra.engine.Embedder
@@ -247,6 +248,7 @@ class NativeChannels(
             "engine.unload" -> onEngine(result) { engineHost.unload() }
 
             "app.visible" -> result.success(app.replies.visible)
+            "app.replying" -> result.success(app.replies.replying)
             "reply.begin" -> {
                 app.replies.begin(nativeId(call.argument<Int>("id")!!))
                 result.success(null)
@@ -256,6 +258,7 @@ class NativeChannels(
                 app.replies.end(
                     nativeId(call.argument<Int>("id")!!),
                     title?.let { Replies.ReadyNote(it, call.argument<String>("convId"), activity.taskId) },
+                    ownerShown = activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
                 )
                 result.success(null)
             }

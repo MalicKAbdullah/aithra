@@ -12,6 +12,9 @@ mixin FakeReplies on NativeBridge {
   Future<bool> appVisible() async => true;
 
   @override
+  Future<bool> appReplying() async => false;
+
+  @override
   Future<void> replyBegin(int id) async => begun.add(id);
 
   @override

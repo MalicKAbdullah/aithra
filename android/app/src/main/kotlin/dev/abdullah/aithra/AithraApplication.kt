@@ -41,9 +41,10 @@ class AithraApplication : Application() {
         override fun startService() = InferenceService.start(this@AithraApplication)
         override fun stopService() = InferenceService.stop(this@AithraApplication)
         override fun postReady(note: Replies.ReadyNote) = ReplyNotifications.post(this@AithraApplication, note)
-        override fun clearReady() = ReplyNotifications.clear(this@AithraApplication)
         override fun visibilityChanged(visible: Boolean) =
             Events.send(mapOf("type" to "visibility", "visible" to visible))
+        override fun replyingChanged(replying: Boolean) =
+            Events.send(mapOf("type" to "replying", "replying" to replying))
     })
 
     /** Aithra activities between onStart and onStop. */
@@ -58,6 +59,11 @@ class AithraApplication : Application() {
     private val visibility = object : ActivityLifecycleCallbacks {
         override fun onActivityStarted(activity: Activity) {
             if (started++ == 0) replies.shown()
+            // The screen a finished reply belongs to is showing it now.
+            when (activity) {
+                is MainActivity -> ReplyNotifications.clearChats(activity)
+                is AskActivity -> ReplyNotifications.clearAsk(activity, activity.taskId)
+            }
         }
 
         override fun onActivityStopped(activity: Activity) {

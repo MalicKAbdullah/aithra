@@ -67,14 +67,24 @@ class EngineService extends ChangeNotifier {
       _status = EngineStatus.idle;
       notifyListeners();
     });
-    var told = false;
+    var toldVisible = false;
     _native.eventsOf('visibility').listen((e) {
-      told = true;
+      toldVisible = true;
       _setVisible(e['visible']! as bool);
     });
     unawaited(
       _native.appVisible().then((v) {
-        if (!told) _setVisible(v);
+        if (!toldVisible) _setVisible(v);
+      }),
+    );
+    var toldReplying = false;
+    _native.eventsOf('replying').listen((e) {
+      toldReplying = true;
+      _setReplyingAnywhere(e['replying']! as bool);
+    });
+    unawaited(
+      _native.appReplying().then((r) {
+        if (!toldReplying) _setReplyingAnywhere(r);
       }),
     );
     _native.eventsOf('reply').listen((e) {
@@ -115,15 +125,32 @@ class EngineService extends ChangeNotifier {
   final StreamController<void> _hidden = StreamController.broadcast(sync: true);
   Stream<void> get hidden => _hidden.stream;
 
+  /// Whether a reply is in progress in any Flutter engine (the app or the
+  /// Ask sheet), as native code last said.
+  bool _replyingAnywhere = false;
+
   void _setVisible(bool v) {
     if (v == _visible) return;
     _visible = v;
     if (!v) {
-      _pauses++;
-      if (_backgroundRequest case final id?) unawaited(_native.cancel(id));
+      _pause();
       _hidden.add(null);
     }
     _gates.add(null);
+  }
+
+  /// The other engine's reply takes the phone's time as this one's would.
+  void _setReplyingAnywhere(bool r) {
+    if (r == _replyingAnywhere) return;
+    _replyingAnywhere = r;
+    if (r) _pause();
+    _gates.add(null);
+  }
+
+  /// Interrupts background work so that it runs again once allowed.
+  void _pause() {
+    _pauses++;
+    if (_backgroundRequest case final id?) unawaited(_native.cancel(id));
   }
 
   /// Completes once [ok] holds, checked whenever a gate changes.
@@ -134,11 +161,11 @@ class EngineService extends ChangeNotifier {
   }
 
   /// Completes once background work may run: Aithra is on screen and no
-  /// reply is in progress. Housekeeping never keeps the process alive in
-  /// the background, where Android may freeze or end it at any moment, and
-  /// never takes the phone's time from a reply.
+  /// reply is in progress in either engine. Housekeeping never keeps the
+  /// process alive in the background, where Android may freeze or end it at
+  /// any moment, and never takes the phone's time from a reply.
   Future<void> whenHousekeepingAllowed() =>
-      _until(() => _visible && _holds.isEmpty);
+      _until(() => _visible && _holds.isEmpty && !_replyingAnywhere);
 
   /// Completes once work someone may be waiting for can run: Aithra is on
   /// screen, or a reply is in progress (it keeps the process running).
