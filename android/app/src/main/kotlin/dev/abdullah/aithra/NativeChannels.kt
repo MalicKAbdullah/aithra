@@ -424,6 +424,8 @@ class NativeChannels(
             }
             "doc.citations" -> onDb(result) { docs.citations(call.argument<String>("convId")!!) }
 
+            "locale.languages" -> onIo(result) { languages() }
+
 
             "device.info" -> onIo(result) { DeviceInfo.collect(activity) }
             "device.runsLlama" -> result.success(CpuFeatures.runsLlama)
