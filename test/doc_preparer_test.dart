@@ -102,12 +102,25 @@ class FakeDocNative extends NativeBridge with FakeReplies {
 
   @override
   Future<List<Map<String, Object?>>> unreadPages(String id) async => [
-    for (final p in unread) {'page': p, 'image': 'img-$p'},
+    if (!deleted.contains(id))
+      for (final p in unread) {'page': p, 'image': 'img-$p'},
   ];
 
+  /// Documents the user deletes the moment their page list is read.
+  final Set<String> deleteOnRead = {};
+  final Set<String> deleted = {};
+
+  /// Documents whose indexing fails with an error nobody expects.
+  final Set<String> broken = {};
+
   @override
-  Future<Uint8List?> dbImage(String id, {required bool thumb}) async =>
-      Uint8List(4);
+  Future<Uint8List?> dbImage(String id, {required bool thumb}) async {
+    if (deleteOnRead.isNotEmpty) {
+      deleted.addAll(deleteOnRead);
+      return null;
+    }
+    return Uint8List(4);
+  }
 
   @override
   Future<void> setPageText(String id, int page, String text) async {
@@ -122,14 +135,16 @@ class FakeDocNative extends NativeBridge with FakeReplies {
     String id,
     int limit,
   ) async {
+    if (broken.contains(id)) throw ArgumentError('broken index');
+    if (deleted.contains(id)) return (embedded: 0, indexed: 0, total: 0);
     final n = (passages - indexed).clamp(0, limit);
     indexed += n;
     return (embedded: n, indexed: indexed, total: passages);
   }
 }
 
-DocInfo _doc({int unreadPages = 2}) => DocInfo(
-  id: 'd1',
+DocInfo _doc({String id = 'd1', int unreadPages = 2}) => DocInfo(
+  id: id,
   name: 'scan.pdf',
   mime: 'application/pdf',
   pages: 2,
@@ -208,6 +223,37 @@ void main() {
     await _settle();
     expect(native.generations, isEmpty);
     expect(native.indexed, 0);
+    expect(preparer.progress, isEmpty);
+  });
+
+  test('a document deleted while its pages are read ends cleanly, and the '
+      'next one is prepared', () async {
+    final (native, preparer) = await _start();
+    native.deleteOnRead.add('d1');
+    preparer.prepare(_doc());
+    await _settle();
+    expect(native.generations, isEmpty);
+    expect(preparer.progress, isEmpty);
+    expect(preparer.failures, isEmpty);
+    native.deleteOnRead.clear();
+    preparer.prepare(_doc(id: 'd2', unreadPages: 0));
+    await _settle();
+    expect(native.indexed, native.passages);
+    expect(preparer.progress, isEmpty);
+  });
+
+  test("one document's unexpected failure is reported and leaves the "
+      'others to be prepared', () async {
+    final (native, preparer) = await _start();
+    native.broken.add('d1');
+    final errors = <Object>[];
+    await runZonedGuarded(() async {
+      preparer.prepare(_doc(unreadPages: 0));
+      preparer.prepare(_doc(id: 'd2', unreadPages: 0));
+      await _settle();
+    }, (e, _) => errors.add(e));
+    expect(errors.single, isA<ArgumentError>());
+    expect(native.indexed, native.passages);
     expect(preparer.progress, isEmpty);
   });
 

@@ -70,7 +70,15 @@ class DocPreparer extends ChangeNotifier {
       total: 0,
     );
     notifyListeners();
-    _work = _work.then((_) => _run(doc));
+    // Each document's work starts after the previous one's, whatever its
+    // outcome; an unexpected error still reaches the crash report.
+    _work = _work
+        .then((_) => _run(doc))
+        .then(
+          (_) {},
+          onError: (Object e, StackTrace s) =>
+              Zone.current.handleUncaughtError(e, s),
+        );
   }
 
   /// Stops preparing [id], a document the user removed.
@@ -131,6 +139,9 @@ class DocPreparer extends ChangeNotifier {
         page['image']! as String,
         thumb: false,
       );
+      // The image goes once its page is read (by a reply) or its document
+      // is deleted; the list read again says which.
+      if (image == null) continue;
       final backend = _assistant.backendFor(spec);
       if (backend == null) return;
       // Loading the model is housekeeping too: only with the app on screen
@@ -139,7 +150,7 @@ class DocPreparer extends ChangeNotifier {
       final pageClock = Stopwatch()..start();
       final text = await engine.backgroundRun().generate(
         [
-          EngineTurn('user', readPagePrompt, [image!]),
+          EngineTurn('user', readPagePrompt, [image]),
         ],
         maxTokens: readPageTokens,
         temperature: 0,
