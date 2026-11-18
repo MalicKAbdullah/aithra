@@ -106,6 +106,7 @@ class NativeChannels(
     fun notify(event: Map<String, Any?>) = events.send(event)
 
     fun destroy() {
+        events.close()
         // This engine's replies end with it, unannounced: nothing is left to save them.
         app.replies.endScope(scope)
         if (speechLazy.isInitialized()) speech.destroy()
